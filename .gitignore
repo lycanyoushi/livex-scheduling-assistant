@@ -10,3 +10,6 @@ __pycache__/
 
 .env*
 !.env.example
+
+# Private build plan for the coding agent; never publish.
+PLAN.md
