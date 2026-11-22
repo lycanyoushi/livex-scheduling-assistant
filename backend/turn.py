@@ -14,16 +14,16 @@ import re
 from time import perf_counter
 from zoneinfo import ZoneInfo
 
+from backend.actions import ActionError, CalendarActions
 from backend.cal_client import CalError, CalObservation
 from backend.model import ModelClient, ModelCompletion, ModelError, ModelText, ToolCall
 from backend.prescan import EMAIL, PrescanResult, prescan
-from backend.protocol import CalCallMetrics, ChatRequest, ConfirmProposal, DismissProposal, ServerEvent, TextInput, TurnMetrics
+from backend.protocol import CalCallMetrics, ChatRequest, ServerEvent, TextInput, TurnMetrics, UiAction
 from backend.state import (
-    ConfirmedOutcome, DismissedOutcome, NoActionYetOutcome, PendingCall, SessionState,
-    StateError, add_booking, new_state, sign_state, verify_state,
+    NoActionYetOutcome, PendingCall, SessionState, StateError, new_state, sign_state, verify_state,
 )
-from backend.time import local_bounds, parse_instant, slot_labels, utc_now
-from backend.tools import CalendarTools, ToolOutcome, ToolRejected, booking_entry, booking_view
+from backend.time import parse_instant, slot_labels, utc_now
+from backend.tools import CalendarTools, ToolOutcome, ToolRejected
 
 
 SYSTEM_PROMPT = """You are a scheduling assistant for one calendar.
@@ -36,14 +36,15 @@ For a move, resolve the booking first and supply its booking ref to find_slots.
 Use list_bookings for the session email, with email="" when the app already has it.
 Ask for an email if none is available before listing or changing existing bookings.
 Never offer or change another attendee's meetings, or cancel everyone's bookings.
-For a specific agreed slot, propose_booking. Use empty name, email, or notes if unknown.
+For a specific agreed slot, propose_booking. Set email="" to use the session email.
+Use an empty name or notes if unknown.
 For cancellation or moving a selected meeting, use the corresponding propose tool.
 A proposal only asks for confirmation. Never claim a write happened without a confirmed app result.
 Use a propose tool alone as the final step and give a short explanation before it.
 Reply in the user's language. Keep replies brief. Ask which meeting when a request is ambiguous."""
 PROPOSE_TOOLS = frozenset({"propose_booking", "propose_cancel", "propose_reschedule"})
 REFS = re.compile(r"\[\[([SB][1-9]\d*)\]\]")
-CONTEXT_TAG = re.compile(r"</?turn_context[^>]*>", re.IGNORECASE)
+CONTEXT_TAG = re.compile(r"</?\s*turn_context\b[^>]*>", re.IGNORECASE)
 BULK_TARGET = re.compile(
     r"\b(?:everyone(?:'s)?|everybody(?:'s)?|other people(?:'s)?|all (?:the )?(?:bookings|meetings))\b",
     re.IGNORECASE,
@@ -84,10 +85,7 @@ class TurnError(Exception):
 
 
 def _redact_contact(value: str) -> str:
-    return EMAIL.sub(
-        lambda match: match.group() if match.group().lower().endswith("@example.com") else "[email supplied]",
-        value,
-    )
+    return EMAIL.sub("[email supplied]", value)
 
 
 def _function_result(call_id: str, name: str, result: dict) -> dict:
@@ -115,7 +113,7 @@ def _context(state: SessionState, now: datetime, hints: PrescanResult) -> str:
     for ref, booking in list(state.bookings.items())[-10:]:
         if state.user.email and state.user.email.casefold() in {item.casefold() for item in booking.attendee_emails}:
             day, time = slot_labels(booking.start_utc, booking.end_utc, state.time_zone)
-            title = _redact_contact(" ".join(booking.title.split())[:80])
+            title = _redact_contact(" ".join(booking.title.split()))[:80]
             lines.append(f"Known booking {ref}: {day} {time} ({booking.status}), calendar title {json.dumps(title)}")
     for note in state.notes[-10:]:
         lines.append(f"App result: {_redact_contact(note)}")
@@ -188,7 +186,7 @@ class TurnService:
                     raise TurnError("session_limit", "Start a new chat to continue.", retryable=False)
                 source = self._text_events(state, now, request.input.text, metrics)
             else:
-                source = self._action_events(state, now, request.input.action)
+                source = self._action_events(state, now, request.input.action, metrics)
             async with aclosing(source) as events:
                 async for event in events:
                     yield event
@@ -212,7 +210,7 @@ class TurnService:
         hints = prescan(text, now=now, time_zone=state.time_zone)
         metrics["prescan"] = {"email": hints.email is not None, "dates": [d.day.isoformat() for d in hints.dates],
                               "partOfDay": hints.part_of_day, "intents": list(hints.intents)}
-        if hints.email:
+        if hints.email and len(hints.email) <= 254:
             state.user.email = hints.email
         denied = bool(BULK_TARGET.search(text) and {"cancel", "reschedule"}.intersection(hints.intents))
         tools = self._tools(state, now, deny_mutations=denied)
@@ -307,61 +305,25 @@ class TurnService:
             name = call.name if call.name in PROPOSE_TOOLS | {"find_slots", "list_bookings"} else "unknown"
             metrics["toolCalls"].append({"name": name, "ms": (perf_counter() - began) * 1000, "ok": ok})
 
-    async def _action_events(self, state: SessionState, now: datetime, action) -> AsyncIterator[ServerEvent]:
-        proposal = state.proposal
-        if isinstance(action, ConfirmProposal) and action.proposal_id in state.completed:
-            yield {"type": "assistant_text", "text": state.completed[action.proposal_id]}
-            return
-        if not isinstance(action, (ConfirmProposal, DismissProposal)):
-            raise TurnError("invalid_action", "Use the chat to select an appointment.", retryable=False)
-        if proposal is None or proposal.id != action.proposal_id:
-            raise TurnError("invalid_action", "That confirmation is no longer active.", retryable=False)
-        if isinstance(action, DismissProposal):
-            if state.pending_call and state.pending_call.proposal_id == proposal.id:
-                state.pending_call.outcome = DismissedOutcome(outcome="dismissed")
-            state.proposal = None
-            state.notes = [*state.notes, f"Dismissed {proposal.id}."][-10:]
-            yield {"type": "assistant_text", "text": "Okay. The schedule is unchanged."}
-            return
-        if proposal.kind != "book":
-            raise TurnError("invalid_action", "Booking confirmation is available in this version.", retryable=False)
-
-        name, email = (action.name or proposal.name or "").strip(), (action.email or proposal.email or "").strip()
-        if not name or not EMAIL.fullmatch(email):
-            raise TurnError("invalid_contact", "Enter a name and a valid email address.", retryable=False)
-        slot = state.slots.get(proposal.slot_ref or "")
-        if not slot or slot.for_booking_ref or parse_instant(slot.start_utc) <= now:
-            raise TurnError("slot_taken")
-        selected = parse_instant(slot.start_utc)
-        day = selected.astimezone(ZoneInfo(state.time_zone)).date()
-        bounds = local_bounds(day, day, state.time_zone)
-        yield {"type": "status", "text": "Confirming the appointment…"}
-        windows = await asyncio.to_thread(
-            self.calendar.slots, slot.event_type_id, *bounds, state.time_zone, fresh=True,
+    async def _action_events(
+        self, state: SessionState, now: datetime, action: UiAction, metrics: TurnMetrics,
+    ) -> AsyncIterator[ServerEvent]:
+        status = {
+            "confirm_proposal": "Confirming the change…",
+            "more_slots": "Checking for more times…",
+            "request_reschedule": "Checking times for this booking…",
+            "request_cancel": "Checking the booking…",
+        }.get(action.type)
+        if status:
+            yield {"type": "status", "text": status}
+        actions = CalendarActions(
+            self.calendar, state, now, allowed_slugs=self.allowed_slugs, default_slug=self.default_slug,
         )
-        if not any(parse_instant(item["start"]) == selected for items in windows.values() for item in items):
-            raise TurnError("slot_taken")
-        event_types = await asyncio.to_thread(self._tools(state, now).event_types)
-        event = next((item for item in event_types if item["id"] == slot.event_type_id), None)
-        if not event:
-            raise TurnError("invalid_action", "This event type is no longer available.", retryable=False)
-        notes_field = next((item["slug"] for item in event.get("bookingFields") or ()
-                            if item.get("field") == "notes" and item.get("slug") and not item.get("hidden")), None)
-        created = await asyncio.to_thread(
-            self.calendar.create_booking, start=selected, event_type_id=slot.event_type_id, name=name,
-            email=email, time_zone=state.time_zone, notes=action.notes if action.notes is not None else proposal.notes,
-            notes_field=notes_field,
-        )
-        entry = booking_entry(created)
-        ref = add_booking(state, entry)
-        booking = booking_view(ref, entry, state.time_zone)
-        summary = f"You're booked for {booking['whenLabel']} ({state.time_zone})."
-        state.user.name, state.user.email, state.proposal = name, email.casefold(), None
-        state.notes = [*state.notes, f"Confirmed {proposal.id}. {summary}"][-10:]
-        state.completed[proposal.id] = summary
-        if len(state.completed) > 10:
-            del state.completed[next(iter(state.completed))]
-        if state.pending_call and state.pending_call.proposal_id == proposal.id:
-            state.pending_call.outcome = ConfirmedOutcome(outcome="confirmed", result=summary)
-        yield {"type": "booking_result", "kind": "booked", "booking": booking}
-        yield {"type": "assistant_text", "text": summary}
+        try:
+            result = await asyncio.to_thread(actions.execute, action)
+        except ActionError as error:
+            raise TurnError(error.code, str(error), retryable=error.retryable) from None
+        if result.error_code:
+            metrics["outcome"], metrics["errorCode"] = "failed", result.error_code
+        for event in result.events:
+            yield event

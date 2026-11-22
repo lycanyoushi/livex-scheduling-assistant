@@ -1,11 +1,12 @@
-export type ChatInput =
-  | { kind: "text"; text: string }
-  | {
-      kind: "ui";
-      action:
-        | { type: "confirm_proposal"; proposalId: string; name: string; email: string; notes?: string }
-        | { type: "dismiss_proposal"; proposalId: string };
-    };
+export type UiAction =
+  | { type: "pick_slot"; slotRef: string }
+  | { type: "more_slots"; fromDate?: string }
+  | { type: "confirm_proposal"; proposalId: string; name?: string; email?: string; notes?: string }
+  | { type: "dismiss_proposal"; proposalId: string }
+  | { type: "request_cancel"; bookingRef: string }
+  | { type: "request_reschedule"; bookingRef: string };
+
+export type ChatInput = { kind: "text"; text: string } | { kind: "ui"; action: UiAction };
 
 export type SlotView = { dayLabel: string; timeLabel: string; startLocalIso: string };
 export type BookingView = {
@@ -55,18 +56,43 @@ export type ServerEvent =
   | { type: "error"; code: string; message: string; retryable: boolean; fallback?: "booker" }
   | TurnEnd;
 
-export function labelReference(ref: string, views: ReferenceViews): string {
-  const slot = views.slots[ref];
-  if (slot) return `${slot.dayLabel} at ${slot.timeLabel} (${ref})`;
+export type TurnControls = "all" | "alternatives" | "none";
 
-  const booking = views.bookings[ref];
-  if (booking) return `${booking.title}, ${booking.whenLabel} (${ref})`;
-
-  return ref;
+export function controlsForTurn(input: ChatInput, outcome: TurnEnd["metrics"]["outcome"], errorCode?: string): TurnControls {
+  if (outcome === "ok") return "all";
+  if (input.kind === "ui" && errorCode === "slot_taken" &&
+      (input.action.type === "confirm_proposal" || input.action.type === "pick_slot")) {
+    return "alternatives";
+  }
+  return "none";
 }
 
-export function displayReferences(text: string, views: ReferenceViews): string {
-  return text.replace(/\[\[([SB][1-9]\d*)\]\]/g, (_, ref: string) => labelReference(ref, views));
+export type ReferencePart = { text: string } | { ref: string };
+
+export function splitReferenceText(text: string, streaming: boolean): ReferencePart[] {
+  if (streaming) {
+    const open = text.lastIndexOf("[[");
+    if (open > text.lastIndexOf("]]")) text = text.slice(0, open);
+    else if (text.endsWith("[")) text = text.slice(0, -1);
+  }
+
+  const parts: ReferencePart[] = [];
+  let cursor = 0;
+  for (const match of text.matchAll(/\[\[([SB][1-9][0-9]*)\]\]/g)) {
+    if (match.index > cursor) parts.push({ text: text.slice(cursor, match.index) });
+    parts.push({ ref: match[1] });
+    cursor = match.index + match[0].length;
+  }
+  if (cursor < text.length) parts.push({ text: text.slice(cursor) });
+  return parts;
+}
+
+export function nextSlotDate(slots: SlotView[]): string | undefined {
+  const finalDay = slots.map((slot) => slot.startLocalIso.slice(0, 10)).sort().at(-1);
+  if (!finalDay) return undefined;
+  const next = new Date(`${finalDay}T00:00:00Z`);
+  next.setUTCDate(next.getUTCDate() + 1);
+  return Number.isFinite(next.getTime()) ? next.toISOString().slice(0, 10) : undefined;
 }
 
 export async function readChatStream(

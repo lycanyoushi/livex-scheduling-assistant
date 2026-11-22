@@ -168,6 +168,7 @@ class SessionState(_StateModel):
     bookings: Annotated[dict[BookingRef, BookingEntry], Field(max_length=MAX_BOOKINGS)] = Field(default_factory=dict)
     counters: Counters = Field(default_factory=Counters)
     proposal: Proposal | None = None
+    rescheduling_booking_ref: BookingRef | None = None
     interaction_id: _OpaqueId | None = None
     pending_call: PendingCall | None = None
     notes: Annotated[list[_Summary], Field(max_length=MAX_NOTES)] = Field(default_factory=list)

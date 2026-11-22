@@ -499,6 +499,8 @@ class CalendarTools:
                 for entry in list(owned.values())[:_MAX_BOOKING_CHOICES]
                 for ref in [add_booking(self.state, entry)]
             }
+            if not refs:
+                self.state.rescheduling_booking_ref = None
         result = {
             "bookings": [
                 {
@@ -513,7 +515,7 @@ class CalendarTools:
             "hasMore": page["pagination"]["hasMore"] or len(owned) > _MAX_BOOKING_CHOICES,
         }
         event: RefsEvent = {"type": "refs", "bookings": refs}
-        return ToolOutcome(result, [event] if refs else [])
+        return ToolOutcome(result, [event])
 
     def _check_slot(
         self, ref: str, booking_ref: str | None = None, booking: BookingEntry | None = None
@@ -581,9 +583,12 @@ class CalendarTools:
 
     def _propose_booking(self, args: _ProposeBooking) -> ToolOutcome:
         self._check_slot(args.slot_ref)
+        supplied_email = args.email.strip()
+        if supplied_email and not _valid_email(supplied_email):
+            raise ToolRejected("Use a valid attendee email or leave it empty for confirmation.")
         with self._state_lock:
             name = args.name.strip() or self.state.user.name
-            email = args.email.strip() or self.state.user.email
+            email = self.state.user.email or supplied_email or None
         if email and not _valid_email(email):
             raise ToolRejected("Use a valid attendee email or leave it empty for confirmation.")
         return self._propose("book", slot_ref=args.slot_ref, name=name, email=email, notes=args.notes.strip() or None)

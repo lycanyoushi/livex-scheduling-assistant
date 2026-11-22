@@ -31,7 +31,7 @@ DATES = re.compile(
     re.IGNORECASE,
 )
 CLOCK = (r"(?:(?P<marker>at|a\s+las)\s+)?(?P<hour>[0-2]?\d)"
-         r"(?::(?P<minute>[0-5]\d))?\s*(?P<period>am|pm)?\b")
+         r"(?::(?P<minute>[0-5]\d))?\s*(?P<period>am|pm)?\b(?!:)")
 ATTACHED_TIME = re.compile(r"^[,\s]*" + CLOCK, re.IGNORECASE)
 LEADING_TIME = re.compile(r"(?<![\w:])" + CLOCK + r"[,\s]*$", re.IGNORECASE)
 PARTS: dict[PartOfDay, re.Pattern[str]] = {
@@ -70,6 +70,8 @@ def _requested_time(match: re.Match[str] | None) -> time | None:
         if not 1 <= hour <= 12:
             return None
         hour = hour % 12 + (12 if period.lower() == "pm" else 0)
+    elif match["minute"] is None and 1 <= hour <= 7:
+        hour += 12
     return time(hour, minute) if hour < 24 else None
 
 

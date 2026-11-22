@@ -7,95 +7,44 @@ import {
   type ChatInput,
   type ProposalView,
   type ReferenceViews,
-  displayReferences,
+  type TurnControls,
+  type UiAction,
+  controlsForTurn,
   readChatStream,
+  splitReferenceText,
 } from "./chat-protocol";
+import { BookingCard, ConfirmCard, OUTLINE_BUTTON, PRIMARY_BUTTON, RefText, SlotChips } from "./chat-cards";
 
-type TurnError = { message: string; retryable: boolean };
+type TurnError = { message: string; retryable: boolean; code?: string };
+type SlotGroup = { refs: string[]; note?: string };
 
 type TurnRecord = {
   id: number;
+  session: number;
   input: ChatInput;
   text: string;
   views: ReferenceViews;
+  controls: TurnControls;
+  groups: SlotGroup[];
   results: BookingResult[];
+  listedBookings?: string[];
+  proposal?: ProposalView;
   error?: TurnError;
 };
 
 const EMPTY_VIEWS: ReferenceViews = { slots: {}, bookings: {} };
-const RESULT_LABELS: Record<BookingResult["kind"], string> = {
-  booked: "Meeting booked",
-  cancelled: "Meeting cancelled",
-  rescheduled: "Meeting moved",
-};
 
-const OUTLINE_BUTTON = "min-h-11 rounded-md px-4 text-sm font-semibold focus-visible:outline-2 focus-visible:outline-ring disabled:opacity-50";
-const PRIMARY_BUTTON = `${OUTLINE_BUTTON} bg-primary text-primary-foreground`;
-const CONTACT_FIELD = "min-h-11 w-full rounded-md border border-border bg-background px-3 py-2 text-base focus-visible:outline-2 focus-visible:outline-ring";
-
-function BookingConfirmation({
-  proposal,
-  sending,
-  onAction,
-}: {
-  proposal: ProposalView;
-  sending: boolean;
-  onAction: (action: Extract<ChatInput, { kind: "ui" }>["action"]) => void;
-}) {
-  function confirm(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const fields = new FormData(event.currentTarget);
-    const name = String(fields.get("name") ?? "").trim();
-    const email = String(fields.get("email") ?? "").trim();
-    const notes = String(fields.get("notes") ?? "").trim();
-    onAction({
-      type: "confirm_proposal",
-      proposalId: proposal.id,
-      name,
-      email,
-      ...(notes ? { notes } : {}),
-    });
-  }
-
-  return (
-    <form onSubmit={confirm} className="rounded-xl border border-border bg-card p-5 shadow-xs">
-      <h2 className="text-lg font-semibold">Book this meeting?</h2>
-      <p className="mt-1 text-sm text-muted-foreground">
-        {proposal.title} · {proposal.whenLabel} · {proposal.durationMinutes} min · {proposal.timeZone}
-      </p>
-      <fieldset className="mt-4 grid gap-3 sm:grid-cols-2" disabled={sending}>
-        <label className="grid gap-1 text-sm font-medium">
-          Name
-          <input className={CONTACT_FIELD} name="name" autoComplete="name" defaultValue={proposal.name} required maxLength={200} pattern=".*\S.*" />
-        </label>
-        <label className="grid gap-1 text-sm font-medium">
-          Email
-          <input className={CONTACT_FIELD} name="email" type="email" autoComplete="email" defaultValue={proposal.email} required maxLength={254} />
-        </label>
-        <label className="grid gap-1 text-sm font-medium sm:col-span-2">
-          Note (optional)
-          <textarea className={CONTACT_FIELD} name="notes" defaultValue={proposal.notes} rows={2} maxLength={2_000} />
-        </label>
-        <div className="flex gap-2 sm:col-span-2">
-          <button className={PRIMARY_BUTTON} type="submit" disabled={sending}>Confirm</button>
-          <button
-            className={`${OUTLINE_BUTTON} border border-border`}
-            type="button"
-            disabled={sending}
-            onClick={() => onAction({ type: "dismiss_proposal", proposalId: proposal.id })}
-          >
-            Change
-          </button>
-        </div>
-      </fieldset>
-    </form>
-  );
+function keepLatestReferences<T>(views: Record<string, T>, limit: number): Record<string, T> {
+  const entries = Object.entries(views).sort(([a], [b]) => Number(a.slice(1)) - Number(b.slice(1)));
+  return Object.fromEntries(entries.slice(-limit));
 }
 
 export default function Home() {
   const [draft, setDraft] = useState("");
   const [turns, setTurns] = useState<TurnRecord[]>([]);
-  const [proposal, setProposal] = useState<ProposalView | null>(null);
+  const [activeProposal, setActiveProposal] = useState<{ turnId: number; value: ProposalView } | null>(null);
+  const [currentViews, setCurrentViews] = useState(EMPTY_VIEWS);
+  const [session, setSession] = useState(0);
   const [activeKind, setActiveKind] = useState<ChatInput["kind"] | null>(null);
   const [status, setStatus] = useState("");
   const token = useRef<string | null>(null);
@@ -111,7 +60,7 @@ export default function Home() {
   useEffect(() => {
     const log = transcript.current;
     if (log && followsTranscript.current) log.scrollTop = log.scrollHeight;
-  }, [turns, proposal, status]);
+  }, [turns, status]);
 
   async function sendTurn(input: ChatInput, retryId?: number) {
     if (request.current) return;
@@ -120,7 +69,9 @@ export default function Home() {
     request.current = controller;
     followsTranscript.current = true;
     const id = retryId ?? nextTurnId.current++;
-    const record: TurnRecord = { id, input, text: "", results: [], views: savedViews.current };
+    const record: TurnRecord = {
+      id, session, input, text: "", results: [], groups: [], views: savedViews.current, controls: "none",
+    };
     setTurns((previous) => retryId === undefined
       ? [...previous, record]
       : previous.map((turn) => turn.id === id ? record : turn));
@@ -137,6 +88,9 @@ export default function Home() {
     let resetSession = false;
     let bookingResultReceived = false;
     let rejectedBeforeConfirm = false;
+    const recoveryRefs = new Set<string>();
+    const confirmsProposal = input.kind === "ui" && input.action.type === "confirm_proposal";
+    const originalBookingRef = confirmsProposal ? activeProposal?.value.bookingRef : undefined;
 
     try {
       const response = await fetch("/api/chat", {
@@ -173,39 +127,72 @@ export default function Home() {
               bookings: { ...views.bookings, ...event.bookings },
             };
             views = nextViews;
-            updateTurn((turn) => ({ ...turn, views: nextViews }));
+            const listedRefs = input.kind === "text" && event.bookings && Object.keys(event.bookings);
+            updateTurn((turn) => ({
+              ...turn,
+              views: nextViews,
+              ...(listedRefs ? { listedBookings: [...new Set([...(turn.listedBookings ?? []), ...listedRefs])] } : {}),
+            }));
             break;
           }
           case "slot_chips": {
-            const slots = event.refs.map((ref) => `[[${ref}]]`).join("\n");
+            setStatus("");
+            for (const ref of event.refs) recoveryRefs.add(ref);
             updateTurn((turn) => ({
               ...turn,
-              text: [turn.text, event.note, slots].filter(Boolean).join("\n\n"),
+              groups: [...turn.groups, { refs: event.refs, note: event.note }],
             }));
             break;
           }
           case "proposal":
             nextProposal = event.proposal;
             break;
-          case "booking_result":
+          case "booking_result": {
             bookingResultReceived = true;
-            updateTurn((turn) => ({ ...turn, results: [...turn.results, event] }));
+            const bookings = { ...views.bookings, [event.booking.ref]: event.booking };
+            if (originalBookingRef && originalBookingRef !== event.booking.ref && bookings[originalBookingRef]) {
+              bookings[originalBookingRef] = { ...bookings[originalBookingRef], status: event.kind };
+            }
+            const nextViews = { ...views, bookings };
+            views = nextViews;
+            updateTurn((turn) => ({ ...turn, results: [...turn.results, event], views: nextViews }));
             break;
+          }
           case "error":
-            failure = { message: event.message, retryable: event.retryable && input.kind === "text" };
+            failure = { code: event.code, message: event.message, retryable: event.retryable && input.kind === "text" };
             resetSession = event.code === "session_expired" || event.code === "interaction_expired";
             break;
         }
       });
 
       token.current = terminal.stateToken;
-      savedViews.current = resetSession ? EMPTY_VIEWS : views;
-      if (resetSession || bookingResultReceived) {
-        setProposal(null);
-      } else if (terminal.metrics.outcome === "ok") {
-        if (nextProposal) setProposal(nextProposal);
-        else if (input.kind === "ui") setProposal(null);
+      const controls = controlsForTurn(input, terminal.metrics.outcome, failure?.code);
+      if (resetSession) {
+        savedViews.current = EMPTY_VIEWS;
+        setSession((previous) => previous + 1);
+      } else if (controls === "all") {
+        savedViews.current = { slots: keepLatestReferences(views.slots, 40), bookings: keepLatestReferences(views.bookings, 20) };
+      } else if (controls === "alternatives") {
+        const alternatives = Object.fromEntries([...recoveryRefs].flatMap((ref) => views.slots[ref] ? [[ref, views.slots[ref]]] : []));
+        savedViews.current = {
+          ...savedViews.current,
+          slots: keepLatestReferences({ ...savedViews.current.slots, ...alternatives }, 40),
+        };
       }
+      setCurrentViews(savedViews.current);
+
+      const proposalLostItsSlot = controls === "alternatives" && confirmsProposal;
+      if (proposalLostItsSlot && activeProposal) {
+        setTurns((previous) => previous.map((turn) => turn.id === activeProposal.turnId ? { ...turn, proposal: undefined } : turn));
+      }
+      if (resetSession || bookingResultReceived || proposalLostItsSlot) {
+        setActiveProposal(null);
+      } else if (controls === "all") {
+        if (nextProposal) setActiveProposal({ turnId: id, value: nextProposal });
+        else if (input.kind === "ui") setActiveProposal(null);
+      }
+      const committedProposal = controls === "all" ? nextProposal : undefined;
+      updateTurn((turn) => ({ ...turn, controls, proposal: committedProposal }));
 
       if (failure) {
         const error = failure;
@@ -218,9 +205,9 @@ export default function Home() {
       }
     } catch {
       let message = controller.signal.aborted ? "Response stopped." : "The chat connection closed.";
-      if (input.kind === "ui" && input.action.type === "confirm_proposal" && !rejectedBeforeConfirm) {
-        setProposal(null);
-        if (!bookingResultReceived) message = "Check your calendar to see whether the meeting was booked.";
+      if (confirmsProposal && !rejectedBeforeConfirm) {
+        setActiveProposal(null);
+        if (!bookingResultReceived) message = "Check your calendar to see whether the change went through.";
       }
       updateTurn((turn) => ({ ...turn, error: { message, retryable: input.kind === "text" } }));
     } finally {
@@ -228,6 +215,10 @@ export default function Home() {
       setActiveKind(null);
       setStatus("");
     }
+  }
+
+  function takeAction(action: UiAction) {
+    void sendTurn({ kind: "ui", action });
   }
 
   function sendDraft(event: FormEvent<HTMLFormElement>) {
@@ -262,54 +253,101 @@ export default function Home() {
           </h1>
 
           <div role="log" aria-label="Messages" className="grid gap-5">
-            {turns.map((turn) => (
-              <div key={turn.id} className="grid gap-3">
-                {turn.input.kind === "text" && (
-                  <p className="max-w-[90%] justify-self-end rounded-2xl bg-primary/10 px-4 py-3 whitespace-pre-wrap wrap-break-word">
-                    <span className="sr-only">You: </span>{turn.input.text}
-                  </p>
-                )}
-                {turn.text && (
-                  <p className="whitespace-pre-wrap wrap-break-word">
-                    <span className="sr-only">Assistant: </span>{displayReferences(turn.text, turn.views)}
-                  </p>
-                )}
-                {turn.results.map((result) => (
-                  <article key={result.booking.ref} className="rounded-xl border border-border bg-card px-4 py-3">
-                    <h2 className="font-semibold text-primary">{RESULT_LABELS[result.kind]}</h2>
-                    <p>{result.booking.title}</p>
-                    <p className="text-sm text-muted-foreground">{result.booking.whenLabel}</p>
-                  </article>
-                ))}
-                {turn.error && (
-                  <div className="rounded-xl border border-border bg-card px-4 py-3">
-                    <p>{turn.error.message}</p>
-                    {turn.error.retryable && turn.id === turns.at(-1)?.id && (
-                      <button
-                        type="button"
-                        disabled={sending}
-                        className={`${OUTLINE_BUTTON} mt-2 border border-border`}
-                        onClick={() => void sendTurn(turn.input, turn.id)}
-                      >
-                        Retry
-                      </button>
-                    )}
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
+            {turns.map((turn) => {
+              const isLatest = turn.id === turns.at(-1)?.id;
+              const sameSession = turn.session === session;
+              const live = sameSession && !sending;
+              const currentBookings = sameSession ? currentViews.bookings : EMPTY_VIEWS.bookings;
+              const parts = splitReferenceText(turn.text, sending && isLatest);
+              const referredBookings = new Set(parts.flatMap((part) => "ref" in part ? [part.ref] : []));
+              const listed = turn.listedBookings?.filter((ref) => !referredBookings.has(ref)) ?? [];
+              const slotAvailable = (ref: string) => live && Boolean(currentViews.slots[ref]);
+              const bookingAvailable = (ref: string) => live && turn.controls === "all" && Boolean(currentBookings[ref]);
 
-          {proposal?.kind === "book" && (
-            <div className="mt-4">
-              <BookingConfirmation
-                key={proposal.id}
-                proposal={proposal}
-                sending={sending}
-                onAction={(action) => void sendTurn({ kind: "ui", action })}
-              />
-            </div>
-          )}
+              return (
+                <div key={turn.id} className="grid gap-3">
+                  {turn.input.kind === "text" && (
+                    <p className="max-w-[90%] justify-self-end rounded-2xl bg-primary/10 px-4 py-3 whitespace-pre-wrap wrap-break-word">
+                      <span className="sr-only">You: </span>{turn.input.text}
+                    </p>
+                  )}
+                  {parts.length > 0 && (
+                    <RefText
+                      parts={parts}
+                      views={turn.views}
+                      currentBookings={currentBookings}
+                      slotAvailable={(ref) => turn.controls === "all" && slotAvailable(ref)}
+                      bookingAvailable={bookingAvailable}
+                      showMore={turn.groups.length === 0 && turn.controls !== "alternatives"}
+                      onAction={takeAction}
+                    />
+                  )}
+                  {listed.length > 0 && (
+                    <ul aria-label="Meetings" className="grid gap-1">
+                      {listed.map((ref) => (
+                        <li key={ref}>
+                          <BookingCard booking={currentBookings[ref] ?? turn.views.bookings[ref]} available={bookingAvailable(ref)} onAction={takeAction} />
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  {turn.listedBookings?.length === 0 && turn.controls === "all" && (
+                    <div>
+                      {!turn.text && <p className="text-muted-foreground">No meetings to show.</p>}
+                      <button type="button" className={`${OUTLINE_BUTTON} border border-border`}
+                        disabled={!isLatest || !live} onClick={() => takeAction({ type: "more_slots" })}>
+                        Book a meeting
+                      </button>
+                    </div>
+                  )}
+                  {turn.results.map((result) => (
+                    <BookingCard
+                      key={result.booking.ref}
+                      booking={currentBookings[result.booking.ref] ?? result.booking}
+                      result={result.kind}
+                      available={bookingAvailable(result.booking.ref)}
+                      onAction={takeAction}
+                    />
+                  ))}
+                  {turn.error && (
+                    <div className="rounded-xl border border-border bg-card px-4 py-3">
+                      <p>{turn.error.message}</p>
+                      {turn.error.retryable && isLatest && (
+                        <button
+                          type="button"
+                          disabled={sending}
+                          className={`${OUTLINE_BUTTON} mt-2 border border-border`}
+                          onClick={() => void sendTurn(turn.input, turn.id)}
+                        >
+                          Retry
+                        </button>
+                      )}
+                    </div>
+                  )}
+                  {turn.groups.map((group, index) => (
+                    <SlotChips
+                      key={index}
+                      refs={group.refs}
+                      slots={turn.views.slots}
+                      note={group.note === turn.error?.message ? undefined : group.note}
+                      available={(ref) => turn.controls !== "none" && slotAvailable(ref)}
+                      allowMore={turn.controls !== "alternatives"}
+                      onAction={takeAction}
+                    />
+                  ))}
+                  {turn.proposal && (
+                    <ConfirmCard
+                      key={turn.proposal.id}
+                      proposal={turn.proposal}
+                      active={sameSession && activeProposal?.turnId === turn.id}
+                      submitting={sending}
+                      onAction={takeAction}
+                    />
+                  )}
+                </div>
+              );
+            })}
+          </div>
 
           <div role="status" className={status ? "mt-4 text-sm text-muted-foreground" : "sr-only"}>
             {status}

@@ -68,3 +68,13 @@ Pin the approved direct dependencies `dateparser`, `tzdata`, and `pydantic` v2 i
 **Approved November 22, 2026.** The fake calendar removes the intervals of active bookings from availability. During rescheduling, it excludes the one booking named by `bookingUidToReschedule` from that conflict check. Cases 3 and 20 specify explicit future times. Cases 16 and 18 fail on a proposal event, a Cal.com mutation, or a missing refusal. Report model proposal attempts that the application rejected as soft failures. Wording checks are reserved for outcomes without a structural signal, and report wording-only failures separately.
 
 Before using backup generation with a pending tool call, probe both continuation shapes against the same stored primary interaction. If either shape cannot continue, use the backup only on requests without a `function_result` step and use the code-only answer otherwise. Report HTTP 429 counts per model during the evals.
+
+## M4 review changes
+
+An unqualified hour from 1 through 7 is interpreted as PM. Hours 8 through 12 and explicit clock formats retain their written value. Prescan applies the same-day weekday rule after resolving the hour.
+
+The model input replaces email addresses, including fixture addresses, with a placeholder. The signed session retains the user's address, and case 3 checks the resolved proposal rather than a model argument. Runtime environment variables take precedence over `.env.local` defaults.
+
+The browser disables slots emitted by failed text turns. If a confirmation loses a slot, the server returns fresh signed refs for up to three nearest openings and the browser leaves those alternatives selectable.
+
+In M5, measure Gemini client and connection setup as part of time to first text. Reuse a long-lived loop and client if setup adds more than about 150 ms. In M6, report only the unexpected exception type when mapping a Gemini failure to `model_down`.

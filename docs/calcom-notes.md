@@ -14,7 +14,23 @@ The probe reached `https://api.cal.com` using the test account's API key. The fi
 | `GET /v2/bookings/{uid}` | `2026-02-25` | 200. The returned booking matched the create and attendee-filtered list results. The synthetic note round-tripped under `bookingFieldsResponses.notes`. |
 | `POST /v2/bookings/{uid}/cancel` | `2026-02-25` | 200. A follow-up single-booking read confirmed `cancelled`. A separate paginated list across both test aliases counted one canceled booking and zero active bookings. |
 
-Before the test aliases were supplied, Cal.com returned HTTP 400 for synthetic addresses at `example.com` and `example.net`. The rejection concerned email validity, and a fresh slots read showed the requested time was still free. The documented reschedule contract has client test coverage. Live rescheduling is a later milestone check. [Cal.com API v2](https://cal.com/docs/api-reference/v2/introduction)
+Before the test aliases were supplied, Cal.com returned HTTP 400 for synthetic addresses at `example.com` and `example.net`. The rejection concerned email validity, and a fresh slots read showed the requested time was still free. [Cal.com API v2](https://cal.com/docs/api-reference/v2/introduction)
+
+## M4 live confirmation checks
+
+The live run sent eight UI actions through Flask's `/api/chat` on the configured test event. It selected and confirmed an opening, requested and confirmed a move to a different time, then requested and confirmed cancellation. All eight turns returned `ok` with zero model calls.
+
+| Confirmation | Cal.com HTTP status | Turn latency |
+| --- | --- | --- |
+| Book | 201 | 1,391 ms |
+| Reschedule | 201 | 1,649 ms |
+| Cancel | 200 | 761 ms |
+
+Cal.com returned a distinct replacement booking. The original was already cancelled after the move, and the replacement was active until its cancellation was confirmed. Follow-up reads verified both bookings cancelled and zero remaining active. The run took 7.08 seconds after preflight.
+
+The browser check used live Gemini and the local calendar fixture. The first booking search took two model calls with prefetch scheduled for M5. Selecting a dated chip opened the confirmation, and Confirm returned a booking card. The browser downloaded the `.ics` file and verified the Google Calendar link. Selecting the second meeting by text took one model call and cancelled the intended meeting only after Confirm. Rescheduling with chips used zero model calls, including selection with the arrow keys. The empty-list booking button, More times, and Change also worked with zero model calls.
+
+The first browser conflict search returned `model_down`. A later search succeeded. The fixture then occupied the selected slot during Confirm. Flask returned `slot_taken` with zero model calls and three selectable replacements. Clicking a replacement opened a fresh confirmation.
 
 ## Client behavior
 

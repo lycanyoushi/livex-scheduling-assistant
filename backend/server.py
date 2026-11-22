@@ -82,7 +82,7 @@ def _encode(event: ServerEvent) -> bytes:
 
 
 def load_service() -> TurnService:
-    settings = {**os.environ, **(load_local_environment() if ENV_FILE.is_file() else {})}
+    settings = {**(load_local_environment() if ENV_FILE.is_file() else {}), **os.environ}
     required = ("GEMINI_API_KEY", "CAL_API_KEY", "STATE_SIGNING_SECRET")
     missing = [name for name in required if not settings.get(name)]
     if missing:

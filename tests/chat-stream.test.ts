@@ -1,6 +1,7 @@
 import { expect, it } from "vitest";
 
-import { type ServerEvent, displayReferences, readChatStream } from "../app/chat-protocol";
+import { calendarFile, googleCalendarLink, safeMeetingLink } from "../app/calendar-export";
+import { type BookingView, type ServerEvent, controlsForTurn, nextSlotDate, readChatStream, splitReferenceText } from "../app/chat-protocol";
 
 const encoder = new TextEncoder();
 
@@ -42,11 +43,45 @@ it("rejects an interrupted response without a terminal state update", async () =
   await expect(readChatStream(stream, () => {})).rejects.toThrow("before saving the turn");
 });
 
-it("displays slots using their explicit date and keeps the reference for text selection", () => {
-  expect(displayReferences("I can offer [[S2]] or [[S3]].", {
-    bookings: {},
-    slots: {
-      S2: { dayLabel: "Thu 26 Nov", timeLabel: "2:30 pm", startLocalIso: "2026-11-26T14:30:00Z" },
-    },
-  })).toBe("I can offer Thu 26 Nov at 2:30 pm (S2) or S3.");
+it("buffers incomplete reference syntax and preserves only complete chips while streaming", () => {
+  expect(splitReferenceText("I can offer [[S2]] or [[S3", true)).toEqual([
+    { text: "I can offer " }, { ref: "S2" }, { text: " or " },
+  ]);
+  expect(splitReferenceText("Try [", true)).toEqual([{ text: "Try " }]);
+  expect(splitReferenceText("Then [[B2]].", false)).toEqual([{ text: "Then " }, { ref: "B2" }, { text: "." }]);
+});
+
+it("permits only terminal alternatives after a slot-taken UI action", () => {
+  expect(controlsForTurn({ kind: "text", text: "tomorrow" }, "failed", "slot_taken")).toBe("none");
+  expect(controlsForTurn({ kind: "ui", action: { type: "confirm_proposal", proposalId: "P1" } }, "failed", "slot_taken")).toBe("alternatives");
+  expect(controlsForTurn({ kind: "ui", action: { type: "pick_slot", slotRef: "S1" } }, "failed", "slot_taken")).toBe("alternatives");
+  expect(controlsForTurn({ kind: "ui", action: { type: "confirm_proposal", proposalId: "P1" } }, "failed", "cal_down")).toBe("none");
+});
+
+it("starts the next availability window after the final local date", () => {
+  expect(nextSlotDate([
+    { dayLabel: "Fri 27 Nov", timeLabel: "11:30 pm", startLocalIso: "2026-11-27T23:30:00-08:00" },
+    { dayLabel: "Thu 26 Nov", timeLabel: "2:30 pm", startLocalIso: "2026-11-26T14:30:00-08:00" },
+  ])).toBe("2026-11-28");
+});
+
+it("exports valid UTC calendar times, escapes event text and excludes unsafe join links", () => {
+  const booking: BookingView = {
+    ref: "B1",
+    title: `Prep, Q&A; follow-up\n${"会".repeat(38)}`,
+    whenLabel: "Thu 26 Nov, 9:30 am",
+    status: "accepted",
+    attendees: ["sam@example.com"],
+    startUtc: "2026-11-26T17:30:00Z",
+    endUtc: "2026-11-26T18:00:00Z",
+    meetingUrl: "https://meet.example.com/synthetic",
+  };
+  const google = new URL(googleCalendarLink(booking)!);
+  expect(google.searchParams.get("dates")).toBe("20261126T173000Z/20261126T180000Z");
+  expect(google.searchParams.get("text")).toBe(booking.title);
+  const ics = calendarFile(booking, new Date("2026-11-22T00:00:00Z"))!;
+  expect(ics.replace(/\r\n /g, "")).toContain("SUMMARY:Prep\\, Q&A\\; follow-up\\n");
+  expect(ics).toContain("\r\nDTSTAMP:20261122T000000Z\r\nDTSTART:20261126T173000Z\r\nDTEND:20261126T180000Z\r\n");
+  expect(ics.split("\r\n").every((line) => encoder.encode(line).length <= 75)).toBe(true);
+  expect(safeMeetingLink("javascript:alert(1)")).toBeUndefined();
 });

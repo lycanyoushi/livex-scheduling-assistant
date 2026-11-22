@@ -18,6 +18,8 @@
 # includes_local_starts requires the listed times among the matches.
 # min/max apply to distinct refs. booking_ids_in_order is an exact ordered match.
 # proposal_kind: null and booking_result: null require no corresponding event.
+# proposal_email checks the resolved proposal email in app state or its event.
+# The model-facing arguments need not contain the attendee's address.
 # An array of proposal kinds allows any listed outcome. Other null checks are
 # unspecified. Each reply_patterns entry must match the visible reply.
 # cal_reads lists required read operations with partial argument matches.
@@ -120,13 +122,13 @@ cases:
               args:
                 slot_ref: {local_start: "2026-11-24T10:00"}
                 name: Sam
-                email: sam@example.com
           forbidden_tools: [propose_cancel, propose_reschedule]
           refs_within:
             kind: slot
             source: offers_or_proposal
             includes_local_starts: ["2026-11-24T10:00"]
           proposal_kind: book
+          proposal_email: sam@example.com
           min_model_calls: 1
           max_model_calls: 2
           reply_language: null
