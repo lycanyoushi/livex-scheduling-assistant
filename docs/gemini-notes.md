@@ -19,6 +19,29 @@ Run `pnpm model:probe` using the `google-genai` version pinned in `requirements.
 
 Flash-Lite passed all eight checks across nine live calls. 3.8 Flash generation failed in these observations. Following approval, Flash-Lite is the default for the initial milestones, and both models remain in the M7 comparison. The installed SDK is `google-genai==3.6.1`. An offline fixture also passed for multi-fragment argument parsing, redacted logging, usage extraction, and the wall-clock deadline.
 
+## Backup-model follow-up on November 22, 2026
+
+Three synthetic streaming Interactions requests used the same unbilled key, `store=True`, `thinking_level="minimal"`, and a 20-second deadline. Google lists `gemini-3.1-flash-lite` input and output on the Standard free tier. [Gemini pricing](https://aistudio.google.com/docs/pricing#gemini-3.1-flash-lite)
+
+| Check | Live observation |
+| --- | --- |
+| Backup access on the free key | A standalone request reported `gemini-3.1-flash-lite` and reached `completed`. Its exact acknowledgment assertion failed. The continuation below verified text generation on the backup. |
+| Store a primary interaction | `gemini-3.5-flash-lite` accepted a synthetic random fixture code, returned the expected acknowledgment, and completed with 47 input tokens and 1 output token. |
+| Continue on the backup | A new request asked for the fixture code and supplied the primary interaction through `previous_interaction_id`. The service reported `gemini-3.1-flash-lite` and reached `completed`. Two text deltas reproduced the code, which was present only in the primary turn. Usage was 61 input tokens and 11 output tokens. |
+
+This verifies the planned primary-to-backup switch for stored text history.
+
+### Pending tool calls on the backup model
+
+Three additional synthetic streaming Interactions requests used the same unbilled key, `store=True`, `thinking_level="minimal"`, and a 20-second deadline each. A `gemini-3.5-flash-lite` parent ended in `requires_action` after emitting the expected `find_slots` function call and arguments. Both requests on `gemini-3.1-flash-lite` branched from that same stored parent through `previous_interaction_id` and supplied a result for its pending call.
+
+| Continuation input | Live observation |
+| --- | --- |
+| `[function_result, user_input]` | Completed and returned both the synthetic tool result marker and the marker from the new user input. Usage was 208 input tokens and 7 output tokens. |
+| `[function_result]` | Completed and returned the synthetic tool result marker. Usage was 190 input tokens and 5 output tokens. |
+
+Both streams emitted text and thought-signature deltas without another tool call or error. The primary-to-backup capability gate is verified for both tested continuation forms. The reverse model switch and independent free-tier quotas remain unverified.
+
 ## SDK and documented behavior
 
 - In Python, `client.aio.interactions.create` takes snake-case arguments including `system_instruction`, `generation_config`, `previous_interaction_id`, and `store`. `[function_result, user_input]` is a typed sequence of input steps. A function result supplies `call_id` and `result`. Each user-input text part is represented as `{"type": "text", "text": "…"}` in `content`.
