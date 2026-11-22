@@ -8,7 +8,9 @@
     "dev": "next dev",
     "build": "next build",
     "lint": "eslint .",
-    "test": "vitest run",
+    "test": "vitest run && node scripts/run-python.mjs -m unittest discover -s tests",
+    "cal:probe": "node scripts/run-python.mjs -m scripts.cal_probe",
+    "model:probe": "node scripts/run-python.mjs -m scripts.model_probe",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
