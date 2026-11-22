@@ -1,0 +1,12 @@
+node_modules/
+.next/
+*.tsbuildinfo
+next-env.d.ts
+coverage/
+
+.venv/
+__pycache__/
+*.py[cod]
+
+.env*
+!.env.example
