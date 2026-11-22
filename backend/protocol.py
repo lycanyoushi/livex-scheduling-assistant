@@ -182,6 +182,7 @@ class ModelCallMetrics(TypedDict):
     inputTokens: int
     outputTokens: int
     cachedTokens: int
+    thoughtTokens: int
     status: str
 
 

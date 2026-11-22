@@ -2,6 +2,7 @@
 
 import asyncio
 from collections.abc import AsyncIterator
+from contextlib import AsyncExitStack, asynccontextmanager
 import json
 
 from google import genai
@@ -55,10 +56,43 @@ class GeminiClient:
         api_key: str,
         model: str = "gemini-3.5-flash-lite",
         thinking_level: str = "minimal",
+        *,
+        persistent: bool = False,
     ) -> None:
         self._api_key = api_key
         self._model = model
         self._thinking_level = thinking_level
+        self._persistent = persistent
+        self._client = None
+        self._lifetime = AsyncExitStack()
+        self._client_lock = asyncio.Lock()
+
+    def _new_client(self):
+        return genai.Client(
+            api_key=self._api_key,
+            vertexai=False,
+            http_options=types.HttpOptions(
+                timeout=int(_TIMEOUT_SECONDS * 1000),
+                retry_options=types.HttpRetryOptions(attempts=1),
+            ),
+        ).aio
+
+    @asynccontextmanager
+    async def _transport(self):
+        if not self._persistent:
+            async with self._new_client() as client:
+                yield client
+            return
+        async with self._client_lock:
+            if self._client is None:
+                self._client = await self._lifetime.enter_async_context(self._new_client())
+            client = self._client
+        yield client
+
+    async def aclose(self) -> None:
+        async with self._client_lock:
+            await self._lifetime.aclose()
+            self._client = None
 
     async def stream(
         self,
@@ -75,15 +109,7 @@ class GeminiClient:
         finished_calls: dict[int, ToolCall] = {}
 
         try:
-            # Each Flask turn owns its event loop. Scope the transport to that loop.
-            async with asyncio.timeout(_TIMEOUT_SECONDS), genai.Client(
-                api_key=self._api_key,
-                vertexai=False,
-                http_options=types.HttpOptions(
-                    timeout=int(_TIMEOUT_SECONDS * 1000),
-                    retry_options=types.HttpRetryOptions(attempts=1),
-                ),
-            ).aio as client:
+            async with asyncio.timeout(_TIMEOUT_SECONDS), self._transport() as client:
                 async with await client.interactions.create(
                     model=self._model,
                     input=input_steps,
@@ -145,6 +171,7 @@ class GeminiClient:
                                 input_tokens=_tokens(terminal.usage, "total_input_tokens"),
                                 output_tokens=_tokens(terminal.usage, "total_output_tokens"),
                                 cached_tokens=_tokens(terminal.usage, "total_cached_tokens"),
+                                thought_tokens=_tokens(terminal.usage, "total_thought_tokens"),
                             )
                             break
         except ModelError:

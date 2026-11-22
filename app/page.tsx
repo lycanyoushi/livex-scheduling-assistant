@@ -34,6 +34,10 @@ type TurnRecord = {
 
 const EMPTY_VIEWS: ReferenceViews = { slots: {}, bookings: {} };
 
+function browserTimeZone(): string {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+}
+
 function keepLatestReferences<T>(views: Record<string, T>, limit: number): Record<string, T> {
   const entries = Object.entries(views).sort(([a], [b]) => Number(a.slice(1)) - Number(b.slice(1)));
   return Object.fromEntries(entries.slice(-limit));
@@ -56,6 +60,19 @@ export default function Home() {
   const sending = activeKind !== null;
 
   useEffect(() => () => request.current?.abort(), []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      const query = new URLSearchParams({ timeZone: browserTimeZone() });
+      // Warming up the calendar is independent of the chat turn.
+      void fetch(`/api/warm?${query}`, { cache: "no-store", signal: controller.signal }).catch(() => {});
+    }, 0);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, []);
 
   useEffect(() => {
     const log = transcript.current;
@@ -99,7 +116,7 @@ export default function Home() {
         signal: controller.signal,
         body: JSON.stringify({
           stateToken: token.current,
-          timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
+          timeZone: browserTimeZone(),
           input,
         }),
       });
@@ -349,7 +366,8 @@ export default function Home() {
             })}
           </div>
 
-          <div role="status" className={status ? "mt-4 text-sm text-muted-foreground" : "sr-only"}>
+          <div role="status" className={status ? "mt-4 flex items-center gap-2 text-sm text-muted-foreground" : "sr-only"}>
+            {status && <span aria-hidden="true" className="size-3.5 shrink-0 animate-spin rounded-full border-2 border-current border-t-transparent motion-reduce:animate-none" />}
             {status}
           </div>
         </div>

@@ -240,6 +240,8 @@ class CalClientTests(unittest.TestCase):
         self.clock.now = 3600
         self.assertEqual(client.me()["username"], "updated-host")
         self.assertEqual(len(self.transport.calls), 2)
+        self.assertEqual([observation.cache_hit for observation in self.observations], [False, True, False])
+        self.assertIsNone(self.observations[1].body)
 
     def test_slot_cache_distinguishes_query_bounds_and_reschedule_uid(self):
         client = self.make_client(

@@ -78,3 +78,13 @@ The model input replaces email addresses, including fixture addresses, with a pl
 The browser disables slots emitted by failed text turns. If a confirmation loses a slot, the server returns fresh signed refs for up to three nearest openings and the browser leaves those alternatives selectable.
 
 In M5, measure Gemini client and connection setup as part of time to first text. Reuse a long-lived loop and client if setup adds more than about 150 ms. In M6, report only the unexpected exception type when mapping a Gemini failure to `model_down`.
+
+## M5 model and client selection
+
+Keep `gemini-3.5-flash-lite` with `minimal` thinking, `store=True`, and the full scheduling tool list. In the stored, full-tool comparison with a new client per call, it completed 9 of 9 and reached first text in a median 2.53 s. 3.1 Flash-Lite reached first text in 2.78 s with a better successful-sample p90 and one HTTP 503. 3.8 Flash timed out twice establishing stored history. The candidate-switch eval subset applies when changing the default. [Latency probe results](gemini-notes.md#m5-latency-probe-on-november-22-2026)
+
+Run Flask turns on one process-owned event loop and reuse one SDK client. Setup cost was 320 ms at the median with a new SDK client. Close each stream separately, cancel a disconnected request's task, and close the client on process shutdown. The persistent probe removed repeat construction cost. Median first-text time remained near 2.5 s and the tail varied across configurations.
+
+## M6 timed-out calendar writes
+
+Reconcile each timed-out write with Cal.com before reporting its outcome. For create, look up the attendee's booking at the requested start. For cancel, re-read the original booking status. For reschedule, re-read the original booking and look for a distinct replacement at the requested start. Use the verified result to tell the user what happened.

@@ -50,3 +50,22 @@ Both streams emitted text and thought-signature deltas without another tool call
 - Google documents streaming safety blocks as an `error` event with `error.code` such as `safety`, `jailbreak`, `prohibited_content`, or `blocklist`. For non-streamed requests the corresponding HTTP status is 400. [Gemini safety settings](https://aistudio.google.com/docs/safety-settings#when-content-is-blocked)
 - Google documents `store=True` by default, one day of retention on the free tier, and both model IDs as supported. One-day expiry was not measured. [Interactions overview](https://aistudio.google.com/docs/interactions-overview#data-storage-retention)
 - Standard input and output for both models are listed as free of charge on the free tier. The project-specific RPM, TPM, and RPD were not verified. Read them in AI Studio before choosing `DAILY_MODEL_CALL_CAP`. RPD resets at midnight Pacific. [Gemini pricing](https://aistudio.google.com/docs/pricing), [Gemini rate limits](https://aistudio.google.com/docs/rate-limits)
+
+## M5 latency probe on November 22, 2026
+
+Run `node scripts/run-python.mjs -m scripts.latency_probe`. Use `--describe` to inspect the matrix offline. The serial run used a synthetic text turn and all five app tool schemas on an unbilled key with Standard inference. It paced request starts at least 10 seconds apart, capped attempts at 55, and reserved a 65-second backoff for quota errors. The probe made 49 attempts, including history seeds, with 46 successes and zero HTTP 429s. Project-specific quota ceilings were unavailable from the key. [Gemini pricing](https://aistudio.google.com/docs/pricing) · [Gemini rate limits](https://aistudio.google.com/docs/rate-limits)
+
+Each row changes one variable from the stored 3.5 Flash-Lite baseline. All requests use `store=True`. For stored runs, a same-model parent contains a synthetic marker that every measured continuation must reproduce. The fresh request omits `previous_interaction_id` and returns a shorter acknowledgment. Successful-call timings include loop and SDK setup where incurred. p90 uses interpolation. Setup-inclusive first-text values for this run were reconstructed by adding the measured loop and SDK setup to time to first text. The probe now records wall-clock first-text timing directly.
+
+| Configuration | Successful samples | First text p50 / p90 (ms) | Total p50 / p90 (ms) | Input tokens p50 / p90 | Thought tokens p50 / p90 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 3.5 Flash-Lite minimal, new client, stored, five tools | 9/9 | 2,533 / 6,269 | 3,580 / 9,399 | 779 / 779 | 0 / 0 |
+| 3.5 Flash-Lite, persistent loop and client | 9/9 | 2,575 / 10,364 | 3,296 / 11,053 | 779 / 779 | 0 / 0 |
+| 3.5 Flash-Lite, fresh interaction | 9/9 | 2,479 / 3,702 | 3,312 / 4,405 | 751 / 751 | 0 / 0 |
+| 3.5 Flash-Lite, no tools | 9/9 | 2,505 / 3,152 | 3,238 / 3,957 | 78 / 78 | 0 / 0 |
+| 3.1 Flash-Lite minimal | 8/9 | 2,782 / 3,209 | 3,567 / 3,998 | 779 / 779 | 0 / 0 |
+| 3.8 Flash low | 0 measured | — | — | — | — |
+
+3.1 Flash-Lite returned one HTTP 503 before text. Both 3.8 Flash history seeds timed out at the 20-second deadline, so there was no stored interaction to measure. Across successful baseline calls, SDK construction took 320 ms p50 and 351 ms p90. The eight persistent calls after the first incurred zero repeat construction time, with 2,551 ms p50 first text and 3,323 ms p50 total. The SDK's connection pool expires idle connections after five seconds. With ten-second pacing, the probe verified loop and client reuse, and TCP reuse remains unverified.
+
+Removing schemas saved 701 median input tokens and 29 ms median first-text time. The tail was lower in that row. The small sequential sample and pronounced request-to-request variation limit attribution. The same-model stored and fresh requests differed by 55 ms in median first-text time. The fresh response used one output token, while stored responses used ten. The app retains stored history and the full scheduling tool list.

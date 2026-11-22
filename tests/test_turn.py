@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from backend.model import ModelCompletion, ModelError, ModelText, ToolCall
 from backend.protocol import ChatRequest
-from backend.server import create_app, load_service
+from backend.server import TurnLoop, create_app, load_service
 from backend.state import verify_state
 from backend.turn import TurnService
 from evals.fake_cal import FakeCal
@@ -186,8 +186,9 @@ class StreamTests(unittest.TestCase):
 
     def test_client_disconnect_cancels_model_and_joins_worker(self):
         class WaitingModel:
-            started, cancelled = Event(), Event()
-            task = thread = None
+            def __init__(self):
+                self.started, self.cancelled = Event(), Event()
+                self.task = self.thread = None
 
             async def stream(self, **_request):
                 self.task, self.thread = asyncio.current_task(), current_thread()
@@ -198,22 +199,30 @@ class StreamTests(unittest.TestCase):
                 finally:
                     self.cancelled.set()
 
-        model = WaitingModel()
-        client = create_app(service(model)).test_client()
-        response = client.post("/api/chat", json={"stateToken": None, "timeZone": ZONE, "input": text("Hi")},
-                               buffered=False)
-        try:
-            self.assertTrue(response.content_type.startswith("application/x-ndjson"))
-            self.assertEqual(response.headers["Cache-Control"], "no-store")
-            self.assertEqual(json.loads(next(response.response))["type"], "status")
-            self.assertTrue(model.started.wait(2))
-        finally:
-            response.close()
-        self.assertTrue(model.cancelled.is_set())
-        self.assertIsNotNone(model.thread)
-        self.assertFalse(model.thread.is_alive())
-        self.assertTrue(model.task.done())
-        self.assertTrue(model.task.cancelled())
+        for shared in (False, True):
+            with self.subTest(shared=shared):
+                turn_loop = TurnLoop() if shared else None
+                model = WaitingModel()
+                try:
+                    client = create_app(service(model), turn_loop=turn_loop).test_client()
+                    response = client.post(
+                        "/api/chat", json={"stateToken": None, "timeZone": ZONE, "input": text("Hi")}, buffered=False,
+                    )
+                    try:
+                        self.assertTrue(response.content_type.startswith("application/x-ndjson"))
+                        self.assertEqual(response.headers["Cache-Control"], "no-store")
+                        self.assertEqual(json.loads(next(response.response))["type"], "status")
+                        self.assertTrue(model.started.wait(2))
+                    finally:
+                        response.close()
+                    self.assertTrue(model.cancelled.is_set())
+                    self.assertTrue(model.task.done())
+                    self.assertTrue(model.task.cancelled())
+                    self.assertEqual(model.thread.is_alive(), shared)
+                finally:
+                    if turn_loop is not None:
+                        turn_loop.close()
+                self.assertFalse(model.thread.is_alive())
 
     def test_invalid_request_returns_400_without_model(self):
         model = ScriptedModel()

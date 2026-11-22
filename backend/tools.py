@@ -296,13 +296,15 @@ class CalendarTools:
         self.calendar = calendar
         self.state = state
         self.now = parse_instant(now)
-        self._zone = ZoneInfo(state.time_zone)
+        self.time_zone = state.time_zone
+        self._zone = ZoneInfo(self.time_zone)
         self._allowed_slugs = frozenset(allowed_slugs)
         self._default_slug = default_slug
         self._deny_mutations = deny_mutations
         self._state_lock = Lock()
         self._events_lock = Lock()
         self._event_types: list[EventType] | None = None
+        self._default_only_schema = False
 
     def event_types(self) -> list[EventType]:
         with self._events_lock:
@@ -325,8 +327,14 @@ class CalendarTools:
                 return event
         raise ToolRejected("The configured event type is unavailable.")
 
-    def schemas(self) -> list[JsonObject]:
-        events = self.event_types()
+    def schemas(self, *, allow_lazy_catalog: bool = False) -> list[JsonObject]:
+        # A timed-out availability read may still be loading the catalog.
+        catalog = self._event_types
+        if allow_lazy_catalog and catalog is None:
+            self._default_only_schema = True
+            events = []
+        else:
+            events = self.event_types()
         slots = {
             "from_date": _string("First local day, in YYYY-MM-DD form."),
             "to_date": _string("Last local day, at most seven days after from_date, in YYYY-MM-DD form."),
@@ -391,15 +399,19 @@ class CalendarTools:
             event = next((event for event in events if event["slug"] == args.event_type), None)
             if event is None:
                 raise ToolRejected("Choose an available event type.")
-        elif len(events) > 1:
+        elif len(events) > 1 and not self._default_only_schema:
             raise ToolRejected("Choose an available event type.")
+        elif self._default_only_schema and booking is not None:
+            event = next((event for event in events if event["id"] == booking.event_type_id), None)
+            if event is None:
+                raise ToolRejected("Choose the event type attached to that booking.")
         else:
             event = self.default_event()
         if booking is not None and booking.event_type_id != event["id"]:
             raise ToolRejected("Choose the event type attached to that booking.")
         return event
 
-    def _read_slots(
+    def read_slot_entries(
         self,
         event_type_id: int,
         first: date,
@@ -411,11 +423,11 @@ class CalendarTools:
         fresh: bool = False,
     ) -> list[SlotEntry]:
         try:
-            begin, end = local_bounds(first, last, self.state.time_zone)
+            begin, end = local_bounds(first, last, self.time_zone)
         except (ValueError, OverflowError):
             raise ToolRejected("Choose a valid calendar date range.") from None
         data = self.calendar.slots(
-            event_type_id, begin, end, self.state.time_zone,
+            event_type_id, begin, end, self.time_zone,
             booking_uid_to_reschedule=booking_uid, fresh=fresh,
         )
         hours = PART_HOURS.get(part)
@@ -437,7 +449,7 @@ class CalendarTools:
                 )
         return [matches[start] for start in sorted(matches)]
 
-    def _slot_refs(self, entries: Iterable[SlotEntry]) -> dict[str, SlotView]:
+    def register_slots(self, entries: Iterable[SlotEntry]) -> dict[str, SlotView]:
         with self._state_lock:
             return {
                 add_slot(self.state, entry): slot_view(entry, self.state.time_zone)
@@ -454,7 +466,7 @@ class CalendarTools:
         event = self._resolve_event(args, booking)
         uid = booking.uid if booking is not None else None
         today = self.now.astimezone(self._zone).date()
-        entries = self._read_slots(event["id"], max(first, today), last, args.part_of_day, booking_ref, uid) if last >= today else []
+        entries = self.read_slot_entries(event["id"], max(first, today), last, args.part_of_day, booking_ref, uid) if last >= today else []
         next_open: str | None = None
         if not entries:
             try:
@@ -462,14 +474,14 @@ class CalendarTools:
                 end = resume + timedelta(days=6)
             except OverflowError:
                 return ToolOutcome({"slots": [], "timeZone": self.state.time_zone})
-            entries = self._read_slots(event["id"], resume, end, args.part_of_day, booking_ref, uid)
+            entries = self.read_slot_entries(event["id"], resume, end, args.part_of_day, booking_ref, uid)
             if entries:
                 next_open = parse_instant(entries[0].start_utc).astimezone(self._zone).date().isoformat()
                 entries = [
                     entry for entry in entries
                     if parse_instant(entry.start_utc).astimezone(self._zone).date().isoformat() == next_open
                 ]
-        refs = self._slot_refs(entries[:_MAX_SLOT_CHOICES])
+        refs = self.register_slots(entries[:_MAX_SLOT_CHOICES])
         result: JsonObject = {
             "slots": [{"ref": ref, **view} for ref, view in refs.items()],
             "timeZone": self.state.time_zone,
@@ -488,17 +500,9 @@ class CalendarTools:
             raise ToolRejected("Ask for the attendee's email before looking up bookings.")
         if requested and (not _valid_email(requested) or requested.casefold() != email.casefold()):
             raise ToolRejected("I can only look up bookings matching your attendee email.")
-        page = self.calendar.list_bookings(attendee_email=email, status=args.which)
-        entries = [booking_entry(booking) for booking in page["data"]]
-        owned = {
-            entry.uid: entry for entry in entries if _includes_attendee(entry, email)
-        }
+        entries, has_more = self.read_booking_entries(email, args.which)
+        refs = self.register_bookings(entries)
         with self._state_lock:
-            refs = {
-                ref: booking_view(ref, entry, self.state.time_zone)
-                for entry in list(owned.values())[:_MAX_BOOKING_CHOICES]
-                for ref in [add_booking(self.state, entry)]
-            }
             if not refs:
                 self.state.rescheduling_booking_ref = None
         result = {
@@ -512,10 +516,36 @@ class CalendarTools:
                 for ref, view in refs.items()
             ],
             "which": args.which,
-            "hasMore": page["pagination"]["hasMore"] or len(owned) > _MAX_BOOKING_CHOICES,
+            "hasMore": has_more,
         }
         event: RefsEvent = {"type": "refs", "bookings": refs}
         return ToolOutcome(result, [event])
+
+    def read_booking_entries(self, email: str, status: BookingFilter) -> tuple[list[BookingEntry], bool]:
+        page = self.calendar.list_bookings(attendee_email=email, status=status)
+        entries = (booking_entry(booking) for booking in page["data"])
+        owned = {entry.uid: entry for entry in entries if _includes_attendee(entry, email)}
+        return (
+            list(owned.values())[:_MAX_BOOKING_CHOICES],
+            page["pagination"]["hasMore"] or len(owned) > _MAX_BOOKING_CHOICES,
+        )
+
+    def register_bookings(
+        self, entries: Iterable[BookingEntry], *, reuse_known: bool = False, preferred_ref: str | None = None,
+    ) -> dict[str, BookingView]:
+        views: dict[str, BookingView] = {}
+        with self._state_lock:
+            known = {entry.uid: ref for ref, entry in self.state.bookings.items()} if reuse_known else {}
+            if preferred_ref is not None and preferred_ref in self.state.bookings:
+                known[self.state.bookings[preferred_ref].uid] = preferred_ref
+            for entry in entries:
+                ref = known.get(entry.uid)
+                if ref is not None and ref in self.state.bookings:
+                    self.state.bookings[ref] = entry
+                else:
+                    ref = add_booking(self.state, entry)
+                views[ref] = booking_view(ref, entry, self.state.time_zone)
+        return views
 
     def _check_slot(
         self, ref: str, booking_ref: str | None = None, booking: BookingEntry | None = None
@@ -533,7 +563,7 @@ class CalendarTools:
 
         instant = parse_instant(slot.start_utc)
         day = instant.astimezone(self._zone).date()
-        options = self._read_slots(
+        options = self.read_slot_entries(
             slot.event_type_id, day, day, "any", booking_ref,
             booking.uid if booking is not None else None, fresh=True,
         )
@@ -548,7 +578,7 @@ class CalendarTools:
         nearest = sorted(
             options, key=lambda item: abs((parse_instant(item.start_utc) - instant).total_seconds())
         )[:3]
-        refs = self._slot_refs(nearest)
+        refs = self.register_slots(nearest)
         event: RefsEvent = {"type": "refs", "slots": refs}
         raise ToolRejected("That time is no longer available.", nearest=list(refs), events=[event] if refs else [])
 

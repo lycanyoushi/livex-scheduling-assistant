@@ -26,7 +26,7 @@ def report_response(observation: CalObservation) -> None:
     path = observation.path
     if path.startswith("/v2/bookings/"):
         path = "/v2/bookings/{uid}" + ("/cancel" if path.endswith("/cancel") else "")
-    status = observation.status if observation.status is not None else "no response"
+    status = "cache hit" if observation.cache_hit else observation.status or "no response"
     print(f"{observation.method} {path}  {status}", flush=True)
 
 

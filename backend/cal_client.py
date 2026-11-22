@@ -103,13 +103,14 @@ class CalError(Exception):
 
 @dataclass(frozen=True)
 class CalObservation:
-    """A network attempt for the caller's probe or metrics."""
+    """A network attempt or cache hit for the caller's metrics."""
 
     method: str
     path: str
     status: int | None
     body: object = field(repr=False)
     duration_ms: float
+    cache_hit: bool = False
 
 
 @dataclass(frozen=True)
@@ -320,9 +321,11 @@ class CalClient:
         self._lock = Lock()
         self._slots_generation = 0
 
-    def _observe(self, method: str, path: str, began: float, status: int | None, body: object) -> None:
+    def _observe(
+        self, method: str, path: str, began: float, status: int | None, body: object, *, cache_hit: bool = False,
+    ) -> None:
         if self._observer is not None:
-            self._observer(CalObservation(method, path, status, body, (self._clock() - began) * 1000))
+            self._observer(CalObservation(method, path, status, body, (self._clock() - began) * 1000, cache_hit))
 
     def _request(
         self,
@@ -374,13 +377,17 @@ class CalClient:
         raise AssertionError("No Cal.com request was attempted.")
 
     def _cached(
-        self, key: CacheKey, ttl: float, fetch: Callable[[], T], *, fresh: bool = False
+        self, key: CacheKey, ttl: float, fetch: Callable[[], T], *, path: str, fresh: bool = False,
     ) -> T:
+        began = self._clock()
         with self._lock:
             generation = self._slots_generation
             entry = self._cache.get(key)
-            if not fresh and entry is not None and entry[0] > self._clock():
-                return cast(T, deepcopy(entry[1]))
+            hit = not fresh and entry is not None and entry[0] > began
+        if hit and entry is not None:
+            result = cast(T, deepcopy(entry[1]))
+            self._observe("GET", path, began, 200, None, cache_hit=True)
+            return result
         value = fetch()
         with self._lock:
             if key[0] != "slots" or generation == self._slots_generation:
@@ -400,7 +407,7 @@ class CalClient:
 
     def me(self) -> Profile:
         return self._cached(
-            ("me",), PROFILE_TTL, lambda: self._request("GET", "/v2/me").parse(_parse_profile)
+            ("me",), PROFILE_TTL, lambda: self._request("GET", "/v2/me").parse(_parse_profile), path="/v2/me",
         )
 
     def event_types(self, username: str) -> list[EventType]:
@@ -410,6 +417,7 @@ class CalClient:
             lambda: self._request(
                 "GET", "/v2/event-types", EVENT_TYPES_VERSION, query={"username": username}
             ).parse(_parse_event_types),
+            path="/v2/event-types",
         )
 
     def slots(
@@ -436,6 +444,7 @@ class CalClient:
             key,
             SLOTS_TTL,
             lambda: self._request("GET", "/v2/slots", SLOTS_VERSION, query=query).parse(_parse_slots),
+            path="/v2/slots",
             fresh=fresh,
         )
 

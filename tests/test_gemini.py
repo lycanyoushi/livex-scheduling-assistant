@@ -93,14 +93,16 @@ class GeminiClientTests(IsolatedAsyncioTestCase):
             step_delta(1, "text", text="Available"),
             step_delta(1, "text", text=" Thursday."),
             step_stop(1),
-            completed(total_input_tokens=20, total_output_tokens=5, total_cached_tokens=3),
+            completed(total_input_tokens=20, total_output_tokens=5, total_cached_tokens=3, total_thought_tokens=2),
         ))
         self.sdk.interactions.create.return_value = stream
         events = self.stream()
         self.assertEqual(await anext(events), ModelText("Available"))
         self.assertFalse(stream.closed)
         self.assertEqual(await anext(events), ModelText(" Thursday."))
-        self.assertEqual(await anext(events), ModelCompletion("new-interaction", "completed", (), 20, 5, 3))
+        self.assertEqual(await anext(events), ModelCompletion(
+            "new-interaction", "completed", (), input_tokens=20, output_tokens=5, cached_tokens=3, thought_tokens=2,
+        ))
         self.assertTrue(stream.closed)
         self.assertTrue(self.sdk.closed)
         with self.assertRaises(StopAsyncIteration):
@@ -121,6 +123,42 @@ class GeminiClientTests(IsolatedAsyncioTestCase):
         self.assertEqual(options.timeout, 20_000)
         self.assertEqual(options.retry_options.attempts, 1)
         self.assertFalse(self.sdk_client.call_args.kwargs["vertexai"])
+
+    async def test_persistent_client_reuses_one_sdk_transport_until_closed(self):
+        class CountingClient(StubAsyncClient):
+            enters = 0
+            exits = 0
+
+            async def __aenter__(self):
+                self.enters += 1
+                return await super().__aenter__()
+
+            async def __aexit__(self, *error):
+                self.exits += 1
+                await super().__aexit__(*error)
+
+        sdk = CountingClient()
+        self.sdk_client.return_value = SimpleNamespace(aio=sdk)
+        self.client = GeminiClient("test-key", persistent=True)
+        streams = [StubStream((completed(),)), StubStream((completed(),))]
+        sdk.interactions.create.side_effect = streams
+
+        try:
+            for stream in streams:
+                self.assertEqual([item async for item in self.stream()], [
+                    ModelCompletion("new-interaction", "completed", ()),
+                ])
+                self.assertTrue(stream.closed)
+                self.assertFalse(sdk.closed)
+            self.sdk_client.assert_called_once()
+            self.assertEqual(sdk.enters, 1)
+            self.assertEqual(sdk.exits, 0)
+            self.assertEqual(sdk.interactions.create.await_count, 2)
+        finally:
+            await self.client.aclose()
+
+        self.assertTrue(sdk.closed)
+        self.assertEqual(sdk.exits, 1)
 
     async def test_assembles_interleaved_tool_arguments_in_step_order(self):
         self.client = GeminiClient("test-key", "gemini-3.1-flash-lite", "low")
