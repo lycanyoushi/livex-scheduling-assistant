@@ -13,6 +13,7 @@ from backend.model import ModelCompletion, ModelError, ModelText, ToolCall
 
 
 _TIMEOUT_SECONDS = 20.0
+_MAX_OUTPUT_TOKENS = 300
 _REFUSAL_CODES = {"safety", "jailbreak", "prohibited_content", "blocklist"}
 _MISSING_INTERACTION_CODES = {
     "interaction_expired",
@@ -115,7 +116,7 @@ class GeminiClient:
                     input=input_steps,
                     system_instruction=system_instruction,
                     tools=tools,
-                    generation_config={"thinking_level": self._thinking_level},
+                    generation_config={"thinking_level": self._thinking_level, "max_output_tokens": _MAX_OUTPUT_TOKENS},
                     store=True,
                     stream=True,
                     automatic_continuation=False,

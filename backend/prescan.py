@@ -45,6 +45,32 @@ INTENTS = {
     "cancel": re.compile(r"\b(?:cancel|call off|drop|cancelar)\b", re.I),
     "reschedule": re.compile(r"\b(?:reschedule|move|push|change the time|reprogramar)\b", re.I),
 }
+BOOKING_REQUEST = re.compile(r"\b(?:book|schedule|reserve|reservar)\b", re.I)
+AVAILABILITY_REQUEST = re.compile(
+    r"\b(?:availability|openings?|slots?|available|free times?|horarios?|disponibles?)\b"
+    r"|\b(?:show|see|find|check|offer)\b[^.!?\n]{0,45}\b(?:times?|options?)\b"
+    r"|\b(?:morning|afternoon|evening)\s+(?:options?|times?)\b",
+    re.I,
+)
+TIME_REQUEST = re.compile(
+    r"^\s*\d+\s*-?\s*(?:min(?:ute)?s?|hours?)\b"
+    r"|\b(?:can|could|may)\s+(?:i|we)\s+(?:grab|get|have|take)\b[^.!?\n]{0,35}\b(?:mins?|minutes?|hours?)\b",
+    re.I,
+)
+DATED_FOLLOWUP = re.compile(r"^\s*¿?\s*(?:what about|how about|qué tal)\b", re.I)
+EXPLANATION = re.compile(
+    r"\b(?:why|explain|how (?:does|do|did|would|will)|what can you help (?:me|us)|por qué|cómo funciona)\b",
+    re.I,
+)
+EXISTING_BOOKING = re.compile(
+    r"\b(?:my|our)\s+(?:(?:existing|current|upcoming|scheduled)\s+)?(?:bookings?|meetings?|appointments?|calendar)\b",
+    re.I,
+)
+DATE_EXCLUSION = re.compile(
+    r"\b(?:no|not|except(?:\s+for)?|excluding|other than|anything but|besides|menos|excepto|salvo)"
+    r"\s+(?:(?:on|for|el)\s+)?",
+    re.I,
+)
 
 
 @dataclass(frozen=True)
@@ -59,6 +85,7 @@ class PrescanResult:
     dates: tuple[DateHint, ...]
     part_of_day: PartOfDay
     intents: tuple[str, ...]
+    availability_request: bool = False
 
 
 def _requested_time(match: re.Match[str] | None) -> time | None:
@@ -131,6 +158,25 @@ def _dates(text: str, reference: datetime) -> tuple[DateHint, ...]:
     return tuple(dict.fromkeys(results))
 
 
+def _availability_request(
+    text: str, dates: tuple[DateHint, ...], part: PartOfDay, intents: tuple[str, ...],
+) -> bool:
+    if any(intent in intents for intent in ("list", "cancel", "reschedule")):
+        return False
+    if EXPLANATION.search(text) or EXISTING_BOOKING.search(text):
+        return False
+    if any(DATES.match(text, match.end()) for match in DATE_EXCLUSION.finditer(text)):
+        return False
+    if BOOKING_REQUEST.search(text) or AVAILABILITY_REQUEST.search(text) or TIME_REQUEST.search(text):
+        return True
+    if dates and DATED_FOLLOWUP.match(text):
+        return True
+    if dates and part != "any":
+        remaining = PARTS[part].sub("", DATES.sub("", text))
+        return not remaining.strip(" \t\r\n¿?¡!,.")
+    return False
+
+
 def prescan(text: str, *, now: datetime, time_zone: str) -> PrescanResult:
     if now.utcoffset() is None:
         raise ValueError("Prescan requires a timezone-aware clock.")
@@ -138,11 +184,14 @@ def prescan(text: str, *, now: datetime, time_zone: str) -> PrescanResult:
     match = EMAIL.search(text)
     text_without_email = EMAIL.sub(" ", text.casefold())
     part: PartOfDay = next((name for name, pattern in PARTS.items() if pattern.search(text_without_email)), "any")
+    dates = _dates(text_without_email, reference)
+    intents = tuple(name for name, pattern in INTENTS.items() if pattern.search(text_without_email))
     return PrescanResult(
         match.group().casefold() if match else None,
-        _dates(text_without_email, reference),
+        dates,
         part,
-        tuple(name for name, pattern in INTENTS.items() if pattern.search(text_without_email)),
+        intents,
+        _availability_request(text_without_email, dates, part, intents),
     )
 
 

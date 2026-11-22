@@ -69,3 +69,15 @@ Each row changes one variable from the stored 3.5 Flash-Lite baseline. All reque
 3.1 Flash-Lite returned one HTTP 503 before text. Both 3.8 Flash history seeds timed out at the 20-second deadline, so there was no stored interaction to measure. Across successful baseline calls, SDK construction took 320 ms p50 and 351 ms p90. The eight persistent calls after the first incurred zero repeat construction time, with 2,551 ms p50 first text and 3,323 ms p50 total. The SDK's connection pool expires idle connections after five seconds. With ten-second pacing, the probe verified loop and client reuse, and TCP reuse remains unverified.
 
 Removing schemas saved 701 median input tokens and 29 ms median first-text time. The tail was lower in that row. The small sequential sample and pronounced request-to-request variation limit attribution. The same-model stored and fresh requests differed by 55 ms in median first-text time. The fresh response used one output token, while stored responses used ten. The app retains stored history and the full scheduling tool list.
+
+## M5b stored-history size probe
+
+Run `node scripts/run-python.mjs -m scripts.latency_probe --history-sizes`. The probe created three synthetic parents, then rotated the order of six measured continuations per parent. It kept the prompt, expected marker, five tool schemas, model, thinking level, shared client, and ten-second request pacing fixed. All 21 attempts, including seeds, succeeded on the free key. Every measured continuation returned the identical marker with nine output tokens and zero thought tokens.
+
+| Input tokens on continuation | Samples | First text p50 / p90 (ms) | Total p50 / p90 (ms) | Cached input tokens |
+| ---: | ---: | ---: | ---: | --- |
+| 979 | 6/6 | 3,168 / 4,537 | 3,876 / 5,428 | 0 in all six |
+| 4,779 | 6/6 | 3,890 / 5,676 | 4,519 / 6,303 | 2,019 in five of six |
+| 9,529 | 6/6 | 5,658 / 6,013 | 6,499 / 6,810 | 6,100 in three of six |
+
+The longest parent was slower to first text than the shortest in all six paired rounds. Their medians differed by 2.49 s, and the median paired difference was 1.46 s. The middle size was slower than the shortest in three rounds. First text at the shortest size ranged from 2.20 to 5.00 s with constant cache usage. Larger history contributes to latency at these sizes. Cache behavior and request timing also varied, and the probe did not directly measure a 6,000-token threshold.

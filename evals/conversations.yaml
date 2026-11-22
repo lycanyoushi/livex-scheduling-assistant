@@ -13,7 +13,8 @@
 # when the app rejects it. An emitted proposal or write still fails the case.
 # Slot and booking selectors match resolved references, not literal ref labels.
 # Offers are visible assistant refs or slot chips. A refs inventory alone is
-# not an offer. source: offers_or_proposal also includes the proposed slot.
+# not an offer. source: offers includes visible text refs and app slot chips.
+# source: offers_or_proposal also includes the proposed slot.
 # local_dates, local_starts and time limits restrict every matching offer;
 # includes_local_starts requires the listed times among the matches.
 # min/max apply to distinct refs. booking_ids_in_order is an exact ordered match.
@@ -98,6 +99,7 @@ cases:
           forbidden_tools: ["*"]
           refs_within:
             kind: slot
+            source: offers
             local_dates: ["2026-11-26"]
             local_time_start_inclusive: "12:00"
             local_time_end_exclusive: "17:00"

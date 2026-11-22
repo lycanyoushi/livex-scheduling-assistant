@@ -71,7 +71,14 @@ class PrefetchTests(unittest.IsolatedAsyncioTestCase):
         local_times = [datetime.fromisoformat(view["startLocalIso"]) for view in refs["slots"].values()]
         self.assertTrue(all(stamp.date().isoformat() == "2026-11-26" and 12 <= stamp.hour < 17 for stamp in local_times))
         self.assertIn("12:00", {stamp.strftime("%H:%M") for stamp in local_times})
+        chips = await anext(stream)
+        self.assertEqual(chips["type"], "slot_chips")
+        self.assertEqual(self.model.calls, 0)
+        self.assertEqual(len(chips["refs"]), 4)
+        self.assertTrue(set(chips["refs"]) <= refs["slots"].keys())
+        self.assertIn("Thu 26 Nov 2026", chips["note"])
         events = [event async for event in stream]
+        self.assertIn("Openings already on screen", self.model.contexts[0])
         self.assertEqual(len(PREFETCH_REF.findall(self.model.contexts[0])), len(local_times))
         self.assertEqual(self.model.calls, 1)
         self.assertEqual(events[-1]["metrics"]["toolCalls"], [])
@@ -79,6 +86,24 @@ class PrefetchTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(events[-1]["metrics"]["prefetch"]["timedOut"])
         self.assertEqual(events[-1]["metrics"]["unknownRefs"], 0)
         self.assertEqual(set(verify_state(events[-1]["stateToken"], KEY, NOW).slots), set(refs["slots"]))
+
+    async def test_repeated_prefetch_reuses_refs_without_resending_details(self):
+        service = self.service(FakeCal())
+        first = await self.collect(service, "30 min Thursday afternoon?")
+        second = await self.collect(service, "30 min Thursday afternoon?", first[-1]["stateToken"])
+        first_chips = next(event for event in first if event["type"] == "slot_chips")
+        second_chips = next(event for event in second if event["type"] == "slot_chips")
+        self.assertEqual(first_chips["refs"], second_chips["refs"])
+        self.assertGreater(len(PREFETCH_REF.findall(self.model.contexts[0])), 0)
+        self.assertEqual(PREFETCH_REF.findall(self.model.contexts[1]), [])
+        self.assertIn("Openings already on screen", self.model.contexts[1])
+
+    async def test_checked_empty_window_is_distinct_from_missing_availability(self):
+        service = self.service(FakeCal(fixture_overrides={"open_local_starts": []}))
+        events = await self.collect(service, "Can I grab thirty minutes Thursday afternoon?")
+        self.assertFalse(any(event["type"] == "slot_chips" for event in events))
+        self.assertIn("Availability checked for this request. No matching openings.", self.model.contexts[0])
+        self.assertTrue(events[-1]["metrics"]["prefetch"]["slotsChecked"])
 
     async def test_warm_and_prefetch_share_the_exact_cache_key(self):
         calendar = FakeCal()

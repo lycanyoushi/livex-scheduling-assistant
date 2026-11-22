@@ -6,6 +6,7 @@ from collections import Counter
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from itertools import permutations
 import json
 import logging
 from secrets import token_hex
@@ -31,6 +32,11 @@ ATTEMPT_CAP = 55
 PACE_SECONDS = 10
 QUOTA_BACKOFF_SECONDS = 65
 REQUEST_TIMEOUT_SECONDS = 20
+HISTORY_TARGETS = (1_000, 5_000, 10_000)
+HISTORY_ORDERS = tuple(permutations(HISTORY_TARGETS))
+HISTORY_ATTEMPT_CAP = len(HISTORY_TARGETS) * (2 + len(HISTORY_ORDERS))
+ESTIMATED_SCHEMA_AND_PROMPT_TOKENS = 750
+ESTIMATED_EXCHANGE_TOKENS = 100
 SYSTEM = "This is a synthetic scheduling benchmark. Follow the output format. Never call a function."
 PROMPT = (
     "For the Thursday afternoon scheduling benchmark, return the fixture marker from the prior turn. "
@@ -65,7 +71,8 @@ def emit(report, data):
 
 
 class Budget:
-    def __init__(self):
+    def __init__(self, attempt_cap=ATTEMPT_CAP):
+        self.attempt_cap = attempt_cap
         self.attempts = 0
         self.next_start = 0.0
         self.outage_streak = Counter()
@@ -73,7 +80,7 @@ class Budget:
         self.blocked = {}
 
     def wait(self, model):
-        if model in self.blocked or self.attempts >= ATTEMPT_CAP:
+        if model in self.blocked or self.attempts >= self.attempt_cap:
             return False
         sleep(max(0, self.next_start - monotonic()))
         self.attempts += 1
@@ -202,7 +209,10 @@ async def measure(interactions, configuration, tools, prompt, expected, previous
     return data, interaction_id
 
 
-def attempted_row(report, budget, configuration, tools, prompt, expected, previous_id, sample, key, shared=None):
+def attempted_row(
+    report, budget, configuration, tools, prompt, expected, previous_id, sample, key, shared=None,
+    *, include_shared_setup=False,
+):
     if not budget.wait(configuration.model):
         return None
     started = perf_counter()
@@ -214,7 +224,7 @@ def attempted_row(report, budget, configuration, tools, prompt, expected, previo
                 ))
         else:
             runner, interactions, initial_setup = shared
-            setup = initial_setup if sample == 1 else {"loop_setup_ms": 0, "sdk_setup_ms": 0}
+            setup = initial_setup if include_shared_setup else {"loop_setup_ms": 0, "sdk_setup_ms": 0}
             data, interaction_id = runner.run(measure(
                 interactions, configuration, tools, prompt, expected, previous_id, started, sum(setup.values()),
             ))
@@ -280,7 +290,10 @@ def run(report, key, tools, sample_count):
 
         def collect(shared=None):
             for sample in range(1, sample_count + 1):
-                result = attempted_row(report, budget, configuration, schema, PROMPT, target, previous_id, sample, key, shared)
+                result = attempted_row(
+                    report, budget, configuration, schema, PROMPT, target, previous_id, sample, key, shared,
+                    include_shared_setup=sample == 1,
+                )
                 if result is None:
                     break
                 rows.append(result[0])
@@ -300,21 +313,109 @@ def run(report, key, tools, sample_count):
     return baseline_successful
 
 
+def history_prompt(marker, exchanges):
+    lines = ["This is a fictional transcript containing scheduling context only."]
+    weekdays = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday")
+    for index in range(exchanges):
+        weekday = weekdays[index % len(weekdays)]
+        hour = 9 + index % 6
+        lines.append(
+            f"Visitor: Can we find a thirty-minute appointment on {weekday} at {hour:02d}:30 in Singapore? "
+            "I can also meet a little later.\n"
+            f"Assistant: The calendar shows {hour:02d}:30 and {hour + 1:02d}:00 that day. "
+            "Both times are in Singapore.\n"
+            "Visitor: Keep my current appointment. Please leave the later time as an option.\n"
+            "Assistant: Your appointment is unchanged. The later option is available if you confirm a change."
+        )
+    lines.append(f"Remember the synthetic fixture marker {marker} for the next turn. Reply only READY now.")
+    return "\n\n".join(lines)
+
+
+def seed_history(report, budget, target, marker, key, tools, shared):
+    extra_tokens = target - ESTIMATED_SCHEMA_AND_PROMPT_TOKENS
+    exchanges = max(1, round(extra_tokens / ESTIMATED_EXCHANGE_TOKENS))
+    seed = Configuration(f"history_seed_{target // 1_000}k", persistent=True)
+    for attempt in (1, 2):
+        result = attempted_row(
+            report, budget, seed, tools, history_prompt(marker, exchanges), "READY", None, attempt, key, shared,
+            include_shared_setup=budget.attempts == 0,
+        )
+        if result is None:
+            break
+        row, interaction_id = result
+        if not row["ok"]:
+            continue
+        actual_tokens = row["usage"].get("total_input_tokens")
+        within_band = actual_tokens is not None and abs(actual_tokens - target) <= target * 0.18
+        emit(report, {"type": "history_size_check", "target_tokens": target, "exchanges": exchanges,
+                      "seed_input_tokens": actual_tokens, "within_band": within_band})
+        if within_band:
+            return interaction_id, actual_tokens
+        if actual_tokens is None or actual_tokens <= ESTIMATED_SCHEMA_AND_PROMPT_TOKENS:
+            break
+        scale = extra_tokens / (actual_tokens - ESTIMATED_SCHEMA_AND_PROMPT_TOKENS)
+        if not 0.5 <= scale <= 2.0:
+            break
+        adjusted = max(1, round(exchanges * scale))
+        if adjusted == exchanges:
+            break
+        exchanges = adjusted
+    return None, None
+
+
+def run_history_sizes(report, key, tools):
+    marker = "HISTORY-" + token_hex(4).upper()
+    budget = Budget(HISTORY_ATTEMPT_CAP)
+    configs = {target: Configuration(f"history_{target // 1_000}k", persistent=True) for target in HISTORY_TARGETS}
+    rows = {target: [] for target in HISTORY_TARGETS}
+    with sdk_client(key) as shared:
+        parents = {
+            target: seed_history(report, budget, target, marker, key, tools, shared) for target in HISTORY_TARGETS
+        }
+        for sample, order in enumerate(HISTORY_ORDERS, 1):
+            for target in order:
+                previous_id, _ = parents[target]
+                if previous_id is None:
+                    continue
+                result = attempted_row(report, budget, configs[target], tools, PROMPT, marker, previous_id,
+                                       sample, key, shared)
+                if result is not None:
+                    rows[target].append(result[0])
+    for target, config in configs.items():
+        _, seed_tokens = parents[target]
+        stop = budget.blocked.get(DEFAULT_MODEL) if seed_tokens else "history_seed_failed"
+        details = summary(config, rows[target], stop)
+        emit(report, {**details, "target_tokens": target, "seed_input_tokens": seed_tokens})
+    emit(report, {"type": "finished", "attempts": budget.attempts, "blocked_models": budget.blocked})
+    return all(len(group) == len(HISTORY_ORDERS) and any(row["ok"] for row in group) for group in rows.values())
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--samples", type=int, choices=range(1, 10), default=9, metavar="1–9")
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--samples", type=int, choices=range(1, 10), metavar="1–9")
+    modes.add_argument("--history-sizes", action="store_true", help="Compare three verified stored history sizes.")
     parser.add_argument("--describe", action="store_true", help="Show the matrix and offline tool count.")
     arguments = parser.parse_args()
     logging.disable(logging.CRITICAL)
     warnings.simplefilter("ignore")
     tools = CalendarTools(FakeCal(), new_state("Asia/Singapore", DEFAULT_CLOCK), DEFAULT_CLOCK).schemas()
-    matrix = [{"name": item.name, "model": item.model, "thinking": THINKING[item.model],
-               "tools": len(tools) if item.full_tools else 0, "stored": item.stored,
-               "persistent": item.persistent} for item in CONFIGURATIONS]
-    metadata = {"type": "run", "sdk": genai.__version__, "samples_per_configuration": arguments.samples,
+    if arguments.history_sizes:
+        matrix = [{"name": f"history_{target // 1_000}k", "model": DEFAULT_MODEL, "thinking": THINKING[DEFAULT_MODEL],
+                   "tools": len(tools), "stored": True, "persistent": True, "target_tokens": target}
+                  for target in HISTORY_TARGETS]
+    else:
+        matrix = [{"name": item.name, "model": item.model, "thinking": THINKING[item.model],
+                   "tools": len(tools) if item.full_tools else 0, "stored": item.stored,
+                   "persistent": item.persistent} for item in CONFIGURATIONS]
+    samples = len(HISTORY_ORDERS) if arguments.history_sizes else arguments.samples or 9
+    metadata = {"type": "run", "sdk": genai.__version__, "samples_per_configuration": samples,
                 "pace_seconds": PACE_SECONDS, "quota_backoff_seconds": QUOTA_BACKOFF_SECONDS,
-                "attempt_cap": ATTEMPT_CAP, "deadline_seconds": REQUEST_TIMEOUT_SECONDS, "matrix": matrix,
+                "attempt_cap": HISTORY_ATTEMPT_CAP if arguments.history_sizes else ATTEMPT_CAP,
+                "deadline_seconds": REQUEST_TIMEOUT_SECONDS, "matrix": matrix,
                 "started_utc": datetime.now(UTC).isoformat()}
+    if arguments.history_sizes:
+        metadata["history_orders"] = HISTORY_ORDERS
     if arguments.describe:
         print(json.dumps(metadata, sort_keys=True))
         return 0
@@ -326,7 +427,8 @@ def main():
         with NamedTemporaryFile(mode="w", encoding="utf-8", prefix="livex-latency-", suffix=".jsonl", delete=False) as report:
             print(json.dumps({"type": "report", "path": report.name}), flush=True)
             emit(report, metadata)
-            return 0 if run(report, key, tools, arguments.samples) else 1
+            succeeded = run_history_sizes(report, key, tools) if arguments.history_sizes else run(report, key, tools, samples)
+            return 0 if succeeded else 1
     except Exception as error:
         print(json.dumps({"type": "probe_error", "error": type(error).__name__}), flush=True)
         return 1

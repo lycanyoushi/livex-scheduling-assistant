@@ -113,7 +113,7 @@ class GeminiClientTests(IsolatedAsyncioTestCase):
             input=self.input_steps,
             system_instruction="Test scheduler",
             tools=self.tools,
-            generation_config={"thinking_level": "minimal"},
+            generation_config={"thinking_level": "minimal", "max_output_tokens": 300},
             store=True,
             stream=True,
             automatic_continuation=False,
@@ -181,7 +181,7 @@ class GeminiClientTests(IsolatedAsyncioTestCase):
         request = self.sdk.interactions.create.call_args.kwargs
         self.assertEqual(request["previous_interaction_id"], "parent")
         self.assertEqual(request["model"], "gemini-3.1-flash-lite")
-        self.assertEqual(request["generation_config"], {"thinking_level": "low"})
+        self.assertEqual(request["generation_config"], {"thinking_level": "low", "max_output_tokens": 300})
 
     async def test_incomplete_or_malformed_stream_exposes_no_calls(self):
         start = step_start(1, "function_call", id="call-1", name="find_slots", arguments={})

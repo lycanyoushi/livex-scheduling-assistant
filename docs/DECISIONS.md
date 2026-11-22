@@ -88,3 +88,15 @@ Run Flask turns on one process-owned event loop and reuse one SDK client. Setup 
 ## M6 timed-out calendar writes
 
 Reconcile each timed-out write with Cal.com before reporting its outcome. For create, look up the attendee's booking at the requested start. For cancel, re-read the original booking status. For reschedule, re-read the original booking and look for a distinct replacement at the requested start. Use the verified result to tell the user what happened.
+
+For an HTTP 503 or timeout before any text, make the single retry on the backup model. Use the existing stored-interaction compatibility rules for pending tool results. The M5 same-model retry remains in place until M6.
+
+## M5b latency changes
+
+Measure before and after with the committed ten-turn driver, live Gemini, and identical read-only fixture availability through Next.js. First useful content records the first visible chips or text. A closed window that Cal checked successfully is distinct from a timed-out or missing read.
+
+Show up to four matching new-booking openings from prefetch before the model responds. Use explicit dates in the chips, leave existing-booking changes in their current flow, and count app chips as offers in case 2. Cap Gemini generation at 300 output tokens.
+
+Retain the interaction ID while sending the 14-day calendar only when the model first receives it or the local date or time zone changes. Track slot and booking details already sent so unchanged details stay in the stored history. Reuse identical prefetched slot refs where they remain in signed state.
+
+The size probe measured a 2.49 s median first-text difference between the shortest and longest stored parents. Start a new stored interaction before a text turn when the last successful model call used more than 6,000 input tokens. Use a recap of the known name, email presence, the session attendee's active bookings in app state, and any open proposal. The next successful turn drops the old pending provider call and preserves the signed proposal. [Stored-history probe](gemini-notes.md#m5b-stored-history-size-probe)

@@ -167,6 +167,8 @@ class PrescanMetrics(TypedDict):
     dates: list[str]
     partOfDay: NotRequired[str]
     intents: list[str]
+    availabilityRequest: NotRequired[bool]
+    exactTimes: NotRequired[list[str]]
 
 
 class PrefetchMetrics(TypedDict):
@@ -174,6 +176,8 @@ class PrefetchMetrics(TypedDict):
     slots: int
     bookings: int
     timedOut: bool
+    slotsChecked: NotRequired[bool]
+    shownSlots: NotRequired[int]
 
 
 class ModelCallMetrics(TypedDict):
@@ -183,6 +187,7 @@ class ModelCallMetrics(TypedDict):
     outputTokens: int
     cachedTokens: int
     thoughtTokens: int
+    historyRotated: NotRequired[bool]
     status: str
 
 

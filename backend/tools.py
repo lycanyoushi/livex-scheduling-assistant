@@ -37,7 +37,7 @@ from backend.protocol import (
     SlotRef,
     SlotView,
 )
-from backend.state import BookingEntry, Proposal, SessionState, SlotEntry, add_booking, add_slot
+from backend.state import MAX_SLOTS, BookingEntry, Proposal, SessionState, SlotEntry, add_booking, add_slot
 from backend.time import local_bounds, parse_instant, slot_labels
 
 
@@ -449,12 +449,29 @@ class CalendarTools:
                 )
         return [matches[start] for start in sorted(matches)]
 
-    def register_slots(self, entries: Iterable[SlotEntry]) -> dict[str, SlotView]:
+    def register_slots(self, entries: Iterable[SlotEntry], *, reuse_known: bool = False) -> dict[str, SlotView]:
+        def key(slot: SlotEntry) -> tuple[datetime, datetime, int, str | None]:
+            return (parse_instant(slot.start_utc), parse_instant(slot.end_utc), slot.event_type_id, slot.for_booking_ref)
+
+        fresh = list(entries)
         with self._state_lock:
-            return {
-                add_slot(self.state, entry): slot_view(entry, self.state.time_zone)
-                for entry in entries
-            }
+            known = {key(entry): ref for ref, entry in self.state.slots.items()} if reuse_known else {}
+            if known and any(key(entry) not in known for entry in fresh):
+                # Reuse refs that can survive even if every incoming entry needs a new ref.
+                cutoff = max(0, len(self.state.slots) + len(fresh) - MAX_SLOTS)
+                pinned = self.state.proposal.slot_ref if self.state.proposal is not None else None
+                evictable = [ref for ref in self.state.slots if ref != pinned]
+                threatened = set(evictable[:cutoff])
+                known = {key(entry): ref for ref, entry in self.state.slots.items() if ref not in threatened}
+            views = {}
+            for entry in fresh:
+                ref = known.get(key(entry)) if known else None
+                if ref is None:
+                    ref = add_slot(self.state, entry)
+                else:
+                    self.state.slots[ref] = entry
+                views[ref] = slot_view(entry, self.state.time_zone)
+            return views
 
     def _find_slots(self, args: _FindSlots) -> ToolOutcome:
         first, last = date.fromisoformat(args.from_date), date.fromisoformat(args.to_date)

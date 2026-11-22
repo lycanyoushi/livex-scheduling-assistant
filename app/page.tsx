@@ -280,6 +280,17 @@ export default function Home() {
               const listed = turn.listedBookings?.filter((ref) => !referredBookings.has(ref)) ?? [];
               const slotAvailable = (ref: string) => live && Boolean(currentViews.slots[ref]);
               const bookingAvailable = (ref: string) => live && turn.controls === "all" && Boolean(currentBookings[ref]);
+              const slotGroups = turn.groups.map((group, index) => (
+                <SlotChips
+                  key={index}
+                  refs={group.refs}
+                  slots={turn.views.slots}
+                  note={group.note === turn.error?.message ? undefined : group.note}
+                  available={(ref) => turn.controls !== "none" && slotAvailable(ref)}
+                  allowMore={turn.controls !== "alternatives"}
+                  onAction={takeAction}
+                />
+              ));
 
               return (
                 <div key={turn.id} className="grid gap-3">
@@ -288,6 +299,7 @@ export default function Home() {
                       <span className="sr-only">You: </span>{turn.input.text}
                     </p>
                   )}
+                  {turn.input.kind === "text" && slotGroups}
                   {parts.length > 0 && (
                     <RefText
                       parts={parts}
@@ -341,17 +353,7 @@ export default function Home() {
                       )}
                     </div>
                   )}
-                  {turn.groups.map((group, index) => (
-                    <SlotChips
-                      key={index}
-                      refs={group.refs}
-                      slots={turn.views.slots}
-                      note={group.note === turn.error?.message ? undefined : group.note}
-                      available={(ref) => turn.controls !== "none" && slotAvailable(ref)}
-                      allowMore={turn.controls !== "alternatives"}
-                      onAction={takeAction}
-                    />
-                  ))}
+                  {turn.input.kind === "ui" && slotGroups}
                   {turn.proposal && (
                     <ConfirmCard
                       key={turn.proposal.id}

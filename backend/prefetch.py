@@ -58,6 +58,7 @@ class PrefetchPlan:
     spread_slots: bool
     attendee_email: str | None
     reschedule: _Reschedule | None
+    show_openings: bool = False
 
     def status(self) -> str:
         if self.days and self.attendee_email is not None:
@@ -77,7 +78,7 @@ def plan_prefetch(state: SessionState, now: datetime, hints: PrescanResult, *, t
     today = instant.astimezone(ZoneInfo(state.time_zone)).date()
     intents = set(hints.intents)
     days = tuple(sorted({hint.day for hint in hints.dates if hint.day >= today})[:_MAX_HINT_DAYS])
-    spread = not hints.dates and "book" in intents
+    spread = not hints.dates and ("book" in intents or hints.availability_request)
     if spread:
         days = tuple(today + timedelta(days=offset) for offset in range(_MAX_HINT_DAYS))
     email = state.user.email
@@ -102,7 +103,13 @@ def plan_prefetch(state: SessionState, now: datetime, hints: PrescanResult, *, t
             target = owned.get(state.rescheduling_booking_ref or "")
             if target is None and len({booking.uid for booking in owned.values()}) == 1:
                 target = next(reversed(owned.values()))
-    return PrefetchPlan(days, hints.dates, hints.part_of_day, spread, lookup_email, target)
+    has_pending_change = state.rescheduling_booking_ref is not None or (
+        state.proposal is not None and state.proposal.kind in {"cancel", "reschedule"}
+    )
+    return PrefetchPlan(
+        days, hints.dates, hints.part_of_day, spread, lookup_email, target,
+        show_openings=bool(days and hints.availability_request and not has_pending_change),
+    )
 
 
 def _date_ranges(days: tuple[date, ...]) -> list[tuple[date, date]]:
@@ -181,6 +188,7 @@ class PrefetchResult:
     elapsed_ms: float = 0
     timed_out: bool = False
     cal_calls: list[CalCallMetrics] = field(default_factory=list)
+    slots_checked: bool = False
 
 
 _Entries = list[SlotEntry] | list[BookingEntry]
@@ -289,4 +297,5 @@ class Prefetcher:
             elapsed_ms=(perf_counter() - began) * 1000,
             timed_out=timed_out,
             cal_calls=calls,
+            slots_checked=ready.get("slots") is not None,
         )

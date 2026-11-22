@@ -15,6 +15,7 @@ from pydantic.alias_generators import to_camel
 from backend.protocol import (
     MAX_STATE_TOKEN_LENGTH,
     BookingRef,
+    CalendarDate,
     ContactEmail,
     ContactName,
     ContactNotes,
@@ -36,6 +37,7 @@ _EventTypeId = Annotated[int, Field(gt=0)]
 _EpochSeconds = Annotated[float, Field(ge=0, allow_inf_nan=False)]
 _Summary = Annotated[str, StringConstraints(max_length=2_000)]
 _OpaqueId = Annotated[str, StringConstraints(min_length=1, max_length=512)]
+_Fingerprint = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{16}$")]
 
 
 def _validate_utc_timestamp(value: str) -> str:
@@ -71,6 +73,7 @@ class _StateModel(BaseModel):
 class UserState(_StateModel):
     name: ContactName | None = None
     email: ContactEmail | None = None
+    conversation_name: ContactName | None = None
 
 
 class _TimeRange(_StateModel):
@@ -158,6 +161,13 @@ class PendingCall(_StateModel):
     outcome: PendingOutcome | None = None
 
 
+class ModelContext(_StateModel):
+    local_date: CalendarDate
+    time_zone: TimeZoneName
+    slots: Annotated[dict[SlotRef, _Fingerprint], Field(max_length=MAX_SLOTS)] = Field(default_factory=dict)
+    bookings: Annotated[dict[BookingRef, _Fingerprint], Field(max_length=MAX_BOOKINGS)] = Field(default_factory=dict)
+
+
 class SessionState(_StateModel):
     v: Annotated[int, Field(ge=1, le=1)]
     session_id: _OpaqueId
@@ -170,6 +180,8 @@ class SessionState(_StateModel):
     proposal: Proposal | None = None
     rescheduling_booking_ref: BookingRef | None = None
     interaction_id: _OpaqueId | None = None
+    model_context: ModelContext | None = None
+    last_model_input_tokens: Annotated[int, Field(ge=0)] = 0
     pending_call: PendingCall | None = None
     notes: Annotated[list[_Summary], Field(max_length=MAX_NOTES)] = Field(default_factory=list)
     completed: Annotated[dict[ProposalId, _Summary], Field(max_length=MAX_COMPLETED)] = Field(default_factory=dict)
@@ -212,7 +224,8 @@ def add_slot(state: SessionState, entry: SlotEntry) -> str:
     ref = f"S{state.counters.s}"
     state.slots[ref] = entry
     if len(state.slots) > MAX_SLOTS:
-        del state.slots[next(iter(state.slots))]
+        protected = state.proposal.slot_ref if state.proposal is not None else None
+        del state.slots[next(old for old in state.slots if old != protected)]
     return ref
 
 
@@ -221,7 +234,8 @@ def add_booking(state: SessionState, entry: BookingEntry) -> str:
     ref = f"B{state.counters.b}"
     state.bookings[ref] = entry
     if len(state.bookings) > MAX_BOOKINGS:
-        del state.bookings[next(iter(state.bookings))]
+        protected = {state.rescheduling_booking_ref, state.proposal.booking_ref if state.proposal is not None else None}
+        del state.bookings[next(old for old in state.bookings if old not in protected)]
     return ref
 
 
