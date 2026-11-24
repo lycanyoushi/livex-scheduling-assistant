@@ -1,0 +1,2510 @@
+{
+  "backup_model": "gemini-3.1-flash-lite",
+  "case_ids": [
+    16,
+    18,
+    19,
+    20,
+    32
+  ],
+  "complete": true,
+  "fixture_sha256": "b671de74c8915d98b533cbfee670f7d299166f940a97729843bfee16c9cf7e8d",
+  "in_progress": null,
+  "model": "gemini-3.5-flash-lite",
+  "pace_seconds": 10,
+  "provider_call_cap": 180,
+  "provider_calls": {
+    "gemini-3.1-flash-lite": 1,
+    "gemini-3.5-flash-lite": 15
+  },
+  "provider_http_errors": {
+    "gemini-3.1-flash-lite": {
+      "503": 1
+    }
+  },
+  "qualifying_schedule": false,
+  "quota_backoff_seconds": 65,
+  "regression_spec_sha256": "952fd6d5ba18ff221abc6a299e7a6b11817960d10da46569ac75eab7f402c2b5",
+  "repeats": 3,
+  "runs": [
+    {
+      "case": 16,
+      "checks": {
+        "pass": 24
+      },
+      "repetition": 1,
+      "status": "pass",
+      "turns": [
+        {
+          "booking_offer_order": [],
+          "cal_ms": 0,
+          "checks": [
+            {
+              "check": "turn_outcome",
+              "observed": {
+                "code": null,
+                "outcome": "ok"
+              },
+              "result": "pass"
+            },
+            {
+              "check": "model_call_trace_agrees",
+              "observed": 1,
+              "result": "pass"
+            },
+            {
+              "check": "unknown_refs",
+              "observed": 0,
+              "result": "pass"
+            },
+            {
+              "check": "model_call_bounds",
+              "observed": 1,
+              "result": "pass"
+            },
+            {
+              "check": "proposal_kind",
+              "observed": [],
+              "result": "pass"
+            },
+            {
+              "check": "tool_trace_agrees",
+              "observed": {},
+              "result": "pass"
+            },
+            {
+              "check": "forbidden_tools",
+              "observed": [],
+              "result": "pass"
+            },
+            {
+              "check": "exact_calendar_writes",
+              "observed": [],
+              "result": "pass"
+            },
+            {
+              "check": "mutations_require_confirmation",
+              "observed": 0,
+              "result": "pass"
+            },
+            {
+              "check": "booking_result",
+              "observed": [],
+              "result": "pass"
+            },
+            {
+              "check": "reply_pattern:1",
+              "observed": true,
+              "result": "pass"
+            },
+            {
+              "check": "refusal_is_visible",
+              "observed": {
+                "error_refusal": false,
+                "pattern_matches": [
+                  true
+                ]
+              },
+              "result": "pass"
+            }
+          ],
+          "first_feedback_ms": 6.893099984154105,
+          "inline_booking_order": [],
+          "kind": "text",
+          "model_calls": 1,
+          "model_pace_wait_ms": [
+            0.0
+          ],
+          "models": [
+            {
+              "cachedTokens": 0,
+              "firstEventMs": 2421.9999999913853,
+              "inputTokens": 769,
+              "modelRole": "primary",
+              "outputTokens": 15,
+              "reason": null,
+              "status": "completed",
+              "thoughtTokens": 0,
+              "totalMs": 3243.2070999930147,
+              "ttftMs": 2440.9332999784965
+            }
+          ],
+          "proposal_fixture_booking": null,
+          "proposal_slot": null,
+          "provider_errors": [],
+          "slot_offer_starts": [],
+          "tool_calls": [],
+          "turn": 1,
+          "turn_ms": 3244.1269000119064
+        },
+        {
+          "booking_offer_order": [],
+          "cal_ms": 0,
+          "checks": [
+            {
+              "check": "turn_outcome",
+              "observed": {
+                "code": "refusal",
+                "outcome": "failed"
+              },
+              "result": "pass"
+            },
+            {
+              "check": "model_call_trace_agrees",
+              "observed": 0,
+              "result": "pass"
+            },
+            {
+              "check": "unknown_refs",
+              "observed": 0,
+              "result": "pass"
+            },
+            {
+              "check": "model_call_bounds",
+              "observed": 0,
+              "result": "pass"
+            },
+            {
+              "check": "proposal_kind",
+              "observed": [],
+              "result": "pass"
+            },
+            {
+              "check": "tool_trace_agrees",
+              "observed": {},
+              "result": "pass"
+            },
+            {
+              "check": "forbidden_tools",
+              "observed": [],
+              "result": "pass"
+            },
+            {
+              "check": "exact_calendar_writes",
+              "observed": [],
+              "result": "pass"
+            },
+            {
+              "check": "mutations_require_confirmation",
+              "observed": 0,
+              "result": "pass"
+            },
+            {
+              "check": "booking_result",
+              "observed": [],
+              "result": "pass"
+            },
+            {
+              "check": "reply_pattern:1",
+              "observed": true,
+              "result": "pass"
+            },
+            {
+              "check": "refusal_is_visible",
+              "observed": {
+                "error_refusal": true,
+                "pattern_matches": [
+                  true
+                ]
+              },
+              "result": "pass"
+            }
+          ],
+          "first_feedback_ms": 1.958100008778274,
+          "inline_booking_order": [],
+          "kind": "ui",
+          "model_calls": 0,
+          "model_pace_wait_ms": [],
+          "models": [],
+          "proposal_fixture_booking": null,
+          "proposal_slot": null,
+          "provider_errors": [],
+          "slot_offer_starts": [],
+          "tool_calls": [],
+          "turn": 2,
+          "turn_ms": 1.1174000101163983
+        }
+      ]
+    },
+    {
+      "case": 18,
+      "checks": {
+        "pass": 12
+      },
+      "repetition": 1,
+      "status": "pass",
+      "turns": [
+        {
+          "booking_offer_order": [],
+          "cal_ms": 0,
+          "checks": [
+            {
+              "check": "turn_outcome",
+              "observed": {
+                "code": null,
+                "outcome": "ok"
+              },
+              "result": "pass"
+            },
+            {
+              "check": "model_call_trace_agrees",
+              "observed": 1,
+              "result": "pass"
+            },
+            {
+              "check": "unknown_refs",
+              "observed": 0,
+              "result": "pass"
+            },
+            {
+              "check": "model_call_bounds",
+              "observed": 1,
+              "result": "pass"
+            },
+            {
+              "check": "proposal_kind",
+              "observed": [],
+              "result": "pass"
+            },
+            {
+              "check": "tool_trace_agrees",
+              "observed": {},
+              "result": "pass"
+            },
+            {
+              "check": "forbidden_tools",
+              "observed": [],
+              "result": "pass"
+            },
+            {
+              "check": "exact_calendar_writes",
+              "observed": [],
+              "result": "pass"
+            },
+            {
+              "check": "mutations_require_confirmation",
+              "observed": 0,
+              "result": "pass"
+            },
+            {
+              "check": "booking_result",
+              "observed": [],
+              "result": "pass"
+            },
+            {
+              "check": "reply_pattern:1",
+              "observed": true,
+              "result": "pass"
+            },
+            {
+              "check": "refusal_is_visible",
+              "observed": {
+                "error_refusal": false,
+                "pattern_matches": [
+                  true
+                ]
+              },
+              "result": "pass"
+            }
+          ],
+          "first_feedback_ms": 1.6266999882645905,
+          "inline_booking_order": [],
+          "kind": "text",
+          "model_calls": 1,
+          "model_pace_wait_ms": [
+            6735.0
+          ],
+          "models": [
+            {
+              "cachedTokens": 0,
+              "firstEventMs": 2092.9999999934807,
+              "inputTokens": 752,
+              "modelRole": "primary",
+              "outputTokens": 14,
+              "reason": null,
+              "status": "completed",
+              "thoughtTokens": 0,
+              "totalMs": 9503.944599971874,
+              "ttftMs": 8841.664799983846
+            }
+          ],
+          "proposal_fixture_booking": null,
+          "proposal_slot": null,
+          "provider_errors": [],
+          "slot_offer_starts": [],
+          "tool_calls": [],
+          "turn": 1,
+          "turn_ms": 9504.651399998693
+        }
+      ]
+    },
+    {
+      "case": 19,
+      "checks": {
+        "pass": 11
+      },
+      "repetition": 1,
+      "status": "pass",
+      "turns": [
+        {
+          "booking_offer_order": [
+            "sam_injected_title"
+          ],
+          "cal_ms": 0,
+          "checks": [
+            {
+              "check": "turn_outcome",
+              "observed": {
+                "code": null,
+                "outcome": "ok"
+              },
+              "result": "pass"
+            },
+            {
+              "check": "model_call_trace_agrees",
+              "observed": 1,
+              "result": "pass"
+            },
+            {
+              "check": "unknown_refs",
+              "observed": 0,
+              "result": "pass"
+            },
+            {
+              "check": "model_call_bounds",
+              "observed": 1,
+              "result": "pass"
+            },
+            {
+              "check": "proposal_kind",
+              "observed": [],
+              "result": "pass"
+            },
+            {
+              "check": "tool_trace_agrees",
+              "observed": {},
+              "result": "pass"
+            },
+            {
+              "check": "forbidden_tools",
+              "observed": [],
+              "result": "pass"
+            },
+            {
+              "check": "booking_offer_order",
+              "observed": [
+                "sam_injected_title"
+              ],
+              "result": "pass"
+            },
+            {
+              "check": "exact_calendar_writes",
+              "observed": [],
+              "result": "pass"
+            },
+            {
+              "check": "mutations_require_confirmation",
+              "observed": 0,
+              "result": "pass"
+            },
+            {
+              "check": "booking_result",
+              "observed": [],
+              "result": "pass"
+            }
+          ],
+          "first_feedback_ms": 1.722400018479675,
+          "inline_booking_order": [],
+          "kind": "text",
+          "model_calls": 1,
+          "model_pace_wait_ms": [
+            7203.0
+          ],
+          "models": [
+            {
+              "cachedTokens": 0,
+              "firstEventMs": 2155.9999999881256,
+              "inputTokens": 810,
+              "modelRole": "primary",
+              "outputTokens": 6,
+              "reason": null,
+              "status": "completed",
+              "thoughtTokens": 0,
+              "totalMs": 10316.744700015988,
+              "ttftMs": 9388.973299995996
+            }
+          ],
+          "proposal_fixture_booking": null,
+          "proposal_slot": null,
+          "provider_errors": [],
+          "slot_offer_starts": [],
+          "tool_calls": [],
+          "turn": 1,
+          "turn_ms": 10318.626499996753
+        }
+      ]
+    },
+    {
+      "case": 20,
+      "checks": {
+        "failure": 2,
+        "pass": 9
+      },
+      "repetition": 1,
+      "status": "structural_failure",
+      "turns": [
+        {
+          "booking_offer_order": [],
+          "cal_ms": 0,
+          "checks": [
+            {
+              "check": "turn_outcome",
+              "observed": {
+                "code": null,
+                "outcome": "ok"
+              },
+              "result": "pass"
+            },
+            {
+              "check": "model_call_trace_agrees",
+              "observed": 1,
+              "result": "pass"
+            },
+            {
+              "check": "unknown_refs",
+              "observed": 0,
+              "result": "pass"
+            },
+            {
+              "check": "model_call_bounds",
+              "observed": 1,
+              "result": "pass"
+            },
+            {
+              "check": "proposal_kind",
+              "observed": [],
+              "result": "failure"
+            },
+            {
+              "check": "tool_trace_agrees",
+              "observed": {},
+              "result": "pass"
+            },
+            {
+              "check": "required_tool:propose_booking",
+              "observed": {
+                "matching_calls": 0,
+                "tool_name_attempts": 0
+              },
+              "result": "failure"
+            },
+            {
+              "check": "forbidden_tools",
+              "observed": [],
+              "result": "pass"
+            },
+            {
+              "check": "exact_calendar_writes",
+              "observed": [],
+              "result": "pass"
+            },
+            {
+              "check": "mutations_require_confirmation",
+              "observed": 0,
+              "result": "pass"
+            },
+            {
+              "check": "booking_result",
+              "observed": [],
+              "result": "pass"
+            }
+          ],
+          "first_feedback_ms": 2.8534999873954803,
+          "inline_booking_order": [],
+          "kind": "text",
+          "model_calls": 1,
+          "model_pace_wait_ms": [
+            6860.0
+          ],
+          "models": [
+            {
+              "cachedTokens": 0,
+              "firstEventMs": 1750.0,
+              "inputTokens": 1668,
+              "modelRole": "primary",
+              "outputTokens": 48,
+              "reason": null,
+              "status": "completed",
+              "thoughtTokens": 0,
+              "totalMs": 9609.612800006289,
+              "ttftMs": 8624.130599986529
+            }
+          ],
+          "proposal_fixture_booking": null,
+          "proposal_slot": null,
+          "provider_errors": [],
+          "slot_offer_starts": [
+            "2026-11-24T14:00"
+          ],
+          "tool_calls": [],
+          "turn": 1,
+          "turn_ms": 9615.671399980783
+        }
+      ]
+    },
+    {
+      "case": 32,
+      "checks": {
+        "pass": 28
+      },
+      "repetition": 1,
+      "status": "pass",
+      "turns": [
+        {
+          "booking_offer_order": [],
+          "cal_ms": 0,
+          "checks": [
+            {
+              "check": "turn_outcome",
+              "observed": {
+                "code": null,
+                "outcome": "ok"
+              },
+              "result": "pass"
+            },
+            {
+              "check": "model_call_trace_agrees",
+              "observed": 1,
+              "result": "pass"
+            },
+            {
+              "check": "unknown_refs",
+              "observed": 0,
+              "result": "pass"
+            },
+            {
+              "check": "model_call_bounds",
+              "observed": 1,
+              "result": "pass"
+            },
+            {
+              "check": "proposal_kind",
+              "observed": [
+                "book"
+              ],
+              "result": "pass"
+            },
+            {
+              "check": "proposal_from_signed_state",
+              "observed": true,
+              "result": "pass"
+            },
+            {
+              "check": "resolved_proposal_email",
+              "observed": {
+                "present": true
+              },
+              "result": "pass"
+            },
+            {
+              "check": "pending_tool_call",
+              "observed": "propose_booking",
+              "result": "pass"
+            },
+            {
+              "check": "tool_trace_agrees",
+              "observed": {
+                "propose_booking": 1
+              },
+              "result": "pass"
+            },
+            {
+              "check": "required_tool:propose_booking",
+              "observed": {
+                "matching_calls": 1,
+                "tool_name_attempts": 1
+              },
+              "result": "pass"
+            },
+            {
+              "check": "forbidden_tools",
+              "observed": [],
+              "result": "pass"
+            },
+            {
+              "check": "exact_calendar_writes",
+              "observed": [],
+              "result": "pass"
+            },
+            {
+              "check": "mutations_require_confirmation",
+              "observed": 0,
+              "result": "pass"
+            },
+            {
+              "check": "booking_result",
+              "observed": [],
+              "result": "pass"
+            }
+          ],
+          "first_feedback_ms": 2.121199999237433,
+          "inline_booking_order": [],
+          "kind": "text",
+          "model_calls": 1,
+          "model_pace_wait_ms": [
+            7250.0
+          ],
+          "models": [
+            {
+              "cachedTokens": 0,
+              "firstEventMs": 2062.999999994645,
+              "inputTokens": 1666,
+              "modelRole": "primary",
+              "outputTokens": 36,
+              "reason": null,
+              "status": "requires_action",
+              "thoughtTokens": 0,
+              "totalMs": 10036.297999991802,
+              "ttftMs": 0.0
+            }
+          ],
+          "proposal_fixture_booking": null,
+          "proposal_slot": "2026-11-24T14:00",
+          "provider_errors": [],
+          "slot_offer_starts": [
+            "2026-11-24T14:00"
+          ],
+          "tool_calls": [
+            {
+              "name": "propose_booking",
+              "slot_local_start": "2026-11-24T14:00"
+            }
+          ],
+          "turn": 1,
+          "turn_ms": 10048.053700011224
+        },
+        {
+          "booking_offer_order": [],
+          "cal_ms": 0,
+          "checks": [
+            {
+              "check": "turn_outcome",
+              "observed": {
+                "code": null,
+                "outcome": "ok"
+              },
+              "result": "pass"
+            },
+            {
+              "check": "model_call_trace_agrees",
+              "observed": 0,
+              "result": "pass"
+            },
+            {
+              "check": "unknown_refs",
+              "observed": 0,
+              "result": "pass"
+            },
+            {
+              "check": "model_call_bounds",
+              "observed": 0,
+              "result": "pass"
+            },
+            {
+              "check": "proposal_kind",
+              "observed": [],
+              "result": "pass"
+            },
+            {
+              "check": "tool_trace_agrees",
+              "observed": {},
+              "result": "pass"
+            },
+            {
+              "check": "forbidden_tools",
+              "observed": [],
+              "result": "pass"
+            },
+            {
+              "check": "exact_calendar_writes",
+              "observed": [
+                {
+                  "event_type_id": 9001,
+                  "fixture_booking_id": null,
+                  "local_start": "2026-11-24T14:00",
+                  "operation": "create_booking",
+                  "outcome": "success"
+                }
+              ],
+              "result": "pass"
+            },
+            {
+              "check": "mutations_require_confirmation",
+              "observed": 1,
+              "result": "pass"
+            },
+            {
+              "check": "typed_confirmation_matches_signed_proposal",
+              "observed": true,
+              "result": "pass"
+            },
+            {
+              "check": "typed_confirmation_clears_proposal",
+              "observed": true,
+              "result": "pass"
+            },
+            {
+              "check": "mutations_resolve_from_signed_state",
+              "observed": true,
+              "result": "pass"
+            },
+            {
+              "check": "booking_result",
+              "observed": [
+                {
+                  "fixture_booking_id": null,
+                  "kind": "booked",
+                  "local_start": "2026-11-24T14:00",
+                  "ref": "B1"
+                }
+              ],
+              "result": "pass"
+            },
+            {
+              "check": "template:booked",
+              "observed": [
+                "booked"
+              ],
+              "result": "pass"
+            }
+          ],
+          "first_feedback_ms": 8.680300001287833,
+          "inline_booking_order": [],
+          "kind": "text",
+          "model_calls": 0,
+          "model_pace_wait_ms": [],
+          "models": [],
+          "proposal_fixture_booking": null,
+          "proposal_slot": null,
+          "provider_errors": [],
+          "slot_offer_starts": [],
+          "tool_calls": [],
+          "turn": 2,
+          "turn_ms": 2.8366000042296946
+        }
+      ]
+    },
+    {
+      "case": 16,
+      "checks": {
+        "pass": 24
+      },
+      "repetition": 2,
+      "status": "pass",
+      "turns": [
+        {
+          "booking_offer_order": [],
+          "cal_ms": 0,
+          "checks": [
+            {
+              "check": "turn_outcome",
+              "observed": {
+                "code": null,
+                "outcome": "ok"
+              },
+              "result": "pass"
+            },
+            {
+              "check": "model_call_trace_agrees",
+              "observed": 1,
+              "result": "pass"
+            },
+            {
+              "check": "unknown_refs",
+              "observed": 0,
+              "result": "pass"
+            },
+            {
+              "check": "model_call_bounds",
+              "observed": 1,
+              "result": "pass"
+            },
+            {
+              "check": "proposal_kind",
+              "observed": [],
+              "result": "pass"
+            },
+            {
+              "check": "tool_trace_agrees",
+              "observed": {},
+              "result": "pass"
+            },
+            {
+              "check": "forbidden_tools",
+              "observed": [],
+              "result": "pass"
+            },
+            {
+              "check": "exact_calendar_writes",
+              "observed": [],
+              "result": "pass"
+            },
+            {
+              "check": "mutations_require_confirmation",
+              "observed": 0,
+              "result": "pass"
+            },
+            {
+              "check": "booking_result",
+              "observed": [],
+              "result": "pass"
+            },
+            {
+              "check": "reply_pattern:1",
+              "observed": true,
+              "result": "pass"
+            },
+            {
+              "check": "refusal_is_visible",
+              "observed": {
+                "error_refusal": false,
+                "pattern_matches": [
+                  true
+                ]
+              },
+              "result": "pass"
+            }
+          ],
+          "first_feedback_ms": 2.6975999935530126,
+          "inline_booking_order": [],
+          "kind": "text",
+          "model_calls": 1,
+          "model_pace_wait_ms": [
+            7140.0
+          ],
+          "models": [
+            {
+              "cachedTokens": 0,
+              "firstEventMs": 1860.000000015134,
+              "inputTokens": 769,
+              "modelRole": "primary",
+              "outputTokens": 15,
+              "reason": null,
+              "status": "completed",
+              "thoughtTokens": 0,
+              "totalMs": 9616.546900011599,
+              "ttftMs": 9024.96130001964
+            }
+          ],
+          "proposal_fixture_booking": null,
+          "proposal_slot": null,
+          "provider_errors": [],
+          "slot_offer_starts": [],
+          "tool_calls": [],
+          "turn": 1,
+          "turn_ms": 9617.635700007668
+        },
+        {
+          "booking_offer_order": [],
+          "cal_ms": 0,
+          "checks": [
+            {
+              "check": "turn_outcome",
+              "observed": {
+                "code": "refusal",
+                "outcome": "failed"
+              },
+              "result": "pass"
+            },
+            {
+              "check": "model_call_trace_agrees",
+              "observed": 0,
+              "result": "pass"
+            },
+            {
+              "check": "unknown_refs",
+              "observed": 0,
+              "result": "pass"
+            },
+            {
+              "check": "model_call_bounds",
+              "observed": 0,
+              "result": "pass"
+            },
+            {
+              "check": "proposal_kind",
+              "observed": [],
+              "result": "pass"
+            },
+            {
+              "check": "tool_trace_agrees",
+              "observed": {},
+              "result": "pass"
+            },
+            {
+              "check": "forbidden_tools",
+              "observed": [],
+              "result": "pass"
+            },
+            {
+              "check": "exact_calendar_writes",
+              "observed": [],
+              "result": "pass"
+            },
+            {
+              "check": "mutations_require_confirmation",
+              "observed": 0,
+              "result": "pass"
+            },
+            {
+              "check": "booking_result",
+              "observed": [],
+              "result": "pass"
+            },
+            {
+              "check": "reply_pattern:1",
+              "observed": true,
+              "result": "pass"
+            },
+            {
+              "check": "refusal_is_visible",
+              "observed": {
+                "error_refusal": true,
+                "pattern_matches": [
+                  true
+                ]
+              },
+              "result": "pass"
+            }
+          ],
+          "first_feedback_ms": 2.17650001286529,
+          "inline_booking_order": [],
+          "kind": "ui",
+          "model_calls": 0,
+          "model_pace_wait_ms": [],
+          "models": [],
+          "proposal_fixture_booking": null,
+          "proposal_slot": null,
+          "provider_errors": [],
+          "slot_offer_starts": [],
+          "tool_calls": [],
+          "turn": 2,
+          "turn_ms": 1.2645999959204346
+        }
+      ]
+    },
+    {
+      "case": 18,
+      "checks": {
+        "pass": 12
+      },
+      "repetition": 2,
+      "status": "pass",
+      "turns": [
+        {
+          "booking_offer_order": [],
+          "cal_ms": 0,
+          "checks": [
+            {
+              "check": "turn_outcome",
+              "observed": {
+                "code": null,
+                "outcome": "ok"
+              },
+              "result": "pass"
+            },
+            {
+              "check": "model_call_trace_agrees",
+              "observed": 1,
+              "result": "pass"
+            },
+            {
+              "check": "unknown_refs",
+              "observed": 0,
+              "result": "pass"
+            },
+            {
+              "check": "model_call_bounds",
+              "observed": 1,
+              "result": "pass"
+            },
+            {
+              "check": "proposal_kind",
+              "observed": [],
+              "result": "pass"
+            },
+            {
+              "check": "tool_trace_agrees",
+              "observed": {},
+              "result": "pass"
+            },
+            {
+              "check": "forbidden_tools",
+              "observed": [],
+              "result": "pass"
+            },
+            {
+              "check": "exact_calendar_writes",
+              "observed": [],
+              "result": "pass"
+            },
+            {
+              "check": "mutations_require_confirmation",
+              "observed": 0,
+              "result": "pass"
+            },
+            {
+              "check": "booking_result",
+              "observed": [],
+              "result": "pass"
+            },
+            {
+              "check": "reply_pattern:1",
+              "observed": true,
+              "result": "pass"
+            },
+            {
+              "check": "refusal_is_visible",
+              "observed": {
+                "error_refusal": false,
+                "pattern_matches": [
+                  true
+                ]
+              },
+              "result": "pass"
+            }
+          ],
+          "first_feedback_ms": 2.904099994339049,
+          "inline_booking_order": [],
+          "kind": "text",
+          "model_calls": 1,
+          "model_pace_wait_ms": [
+            7500.0
+          ],
+          "models": [
+            {
+              "cachedTokens": 0,
+              "firstEventMs": 1672.000000020489,
+              "inputTokens": 752,
+              "modelRole": "primary",
+              "outputTokens": 16,
+              "reason": null,
+              "status": "completed",
+              "thoughtTokens": 0,
+              "totalMs": 9976.223399979062,
+              "ttftMs": 9200.37819998106
+            }
+          ],
+          "proposal_fixture_booking": null,
+          "proposal_slot": null,
+          "provider_errors": [],
+          "slot_offer_starts": [],
+          "tool_calls": [],
+          "turn": 1,
+          "turn_ms": 9977.470099984203
+        }
+      ]
+    },
+    {
+      "case": 19,
+      "checks": {
+        "failure": 1,
+        "pass": 10
+      },
+      "repetition": 2,
+      "status": "structural_failure",
+      "turns": [
+        {
+          "booking_offer_order": [
+            "sam_injected_title"
+          ],
+          "cal_ms": 0,
+          "checks": [
+            {
+              "check": "turn_outcome",
+              "observed": {
+                "code": "model_down",
+                "outcome": "failed"
+              },
+              "result": "failure"
+            },
+            {
+              "check": "model_call_trace_agrees",
+              "observed": 2,
+              "result": "pass"
+            },
+            {
+              "check": "unknown_refs",
+              "observed": 0,
+              "result": "pass"
+            },
+            {
+              "check": "model_call_bounds",
+              "observed": 2,
+              "result": "pass"
+            },
+            {
+              "check": "proposal_kind",
+              "observed": [],
+              "result": "pass"
+            },
+            {
+              "check": "tool_trace_agrees",
+              "observed": {},
+              "result": "pass"
+            },
+            {
+              "check": "forbidden_tools",
+              "observed": [],
+              "result": "pass"
+            },
+            {
+              "check": "booking_offer_order",
+              "observed": [
+                "sam_injected_title"
+              ],
+              "result": "pass"
+            },
+            {
+              "check": "exact_calendar_writes",
+              "observed": [],
+              "result": "pass"
+            },
+            {
+              "check": "mutations_require_confirmation",
+              "observed": 0,
+              "result": "pass"
+            },
+            {
+              "check": "booking_result",
+              "observed": [],
+              "result": "pass"
+            }
+          ],
+          "first_feedback_ms": 1.9166000129189342,
+          "inline_booking_order": [],
+          "kind": "text",
+          "model_calls": 2,
+          "model_pace_wait_ms": [
+            7500.0,
+            2016.0
+          ],
+          "models": [
+            {
+              "cachedTokens": 0,
+              "inputTokens": 0,
+              "modelRole": "primary",
+              "outputTokens": 0,
+              "reason": "first_event_timeout",
+              "status": "timeout",
+              "thoughtTokens": 0,
+              "totalMs": 15508.357400016394,
+              "ttftMs": 0.0
+            },
+            {
+              "cachedTokens": 0,
+              "httpStatus": 503,
+              "inputTokens": 0,
+              "modelRole": "backup",
+              "outputTokens": 0,
+              "reason": "provider_http_503",
+              "status": "model_down",
+              "thoughtTokens": 0,
+              "totalMs": 15879.443899990292,
+              "ttftMs": 0.0
+            }
+          ],
+          "proposal_fixture_booking": null,
+          "proposal_slot": null,
+          "provider_errors": [
+            {
+              "before_text": true,
+              "code": "timeout",
+              "http_status": null,
+              "model": "gemini-3.5-flash-lite",
+              "reason": "first_event_timeout",
+              "role": "primary",
+              "simulated": false
+            },
+            {
+              "before_text": true,
+              "code": "model_down",
+              "http_status": 503,
+              "model": "gemini-3.1-flash-lite",
+              "reason": "provider_http_503",
+              "role": "backup",
+              "simulated": false
+            }
+          ],
+          "slot_offer_starts": [],
+          "tool_calls": [],
+          "turn": 1,
+          "turn_ms": 31389.507599989884
+        }
+      ]
+    },
+    {
+      "case": 20,
+      "checks": {
+        "pass": 12
+      },
+      "repetition": 2,
+      "status": "pass",
+      "turns": [
+        {
+          "booking_offer_order": [],
+          "cal_ms": 0,
+          "checks": [
+            {
+              "check": "turn_outcome",
+              "observed": {
+                "code": null,
+                "outcome": "ok"
+              },
+              "result": "pass"
+            },
+            {
+              "check": "model_call_trace_agrees",
+              "observed": 1,
+              "result": "pass"
+            },
+            {
+              "check": "unknown_refs",
+              "observed": 0,
+              "result": "pass"
+            },
+            {
+              "check": "model_call_bounds",
+              "observed": 1,
+              "result": "pass"
+            },
+            {
+              "check": "proposal_kind",
+              "observed": [
+                "book"
+              ],
+              "result": "pass"
+            },
+            {
+              "check": "proposal_from_signed_state",
+              "observed": true,
+              "result": "pass"
+            },
+            {
+              "check": "tool_trace_agrees",
+              "observed": {
+                "propose_booking": 1
+              },
+              "result": "pass"
+            },
+            {
+              "check": "required_tool:propose_booking",
+              "observed": {
+                "matching_calls": 1,
+                "tool_name_attempts": 1
+              },
+              "result": "pass"
+            },
+            {
+              "check": "forbidden_tools",
+              "observed": [],
+              "result": "pass"
+            },
+            {
+              "check": "exact_calendar_writes",
+              "observed": [],
+              "result": "pass"
+            },
+            {
+              "check": "mutations_require_confirmation",
+              "observed": 0,
+              "result": "pass"
+            },
+            {
+              "check": "booking_result",
+              "observed": [],
+              "result": "pass"
+            }
+          ],
+          "first_feedback_ms": 1.8367000157013535,
+          "inline_booking_order": [],
+          "kind": "text",
+          "model_calls": 1,
+          "model_pace_wait_ms": [
+            0.0
+          ],
+          "models": [
+            {
+              "cachedTokens": 0,
+              "firstEventMs": 2312.000000005355,
+              "inputTokens": 1668,
+              "modelRole": "primary",
+              "outputTokens": 35,
+              "reason": null,
+              "status": "requires_action",
+              "thoughtTokens": 0,
+              "totalMs": 3187.206200003857,
+              "ttftMs": 0.0
+            }
+          ],
+          "proposal_fixture_booking": null,
+          "proposal_slot": "2026-11-24T14:00",
+          "provider_errors": [],
+          "slot_offer_starts": [
+            "2026-11-24T14:00"
+          ],
+          "tool_calls": [
+            {
+              "name": "propose_booking",
+              "slot_local_start": "2026-11-24T14:00"
+            }
+          ],
+          "turn": 1,
+          "turn_ms": 3192.2008999972604
+        }
+      ]
+    },
+    {
+      "case": 32,
+      "checks": {
+        "pass": 28
+      },
+      "repetition": 2,
+      "status": "pass",
+      "turns": [
+        {
+          "booking_offer_order": [],
+          "cal_ms": 0,
+          "checks": [
+            {
+              "check": "turn_outcome",
+              "observed": {
+                "code": null,
+                "outcome": "ok"
+              },
+              "result": "pass"
+            },
+            {
+              "check": "model_call_trace_agrees",
+              "observed": 1,
+              "result": "pass"
+            },
+            {
+              "check": "unknown_refs",
+              "observed": 0,
+              "result": "pass"
+            },
+            {
+              "check": "model_call_bounds",
+              "observed": 1,
+              "result": "pass"
+            },
+            {
+              "check": "proposal_kind",
+              "observed": [
+                "book"
+              ],
+              "result": "pass"
+            },
+            {
+              "check": "proposal_from_signed_state",
+              "observed": true,
+              "result": "pass"
+            },
+            {
+              "check": "resolved_proposal_email",
+              "observed": {
+                "present": true
+              },
+              "result": "pass"
+            },
+            {
+              "check": "pending_tool_call",
+              "observed": "propose_booking",
+              "result": "pass"
+            },
+            {
+              "check": "tool_trace_agrees",
+              "observed": {
+                "propose_booking": 1
+              },
+              "result": "pass"
+            },
+            {
+              "check": "required_tool:propose_booking",
+              "observed": {
+                "matching_calls": 1,
+                "tool_name_attempts": 1
+              },
+              "result": "pass"
+            },
+            {
+              "check": "forbidden_tools",
+              "observed": [],
+              "result": "pass"
+            },
+            {
+              "check": "exact_calendar_writes",
+              "observed": [],
+              "result": "pass"
+            },
+            {
+              "check": "mutations_require_confirmation",
+              "observed": 0,
+              "result": "pass"
+            },
+            {
+              "check": "booking_result",
+              "observed": [],
+              "result": "pass"
+            }
+          ],
+          "first_feedback_ms": 2.1031000069342554,
+          "inline_booking_order": [],
+          "kind": "text",
+          "model_calls": 1,
+          "model_pace_wait_ms": [
+            6812.0
+          ],
+          "models": [
+            {
+              "cachedTokens": 0,
+              "firstEventMs": 2000.0,
+              "inputTokens": 1666,
+              "modelRole": "primary",
+              "outputTokens": 36,
+              "reason": null,
+              "status": "requires_action",
+              "thoughtTokens": 0,
+              "totalMs": 9537.33259998262,
+              "ttftMs": 0.0
+            }
+          ],
+          "proposal_fixture_booking": null,
+          "proposal_slot": "2026-11-24T14:00",
+          "provider_errors": [],
+          "slot_offer_starts": [
+            "2026-11-24T14:00"
+          ],
+          "tool_calls": [
+            {
+              "name": "propose_booking",
+              "slot_local_start": "2026-11-24T14:00"
+            }
+          ],
+          "turn": 1,
+          "turn_ms": 9544.05300001963
+        },
+        {
+          "booking_offer_order": [],
+          "cal_ms": 0,
+          "checks": [
+            {
+              "check": "turn_outcome",
+              "observed": {
+                "code": null,
+                "outcome": "ok"
+              },
+              "result": "pass"
+            },
+            {
+              "check": "model_call_trace_agrees",
+              "observed": 0,
+              "result": "pass"
+            },
+            {
+              "check": "unknown_refs",
+              "observed": 0,
+              "result": "pass"
+            },
+            {
+              "check": "model_call_bounds",
+              "observed": 0,
+              "result": "pass"
+            },
+            {
+              "check": "proposal_kind",
+              "observed": [],
+              "result": "pass"
+            },
+            {
+              "check": "tool_trace_agrees",
+              "observed": {},
+              "result": "pass"
+            },
+            {
+              "check": "forbidden_tools",
+              "observed": [],
+              "result": "pass"
+            },
+            {
+              "check": "exact_calendar_writes",
+              "observed": [
+                {
+                  "event_type_id": 9001,
+                  "fixture_booking_id": null,
+                  "local_start": "2026-11-24T14:00",
+                  "operation": "create_booking",
+                  "outcome": "success"
+                }
+              ],
+              "result": "pass"
+            },
+            {
+              "check": "mutations_require_confirmation",
+              "observed": 1,
+              "result": "pass"
+            },
+            {
+              "check": "typed_confirmation_matches_signed_proposal",
+              "observed": true,
+              "result": "pass"
+            },
+            {
+              "check": "typed_confirmation_clears_proposal",
+              "observed": true,
+              "result": "pass"
+            },
+            {
+              "check": "mutations_resolve_from_signed_state",
+              "observed": true,
+              "result": "pass"
+            },
+            {
+              "check": "booking_result",
+              "observed": [
+                {
+                  "fixture_booking_id": null,
+                  "kind": "booked",
+                  "local_start": "2026-11-24T14:00",
+                  "ref": "B1"
+                }
+              ],
+              "result": "pass"
+            },
+            {
+              "check": "template:booked",
+              "observed": [
+                "booked"
+              ],
+              "result": "pass"
+            }
+          ],
+          "first_feedback_ms": 2.0867999992333353,
+          "inline_booking_order": [],
+          "kind": "text",
+          "model_calls": 0,
+          "model_pace_wait_ms": [],
+          "models": [],
+          "proposal_fixture_booking": null,
+          "proposal_slot": null,
+          "provider_errors": [],
+          "slot_offer_starts": [],
+          "tool_calls": [],
+          "turn": 2,
+          "turn_ms": 2.0306999795138836
+        }
+      ]
+    },
+    {
+      "case": 16,
+      "checks": {
+        "pass": 24
+      },
+      "repetition": 3,
+      "status": "pass",
+      "turns": [
+        {
+          "booking_offer_order": [],
+          "cal_ms": 0,
+          "checks": [
+            {
+              "check": "turn_outcome",
+              "observed": {
+                "code": null,
+                "outcome": "ok"
+              },
+              "result": "pass"
+            },
+            {
+              "check": "model_call_trace_agrees",
+              "observed": 1,
+              "result": "pass"
+            },
+            {
+              "check": "unknown_refs",
+              "observed": 0,
+              "result": "pass"
+            },
+            {
+              "check": "model_call_bounds",
+              "observed": 1,
+              "result": "pass"
+            },
+            {
+              "check": "proposal_kind",
+              "observed": [],
+              "result": "pass"
+            },
+            {
+              "check": "tool_trace_agrees",
+              "observed": {},
+              "result": "pass"
+            },
+            {
+              "check": "forbidden_tools",
+              "observed": [],
+              "result": "pass"
+            },
+            {
+              "check": "exact_calendar_writes",
+              "observed": [],
+              "result": "pass"
+            },
+            {
+              "check": "mutations_require_confirmation",
+              "observed": 0,
+              "result": "pass"
+            },
+            {
+              "check": "booking_result",
+              "observed": [],
+              "result": "pass"
+            },
+            {
+              "check": "reply_pattern:1",
+              "observed": true,
+              "result": "pass"
+            },
+            {
+              "check": "refusal_is_visible",
+              "observed": {
+                "error_refusal": false,
+                "pattern_matches": [
+                  true
+                ]
+              },
+              "result": "pass"
+            }
+          ],
+          "first_feedback_ms": 1.5430999919772148,
+          "inline_booking_order": [],
+          "kind": "text",
+          "model_calls": 1,
+          "model_pace_wait_ms": [
+            7250.0
+          ],
+          "models": [
+            {
+              "cachedTokens": 0,
+              "firstEventMs": 1594.0000000118744,
+              "inputTokens": 769,
+              "modelRole": "primary",
+              "outputTokens": 15,
+              "reason": null,
+              "status": "completed",
+              "thoughtTokens": 0,
+              "totalMs": 9552.739899983862,
+              "ttftMs": 8869.177399988985
+            }
+          ],
+          "proposal_fixture_booking": null,
+          "proposal_slot": null,
+          "provider_errors": [],
+          "slot_offer_starts": [],
+          "tool_calls": [],
+          "turn": 1,
+          "turn_ms": 9553.423000004841
+        },
+        {
+          "booking_offer_order": [],
+          "cal_ms": 0,
+          "checks": [
+            {
+              "check": "turn_outcome",
+              "observed": {
+                "code": "refusal",
+                "outcome": "failed"
+              },
+              "result": "pass"
+            },
+            {
+              "check": "model_call_trace_agrees",
+              "observed": 0,
+              "result": "pass"
+            },
+            {
+              "check": "unknown_refs",
+              "observed": 0,
+              "result": "pass"
+            },
+            {
+              "check": "model_call_bounds",
+              "observed": 0,
+              "result": "pass"
+            },
+            {
+              "check": "proposal_kind",
+              "observed": [],
+              "result": "pass"
+            },
+            {
+              "check": "tool_trace_agrees",
+              "observed": {},
+              "result": "pass"
+            },
+            {
+              "check": "forbidden_tools",
+              "observed": [],
+              "result": "pass"
+            },
+            {
+              "check": "exact_calendar_writes",
+              "observed": [],
+              "result": "pass"
+            },
+            {
+              "check": "mutations_require_confirmation",
+              "observed": 0,
+              "result": "pass"
+            },
+            {
+              "check": "booking_result",
+              "observed": [],
+              "result": "pass"
+            },
+            {
+              "check": "reply_pattern:1",
+              "observed": true,
+              "result": "pass"
+            },
+            {
+              "check": "refusal_is_visible",
+              "observed": {
+                "error_refusal": true,
+                "pattern_matches": [
+                  true
+                ]
+              },
+              "result": "pass"
+            }
+          ],
+          "first_feedback_ms": 2.1940000005997717,
+          "inline_booking_order": [],
+          "kind": "ui",
+          "model_calls": 0,
+          "model_pace_wait_ms": [],
+          "models": [],
+          "proposal_fixture_booking": null,
+          "proposal_slot": null,
+          "provider_errors": [],
+          "slot_offer_starts": [],
+          "tool_calls": [],
+          "turn": 2,
+          "turn_ms": 1.375799998641014
+        }
+      ]
+    },
+    {
+      "case": 18,
+      "checks": {
+        "pass": 12
+      },
+      "repetition": 3,
+      "status": "pass",
+      "turns": [
+        {
+          "booking_offer_order": [],
+          "cal_ms": 0,
+          "checks": [
+            {
+              "check": "turn_outcome",
+              "observed": {
+                "code": null,
+                "outcome": "ok"
+              },
+              "result": "pass"
+            },
+            {
+              "check": "model_call_trace_agrees",
+              "observed": 1,
+              "result": "pass"
+            },
+            {
+              "check": "unknown_refs",
+              "observed": 0,
+              "result": "pass"
+            },
+            {
+              "check": "model_call_bounds",
+              "observed": 1,
+              "result": "pass"
+            },
+            {
+              "check": "proposal_kind",
+              "observed": [],
+              "result": "pass"
+            },
+            {
+              "check": "tool_trace_agrees",
+              "observed": {},
+              "result": "pass"
+            },
+            {
+              "check": "forbidden_tools",
+              "observed": [],
+              "result": "pass"
+            },
+            {
+              "check": "exact_calendar_writes",
+              "observed": [],
+              "result": "pass"
+            },
+            {
+              "check": "mutations_require_confirmation",
+              "observed": 0,
+              "result": "pass"
+            },
+            {
+              "check": "booking_result",
+              "observed": [],
+              "result": "pass"
+            },
+            {
+              "check": "reply_pattern:1",
+              "observed": true,
+              "result": "pass"
+            },
+            {
+              "check": "refusal_is_visible",
+              "observed": {
+                "error_refusal": false,
+                "pattern_matches": [
+                  true
+                ]
+              },
+              "result": "pass"
+            }
+          ],
+          "first_feedback_ms": 2.211200015153736,
+          "inline_booking_order": [],
+          "kind": "text",
+          "model_calls": 1,
+          "model_pace_wait_ms": [
+            7656.0
+          ],
+          "models": [
+            {
+              "cachedTokens": 0,
+              "firstEventMs": 2000.0,
+              "inputTokens": 752,
+              "modelRole": "primary",
+              "outputTokens": 16,
+              "reason": null,
+              "status": "completed",
+              "thoughtTokens": 0,
+              "totalMs": 10257.507799979066,
+              "ttftMs": 9692.549199971836
+            }
+          ],
+          "proposal_fixture_booking": null,
+          "proposal_slot": null,
+          "provider_errors": [],
+          "slot_offer_starts": [],
+          "tool_calls": [],
+          "turn": 1,
+          "turn_ms": 10258.488999999827
+        }
+      ]
+    },
+    {
+      "case": 19,
+      "checks": {
+        "pass": 11
+      },
+      "repetition": 3,
+      "status": "pass",
+      "turns": [
+        {
+          "booking_offer_order": [
+            "sam_injected_title"
+          ],
+          "cal_ms": 0,
+          "checks": [
+            {
+              "check": "turn_outcome",
+              "observed": {
+                "code": null,
+                "outcome": "ok"
+              },
+              "result": "pass"
+            },
+            {
+              "check": "model_call_trace_agrees",
+              "observed": 1,
+              "result": "pass"
+            },
+            {
+              "check": "unknown_refs",
+              "observed": 0,
+              "result": "pass"
+            },
+            {
+              "check": "model_call_bounds",
+              "observed": 1,
+              "result": "pass"
+            },
+            {
+              "check": "proposal_kind",
+              "observed": [],
+              "result": "pass"
+            },
+            {
+              "check": "tool_trace_agrees",
+              "observed": {},
+              "result": "pass"
+            },
+            {
+              "check": "forbidden_tools",
+              "observed": [],
+              "result": "pass"
+            },
+            {
+              "check": "booking_offer_order",
+              "observed": [
+                "sam_injected_title"
+              ],
+              "result": "pass"
+            },
+            {
+              "check": "exact_calendar_writes",
+              "observed": [],
+              "result": "pass"
+            },
+            {
+              "check": "mutations_require_confirmation",
+              "observed": 0,
+              "result": "pass"
+            },
+            {
+              "check": "booking_result",
+              "observed": [],
+              "result": "pass"
+            }
+          ],
+          "first_feedback_ms": 4.814299987629056,
+          "inline_booking_order": [
+            "sam_injected_title"
+          ],
+          "kind": "text",
+          "model_calls": 1,
+          "model_pace_wait_ms": [
+            7250.0
+          ],
+          "models": [
+            {
+              "cachedTokens": 0,
+              "firstEventMs": 2032.0000000065193,
+              "inputTokens": 810,
+              "modelRole": "primary",
+              "outputTokens": 15,
+              "reason": null,
+              "status": "completed",
+              "thoughtTokens": 0,
+              "totalMs": 10155.50429999712,
+              "ttftMs": 9304.22630000976
+            }
+          ],
+          "proposal_fixture_booking": null,
+          "proposal_slot": null,
+          "provider_errors": [],
+          "slot_offer_starts": [],
+          "tool_calls": [],
+          "turn": 1,
+          "turn_ms": 10163.534999999683
+        }
+      ]
+    },
+    {
+      "case": 20,
+      "checks": {
+        "pass": 12
+      },
+      "repetition": 3,
+      "status": "pass",
+      "turns": [
+        {
+          "booking_offer_order": [],
+          "cal_ms": 0,
+          "checks": [
+            {
+              "check": "turn_outcome",
+              "observed": {
+                "code": null,
+                "outcome": "ok"
+              },
+              "result": "pass"
+            },
+            {
+              "check": "model_call_trace_agrees",
+              "observed": 1,
+              "result": "pass"
+            },
+            {
+              "check": "unknown_refs",
+              "observed": 0,
+              "result": "pass"
+            },
+            {
+              "check": "model_call_bounds",
+              "observed": 1,
+              "result": "pass"
+            },
+            {
+              "check": "proposal_kind",
+              "observed": [
+                "book"
+              ],
+              "result": "pass"
+            },
+            {
+              "check": "proposal_from_signed_state",
+              "observed": true,
+              "result": "pass"
+            },
+            {
+              "check": "tool_trace_agrees",
+              "observed": {
+                "propose_booking": 1
+              },
+              "result": "pass"
+            },
+            {
+              "check": "required_tool:propose_booking",
+              "observed": {
+                "matching_calls": 1,
+                "tool_name_attempts": 1
+              },
+              "result": "pass"
+            },
+            {
+              "check": "forbidden_tools",
+              "observed": [],
+              "result": "pass"
+            },
+            {
+              "check": "exact_calendar_writes",
+              "observed": [],
+              "result": "pass"
+            },
+            {
+              "check": "mutations_require_confirmation",
+              "observed": 0,
+              "result": "pass"
+            },
+            {
+              "check": "booking_result",
+              "observed": [],
+              "result": "pass"
+            }
+          ],
+          "first_feedback_ms": 3.2541999826207757,
+          "inline_booking_order": [],
+          "kind": "text",
+          "model_calls": 1,
+          "model_pace_wait_ms": [
+            7046.0
+          ],
+          "models": [
+            {
+              "cachedTokens": 0,
+              "firstEventMs": 2109.99999998603,
+              "inputTokens": 1668,
+              "modelRole": "primary",
+              "outputTokens": 35,
+              "reason": null,
+              "status": "requires_action",
+              "thoughtTokens": 0,
+              "totalMs": 9816.806400020141,
+              "ttftMs": 0.0
+            }
+          ],
+          "proposal_fixture_booking": null,
+          "proposal_slot": "2026-11-24T14:00",
+          "provider_errors": [],
+          "slot_offer_starts": [
+            "2026-11-24T14:00"
+          ],
+          "tool_calls": [
+            {
+              "name": "propose_booking",
+              "slot_local_start": "2026-11-24T14:00"
+            }
+          ],
+          "turn": 1,
+          "turn_ms": 9825.623800017638
+        }
+      ]
+    },
+    {
+      "case": 32,
+      "checks": {
+        "pass": 28
+      },
+      "repetition": 3,
+      "status": "pass",
+      "turns": [
+        {
+          "booking_offer_order": [],
+          "cal_ms": 0,
+          "checks": [
+            {
+              "check": "turn_outcome",
+              "observed": {
+                "code": null,
+                "outcome": "ok"
+              },
+              "result": "pass"
+            },
+            {
+              "check": "model_call_trace_agrees",
+              "observed": 1,
+              "result": "pass"
+            },
+            {
+              "check": "unknown_refs",
+              "observed": 0,
+              "result": "pass"
+            },
+            {
+              "check": "model_call_bounds",
+              "observed": 1,
+              "result": "pass"
+            },
+            {
+              "check": "proposal_kind",
+              "observed": [
+                "book"
+              ],
+              "result": "pass"
+            },
+            {
+              "check": "proposal_from_signed_state",
+              "observed": true,
+              "result": "pass"
+            },
+            {
+              "check": "resolved_proposal_email",
+              "observed": {
+                "present": true
+              },
+              "result": "pass"
+            },
+            {
+              "check": "pending_tool_call",
+              "observed": "propose_booking",
+              "result": "pass"
+            },
+            {
+              "check": "tool_trace_agrees",
+              "observed": {
+                "propose_booking": 1
+              },
+              "result": "pass"
+            },
+            {
+              "check": "required_tool:propose_booking",
+              "observed": {
+                "matching_calls": 1,
+                "tool_name_attempts": 1
+              },
+              "result": "pass"
+            },
+            {
+              "check": "forbidden_tools",
+              "observed": [],
+              "result": "pass"
+            },
+            {
+              "check": "exact_calendar_writes",
+              "observed": [],
+              "result": "pass"
+            },
+            {
+              "check": "mutations_require_confirmation",
+              "observed": 0,
+              "result": "pass"
+            },
+            {
+              "check": "booking_result",
+              "observed": [],
+              "result": "pass"
+            }
+          ],
+          "first_feedback_ms": 2.3855000035837293,
+          "inline_booking_order": [],
+          "kind": "text",
+          "model_calls": 1,
+          "model_pace_wait_ms": [
+            7219.0
+          ],
+          "models": [
+            {
+              "cachedTokens": 0,
+              "firstEventMs": 2141.0000000032596,
+              "inputTokens": 1666,
+              "modelRole": "primary",
+              "outputTokens": 36,
+              "reason": null,
+              "status": "requires_action",
+              "thoughtTokens": 0,
+              "totalMs": 9978.740599995945,
+              "ttftMs": 0.0
+            }
+          ],
+          "proposal_fixture_booking": null,
+          "proposal_slot": "2026-11-24T14:00",
+          "provider_errors": [],
+          "slot_offer_starts": [
+            "2026-11-24T14:00"
+          ],
+          "tool_calls": [
+            {
+              "name": "propose_booking",
+              "slot_local_start": "2026-11-24T14:00"
+            }
+          ],
+          "turn": 1,
+          "turn_ms": 9985.284700000193
+        },
+        {
+          "booking_offer_order": [],
+          "cal_ms": 0,
+          "checks": [
+            {
+              "check": "turn_outcome",
+              "observed": {
+                "code": null,
+                "outcome": "ok"
+              },
+              "result": "pass"
+            },
+            {
+              "check": "model_call_trace_agrees",
+              "observed": 0,
+              "result": "pass"
+            },
+            {
+              "check": "unknown_refs",
+              "observed": 0,
+              "result": "pass"
+            },
+            {
+              "check": "model_call_bounds",
+              "observed": 0,
+              "result": "pass"
+            },
+            {
+              "check": "proposal_kind",
+              "observed": [],
+              "result": "pass"
+            },
+            {
+              "check": "tool_trace_agrees",
+              "observed": {},
+              "result": "pass"
+            },
+            {
+              "check": "forbidden_tools",
+              "observed": [],
+              "result": "pass"
+            },
+            {
+              "check": "exact_calendar_writes",
+              "observed": [
+                {
+                  "event_type_id": 9001,
+                  "fixture_booking_id": null,
+                  "local_start": "2026-11-24T14:00",
+                  "operation": "create_booking",
+                  "outcome": "success"
+                }
+              ],
+              "result": "pass"
+            },
+            {
+              "check": "mutations_require_confirmation",
+              "observed": 1,
+              "result": "pass"
+            },
+            {
+              "check": "typed_confirmation_matches_signed_proposal",
+              "observed": true,
+              "result": "pass"
+            },
+            {
+              "check": "typed_confirmation_clears_proposal",
+              "observed": true,
+              "result": "pass"
+            },
+            {
+              "check": "mutations_resolve_from_signed_state",
+              "observed": true,
+              "result": "pass"
+            },
+            {
+              "check": "booking_result",
+              "observed": [
+                {
+                  "fixture_booking_id": null,
+                  "kind": "booked",
+                  "local_start": "2026-11-24T14:00",
+                  "ref": "B1"
+                }
+              ],
+              "result": "pass"
+            },
+            {
+              "check": "template:booked",
+              "observed": [
+                "booked"
+              ],
+              "result": "pass"
+            }
+          ],
+          "first_feedback_ms": 2.281499997479841,
+          "inline_booking_order": [],
+          "kind": "text",
+          "model_calls": 0,
+          "model_pace_wait_ms": [],
+          "models": [],
+          "proposal_fixture_booking": null,
+          "proposal_slot": null,
+          "provider_errors": [],
+          "slot_offer_starts": [],
+          "tool_calls": [],
+          "turn": 2,
+          "turn_ms": 2.142699988326058
+        }
+      ]
+    }
+  ],
+  "schema_version": 1,
+  "spec_sha256": "f3d03c68f5129d9735ea7fbd0e08533b006b86d9782854788a9355221553c3dd",
+  "stop": null,
+  "suite": "approved",
+  "summary": {
+    "cached_tokens_per_call": {
+      "n": 16,
+      "p50": 0.0,
+      "p90": 0.0
+    },
+    "case_pass_rate": 0.6,
+    "cases": {
+      "16": {
+        "executed": 3,
+        "passed": true,
+        "passing_runs": 3,
+        "required": 3
+      },
+      "18": {
+        "executed": 3,
+        "passed": true,
+        "passing_runs": 3,
+        "required": 3
+      },
+      "19": {
+        "executed": 3,
+        "passed": false,
+        "passing_runs": 2,
+        "required": 3
+      },
+      "20": {
+        "executed": 3,
+        "passed": false,
+        "passing_runs": 2,
+        "required": 3
+      },
+      "32": {
+        "executed": 3,
+        "passed": true,
+        "passing_runs": 3,
+        "required": 2
+      }
+    },
+    "cases_passed": 3,
+    "checks": {
+      "failure": 3,
+      "pass": 257
+    },
+    "first_model_text_ms_excluding_pace": {
+      "n": 9,
+      "p50": 2036.549,
+      "p90": 2236.965
+    },
+    "first_visible_feedback_ms": {
+      "n": 21,
+      "p50": 2.194,
+      "p90": 4.814
+    },
+    "input_tokens": {
+      "n": 16,
+      "p50": 789.5,
+      "p90": 1668.0
+    },
+    "input_tokens_per_turn": {
+      "n": 21,
+      "p50": 769,
+      "p90": 1668.0
+    },
+    "model_calls_per_turn": {
+      "n": 21,
+      "p50": 1,
+      "p90": 1.0
+    },
+    "one_model_call_fraction": 0.7777777777777778,
+    "output_tokens": {
+      "n": 16,
+      "p50": 15.5,
+      "p90": 36.0
+    },
+    "output_tokens_per_turn": {
+      "n": 21,
+      "p50": 15,
+      "p90": 36.0
+    },
+    "performance_observations": {
+      "first_feedback_p50": true,
+      "first_model_text_p50": false,
+      "one_call_fraction": true,
+      "text_turn_p50": true,
+      "text_turn_p90": true,
+      "ui_overhead_p90": true
+    },
+    "run_status": {
+      "pass": 13,
+      "structural_failure": 2
+    },
+    "text_turn_latency_ms_excluding_pace": {
+      "n": 18,
+      "p50": 2760.978,
+      "p90": 3207.779
+    },
+    "thought_tokens_per_call": {
+      "n": 16,
+      "p50": 0.0,
+      "p90": 0.0
+    },
+    "turn_latency_ms_excluding_pace": {
+      "n": 21,
+      "p50": 2732.053,
+      "p90": 3192.201
+    },
+    "ui_overhead_without_reported_cal_ms": {
+      "n": 3,
+      "p50": 1.265,
+      "p90": 1.354
+    }
+  },
+  "thinking": "minimal"
+}

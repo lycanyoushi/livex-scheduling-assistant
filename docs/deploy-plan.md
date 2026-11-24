@@ -41,6 +41,12 @@ Each Confirm made one calendar write and used zero Gemini calls. The proposals m
 
 Two Production Flask startups logged **2.04 s** and **2.16 s** of setup. The cycle's public `/api/warm` took **156 ms** and reused an already initialized instance. The warm request and all nine chat requests in the cycle logged the same Flask boot identifier.
 
+### Typed confirmation release
+
+Vercel deployed revision `da941d0` to the same public URL and isolated Cal.com test event. The public `/api/warm` round trip was 172 ms. The verifier loaded the booking card from the preceding signed proposal in Chromium, entered the contact fields, and typed `yes` in the message composer. The browser sent the current card ID and contact fields. The proposal made zero writes, and the typed confirmation made one create with zero Gemini calls.
+
+Fresh Cal.com reads verified that the app listed the exact active booking, rescheduling cancelled the original and activated a replacement at a different time, and cancelling retired the replacement. Both test aliases had zero active upcoming bookings after the cycle. [Typed confirmation evaluation](m7-eval-report.md#typed-confirmation-regression)
+
 ## Recording outline
 
 Show a text request and the first available times. Pick a time, fill in the contact fields, and type `yes` in chat to confirm the booking. Verify it in Cal.com and list it in chat. Choose a different time and click **Confirm** to move the meeting. Cancel the replacement and verify that no fixture bookings remain. Show the taken-slot alternatives and a diagnostics view with zero model calls on a confirmation. Finish with a numbered choice in the Python terminal and the mobile widget. Aim for two to three minutes.
