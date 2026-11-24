@@ -99,7 +99,27 @@ def render(events):
             list(dict.fromkeys(bookings)), list(dict.fromkeys(inline_bookings)))
 
 
-def check_turn(case_id, turn_spec, payload, events, prior, before, after, now, zone, calendar, model):
+def _code_proposal_observation(metrics, proposal_events, before, after, zone, calendar, model):
+    if metrics.get("codeProposal") != "bypass_confirmation":
+        return None
+    signed = after.proposal
+    view = proposal_events[0] if len(proposal_events) == 1 else {}
+    slot = after.slots.get(signed.slot_ref) if signed is not None else None
+    return {
+        "reason": "bypass_confirmation",
+        "slot_local_start": local_iso(slot.start_utc, zone) if slot is not None else None,
+        "signed_proposal_matches": bool(
+            signed is not None and signed.kind == view.get("kind") == "book"
+            and signed.id == view.get("id") and signed.slot_ref == view.get("slotRef")
+            and (before.proposal is None or signed.id != before.proposal.id)
+        ),
+        "ui_action": metrics.get("path") == "ui_action",
+        "no_model_or_tool_calls": not (metrics["modelCalls"] or metrics["toolCalls"] or model.inputs or model.calls),
+        "no_calendar_writes": not calendar.writes,
+    }
+
+
+def check_turn(case_id, turn_spec, payload, events, prior, before, after, now, zone, calendar, model, *, rephrases=None):
     """Evaluate the approved assertions against the captured application turn."""
     plan = turn_spec["checks"]
     check_rows = []
@@ -140,7 +160,7 @@ def check_turn(case_id, turn_spec, payload, events, prior, before, after, now, z
     require(len(final) == 1 and events[-1] is final[0], "invalid_terminal_event")
     metrics = final[0]["metrics"]
     provider_error = metrics.get("errorCode")
-    intended_refusal = case_id in {16, 18}
+    intended_refusal = (rephrases if rephrases is not None else case_id) in {16, 18}
     template = plan.get("template")
     expected_failure = (
         (intended_refusal and provider_error == "refusal")
@@ -160,6 +180,7 @@ def check_turn(case_id, turn_spec, payload, events, prior, before, after, now, z
     check("model_call_bounds", plan.get("min_model_calls", 0) <= n_model <= min(plan["max_model_calls"], 3 if text_input else 0), n_model)
 
     proposal_events = [event["proposal"] for event in events if event["type"] == "proposal"]
+    code_proposal = _code_proposal_observation(metrics, proposal_events, before, after, zone, calendar, model)
     proposals = [proposal["kind"] for proposal in proposal_events]
     expected = plan["proposal_kind"]
     allowed = expected if isinstance(expected, list) else [expected]
@@ -196,15 +217,25 @@ def check_turn(case_id, turn_spec, payload, events, prior, before, after, now, z
           dict(metric_tools))
     rejected = Counter(item["name"] for item in metrics["toolCalls"] if not item["ok"])
     for expected_call in plan.get("tool_calls", []):
+        args = expected_call.get("args", {})
         required = [
             call for call in model.calls if call.name == expected_call["name"] and all(
                 key in call.arguments and argument_matches(key, call.arguments[key], value)
-                for key, value in expected_call.get("args", {}).items()
+                for key, value in args.items()
             )
         ]
         name = expected_call["name"]
-        check("required_tool:" + name, bool(required),
-              {"matching_calls": len(required), "tool_name_attempts": observed_tools[name]})
+        observed = {"matching_calls": len(required), "tool_name_attempts": observed_tools[name]}
+        code_match = False
+        if case_id == 20 and name == "propose_booking" and code_proposal is not None:
+            start = code_proposal["slot_local_start"]
+            code_match = bool(
+                text_input and start is not None and args == {"slot_ref": {"local_start": start}}
+                and code_proposal["signed_proposal_matches"] and code_proposal["ui_action"]
+                and code_proposal["no_model_or_tool_calls"] and code_proposal["no_calendar_writes"]
+            )
+            observed["code_proposal_match"] = code_match
+        check("required_tool:" + name, bool(required) or code_match, observed)
     forbidden = set(plan.get("forbidden_tools", []))
     bad = {name: count for name, count in observed_tools.items() if name in forbidden or "*" in forbidden}
     hard_bad, soft_bad = [], []
@@ -371,6 +402,7 @@ def check_turn(case_id, turn_spec, payload, events, prior, before, after, now, z
         "cal_ms": sum(item["ms"] for item in metrics["calCalls"]),
         "kind": payload["kind"],
         "tool_calls": safe_calls,
+        **({"code_proposal": code_proposal} if code_proposal is not None else {}),
         "slot_offer_starts": [slot(ref) for ref in slot_refs],
         "booking_offer_order": [booking(ref) for ref in booking_refs],
         "inline_booking_order": [booking(ref) for ref in inline_bookings],

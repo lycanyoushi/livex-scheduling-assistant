@@ -228,6 +228,7 @@ class TurnMetrics(TypedDict):
     totalMs: float
     outcome: Literal["ok", "failed"]
     fallback: NotRequired[Literal["backup_model", "code_only"]]
+    codeProposal: NotRequired[Literal["bypass_confirmation"]]
     errorCode: NotRequired[str]
 
 

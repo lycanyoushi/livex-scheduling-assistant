@@ -51,6 +51,8 @@ Serialize compact UTF-8 JSON and use the existing `base64url(payload).base64url(
 
 The web chat accepts a short typed confirmation or dismissal for its visible proposal. A confirmation can include polite filler, while questions and replies that change the request follow the model path. The browser includes the card ID, and Python dispatches the same action as the card button only when it matches the signed pending proposal. A typed confirmation of a new booking with missing contact details prompts for those fields and leaves the proposal open. If the model proposes the same calendar action and details again, keep the original signed card and tell the user how to confirm it.
 
+For a direct new-booking request that asks to skip confirmation, the app prepares a proposal for the exact available time and still waits for a separate confirmation. When a booking change has already been denied by the app, a model stream error falls back to a code-written refusal.
+
 `find_slots` requires `for_booking_ref`. An empty string requests ordinary availability. For a reschedule, validate the reference, the booking's status and start, and its membership for the session's attendee email before passing the real UID as `bookingUidToReschedule`. This lets a text request fetch the right slots without a prior UI action. Associate the returned refs with that booking so a proposal can validate the pairing.
 
 ### Streaming and development

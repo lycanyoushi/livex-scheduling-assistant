@@ -410,8 +410,8 @@ def run_case(spec, case, fixture, primary, backup, loop, *, model_name, pacing=N
             require(events and events[-1]["type"] == "turn_end", "Missing terminal eval event.")
             token = events[-1]["stateToken"]
             after = verify_state(token, secret, now)
-            checked = check_turn(case.get("rephrases", case["id"]), turn, payload, events, turns,
-                                 state, after, now, zone, calendar, trace)
+            checked = check_turn(case["id"], turn, payload, events, turns,
+                                 state, after, now, zone, calendar, trace, rephrases=case.get("rephrases"))
             turns[number] = {**checked, "first_feedback_ms": first_feedback}
             if on_turn is not None:
                 on_turn(turns)

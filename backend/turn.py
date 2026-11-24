@@ -27,7 +27,7 @@ from backend.prefetch import PREFETCH_BUDGET_SECONDS, Prefetcher, plan_prefetch
 from backend.prescan import EMAIL, PrescanResult, prescan
 from backend.protocol import (
     CalCallMetrics, ChatRequest, ConfirmProposal, DismissProposal, ErrorEvent, ModelCallMetrics, RefsEvent, ServerEvent,
-    SlotView, TextInput, TurnMetrics, UiAction,
+    PickSlot, SlotView, TextInput, TurnMetrics, UiAction,
 )
 from backend.slot_offers import SlotOfferLimit
 from backend.state import (
@@ -70,6 +70,10 @@ CONFIRM_REPLY = re.compile(
 )
 DISMISS_REPLY = re.compile(r"no|nope|no(?: | *, *)thanks|never mind|don't")
 MAX_PROPOSAL_REPLY_LENGTH = 120
+DIRECT_BOOKING = re.compile(r"(?:^|[.!?]\s+)(?:please\s+)?(?:book|reserve|schedule)\b", re.I)
+BYPASS_CONFIRMATION = re.compile(
+    r"\b(?:skip(?: the)? confirmation|without confirmation|(?:don't|don’t|do not) ask(?: me| us)? to confirm)\b", re.I,
+)
 REFS = re.compile(r"\[\[([SB][1-9]\d*)\]\]")
 BOOKING_MENTION = re.compile(r"\bB[1-9]\d{0,8}\b", re.IGNORECASE)
 PAST_BOOKINGS = re.compile(r"\b(?:past|previous|earlier|history|last (?:week|month|year)|pasad[oa]s?|anteriores?)\b", re.I)
@@ -595,6 +599,19 @@ class TurnService:
                 if hints.part_of_day != "any":
                     note += f", {hints.part_of_day}"
             yield {"type": "slot_chips", "refs": displayed, "note": note}
+        if (state.proposal is None and hints.intents == ("book",) and len(hints.dates) == 1
+                and hints.dates[0].at is not None and not checked_empty and len(displayed) == 1
+                and DIRECT_BOOKING.search(text.strip()) and BYPASS_CONFIRMATION.search(text)):
+            # An exact available request can prepare a card even when the user asks to bypass it.
+            state.interaction_id, state.pending_call, state.last_model_input_tokens = original_history
+            metrics.update(path="ui_action", codeProposal="bypass_confirmation")
+            action = PickSlot(type="pick_slot", slotRef=displayed[0])
+            async with aclosing(self._action_events(state, now, action, metrics)) as events:
+                async for event in events:
+                    if event["type"] == "proposal":
+                        yield {"type": "assistant_text", "text": "That time is available. Please confirm the booking."}
+                    yield event
+            return
         listing_response = None
         if listing_only and plan.attendee_email is None and not state.user.email:
             listing_response = "ask_email"
@@ -671,6 +688,9 @@ class TurnService:
                     metric["httpStatus"] = error.http_status
                 if error.code == "interaction_expired" and role == "primary":
                     raise TurnError(error.code, retryable=False) from None
+                if denied and error.code in _PROVIDER_FALLBACK_ERRORS:
+                    failure = error
+                    break
                 if not text_parts and (error.code in _PROVIDER_FALLBACK_ERRORS or error.code == "interaction_expired"):
                     can_continue = self.backup_continuations if previous_id else all(
                         step["type"] != "function_result" for step in steps
@@ -726,6 +746,12 @@ class TurnService:
                 _remember_tool_refs(snapshot, state, outcome.result)
                 steps.append(_function_result(call.id, call.name, outcome.result))
         if failure is not None:
+            if denied:
+                state.interaction_id, state.pending_call, state.last_model_input_tokens = original_history
+                state.counters.turns += 1
+                self._count_unknown_refs(state, now, text_parts, metrics)
+                yield {"type": "assistant_text", "text": "I can only change your own bookings."}
+                return
             if failure.code == "interaction_expired":
                 failure = TurnError("model_down")
             visible = [ref for ref in displayed if ref in state.slots]

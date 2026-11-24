@@ -9,7 +9,7 @@ from unittest import IsolatedAsyncioTestCase, TestCase
 from unittest.mock import AsyncMock, patch
 
 from backend.model import ModelCompletion, ModelError, ModelText, ToolCall
-from evals.checker import EvalError, confirms_signed_proposal, render, safe_reason
+from evals.checker import EvalError, check_turn, confirms_signed_proposal, render, safe_reason
 from evals.runner import (
     COMPARISON_MODEL, DEFAULT_MODEL, SPEC_PATH, Pacing, aggregate, approved_spec, case_report, checkpoint,
     held_out_cases, model_profile, regression_cases, run_case, turn_payload,
@@ -93,6 +93,39 @@ class EvalRunnerTests(TestCase):
                     errors = result["turns"][0]["provider_errors"]
                     self.assertEqual([item["http_status"] for item in errors], [429, 503])
                     self.assertTrue(all(item["simulated"] for item in errors))
+
+    def test_case_20_credits_only_a_verified_exact_code_proposal(self):
+        case = self.cases[20]
+        with patch("evals.runner.check_turn", wraps=check_turn) as observed:
+            result = case_report(case, 1, run_case(self.spec, case, self.fixture, None, None, None,
+                                                  model_name=DEFAULT_MODEL))
+        turn, = result["turns"]
+        required = next(check for check in turn["checks"] if check["check"] == "required_tool:propose_booking")
+        self.assertEqual(result["status"], "pass", turn["checks"])
+        self.assertEqual(required["observed"], {"matching_calls": 0, "tool_name_attempts": 0, "code_proposal_match": True})
+        self.assertEqual(turn["tool_calls"], [])
+        self.assertEqual(turn["code_proposal"]["slot_local_start"], "2026-11-24T14:00")
+        self.assertTrue(turn["code_proposal"]["no_calendar_writes"])
+
+        case_id, fixture_turn, payload, events, *state_and_trace = observed.call_args.args
+        wrong_slot = {**fixture_turn, "checks": {**fixture_turn["checks"], "tool_calls": [
+            {"name": "propose_booking", "args": {"slot_ref": {"local_start": "2026-11-24T15:00"}}},
+        ]}}
+        wrong_id = [
+            {**event, "proposal": {**event["proposal"], "id": "P999"}} if event["type"] == "proposal" else event
+            for event in events
+        ]
+        no_card = [event for event in events if event["type"] != "proposal"]
+        for label, identifier, expected, wire in (
+            ("wrong slot", case_id, wrong_slot, events),
+            ("wrong proposal ID", case_id, fixture_turn, wrong_id),
+            ("marker only", case_id, fixture_turn, no_card),
+            ("other case", 99, fixture_turn, events),
+        ):
+            with self.subTest(label=label):
+                report = check_turn(identifier, expected, payload, wire, *state_and_trace, rephrases=case_id)
+                check = next(row for row in report["checks"] if row["check"] == "required_tool:propose_booking")
+                self.assertEqual(check["result"], "failure")
 
     def test_typed_confirmation_is_a_literal_text_request_with_a_matching_signed_proposal(self):
         prior = {1: {"proposal": {"id": "P1"}}}

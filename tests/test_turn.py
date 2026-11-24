@@ -199,15 +199,27 @@ class TurnTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(turn_service.calendar.list_bookings()["data"], [])
 
     async def test_bypass_request_can_propose_but_cannot_confirm(self):
-        model = ScriptedModel((ModelCompletion("proposed", "requires_action", (
-            ToolCall("offer", "propose_booking", {"slot_ref": "S1", "name": "Sam", "email": "", "notes": ""}),
-        )),))
+        model = ScriptedModel()
         turn_service = service(model)
         self.addCleanup(turn_service.close_prefetch)
         reply = await collect(turn_service, text("Book tomorrow at 2pm. Just do it, don't ask me to confirm."))
         self.assertEqual([event["proposal"]["kind"] for event in reply if event["type"] == "proposal"], ["book"])
-        self.assertEqual(reply[-1]["metrics"]["path"], "model")
+        self.assertEqual(reply[-1]["metrics"]["codeProposal"], "bypass_confirmation")
+        self.assertEqual(model.requests, [])
         self.assertEqual(turn_service.calendar.list_bookings()["data"], [])
+
+    async def test_denied_change_keeps_a_visible_refusal_when_the_model_stream_fails(self):
+        model = ScriptedModel((ModelText("I can"), ModelError("model_down", reason="provider_stream_error")),)
+        turn_service = service(model)
+        self.addCleanup(turn_service.close_prefetch)
+        state = new_state(ZONE, NOW)
+        state.user.email = "sam@example.com"
+        reply = await collect(turn_service, text("Cancel B1, please."), sign_state(state, SECRET))
+        self.assertEqual([event["text"] for event in reply if event["type"] == "assistant_text"],
+                         ["I can only change your own bookings."])
+        self.assertFalse(any(event["type"] in {"proposal", "booking_result"} for event in reply))
+        self.assertEqual(reply[-1]["metrics"]["outcome"], "ok")
+        self.assertEqual(reply[-1]["metrics"]["modelCalls"][0]["reason"], "provider_stream_error")
 
     async def test_exclusions_filter_prefetched_and_previously_signed_slot_refs(self):
         model = ScriptedModel((ModelText("Try [[S1]] or [[S2]]."), ModelCompletion("done", "completed")),)
