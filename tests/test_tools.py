@@ -1,5 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
+from datetime import date, datetime
 import json
 from threading import Barrier
 import unittest
@@ -176,6 +176,23 @@ class CalendarToolsTests(unittest.TestCase):
             [slot["startLocalIso"] for slot in result["slots"]],
             [f"2026-11-30T{hour}:00:00+08:00" for hour in ("09", "10", "11")],
         )
+
+    def test_excluded_dates_filter_primary_and_fallback_search_and_reject_an_old_ref(self):
+        monday = self.tools.execute("find_slots", slot_args("2026-11-30")).result["slots"][0]["ref"]
+        tools = CalendarTools(self.calendar, self.state, NOW, excluded_days=frozenset({date(2026, 12, 1)}),
+                              excluded_weekdays=frozenset({0, 2}))
+
+        primary = tools.execute("find_slots", slot_args("2026-11-30", end="2026-12-03")).result
+        fallback = tools.execute("find_slots", slot_args("2026-11-29")).result
+        for results in (primary, fallback):
+            self.assertTrue(results["slots"])
+            self.assertTrue(all(slot["startLocalIso"].startswith("2026-12-03") for slot in results["slots"]))
+        self.assertEqual(fallback["nextOpenDate"], "2026-12-03")
+
+        with self.assertRaisesRegex(ToolRejected, "exclusions"):
+            tools.execute("propose_booking", booking_args(monday))
+        self.assertIsNone(self.state.proposal)
+        self.assertEqual(self.calendar.write_calls, [])
 
     def test_lists_only_current_attendee_and_keeps_the_model_result_private(self):
         with self.assertRaises(ToolRejected):

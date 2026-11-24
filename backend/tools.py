@@ -331,6 +331,8 @@ class CalendarTools:
         allowed_slugs: Iterable[str] = (),
         default_slug: str | None = None,
         deny_mutations: bool = False,
+        excluded_days: frozenset[date] = frozenset(),
+        excluded_weekdays: frozenset[int] = frozenset(),
     ) -> None:
         self.calendar = calendar
         self.state = state
@@ -340,10 +342,15 @@ class CalendarTools:
         self._allowed_slugs = frozenset(allowed_slugs)
         self._default_slug = default_slug
         self._deny_mutations = deny_mutations
+        self._excluded_days = excluded_days
+        self._excluded_weekdays = excluded_weekdays
         self._state_lock = Lock()
         self._events_lock = Lock()
         self._event_types: list[EventType] | None = None
         self._default_only_schema = False
+
+    def _excluded_day(self, day: date) -> bool:
+        return day in self._excluded_days or day.weekday() in self._excluded_weekdays
 
     def event_types(self) -> list[EventType]:
         with self._events_lock:
@@ -474,10 +481,10 @@ class CalendarTools:
         for slots in data.values():
             for slot in slots:
                 start = parse_instant(slot["start"])
-                local_hour = start.astimezone(self._zone).hour
                 if start <= self.now or not begin <= start < end:
                     continue
-                if hours is not None and not hours[0] <= local_hour < hours[1]:
+                local = start.astimezone(self._zone)
+                if self._excluded_day(local.date()) or (hours is not None and not hours[0] <= local.hour < hours[1]):
                     continue
                 matches[start] = SlotEntry(
                     start_utc=_iso_utc(start),
@@ -609,8 +616,15 @@ class CalendarTools:
     ) -> SlotEntry:
         with self._state_lock:
             slot = self.state.slots.get(ref)
-        if slot is None or parse_instant(slot.start_utc) <= self.now:
+        if slot is None:
             raise ToolRejected("Choose an upcoming slot from the times shown.")
+        instant = parse_instant(slot.start_utc)
+        local = instant.astimezone(self._zone)
+        day = local.date()
+        if instant <= self.now:
+            raise ToolRejected("Choose an upcoming slot from the times shown.")
+        if self._excluded_day(day):
+            raise ToolRejected("Choose a slot that honors the date exclusions in the current request.")
         if slot.for_booking_ref != booking_ref or (
             booking is not None and slot.event_type_id != booking.event_type_id
         ):
@@ -618,9 +632,6 @@ class CalendarTools:
         if self.now.timestamp() - slot.fetched_at <= _STALE_SLOT_SECONDS:
             return slot
 
-        instant = parse_instant(slot.start_utc)
-        local = instant.astimezone(self._zone)
-        day = local.date()
         today = self.now.astimezone(self._zone).date()
         last_warm_day = today + timedelta(days=WARM_SLOT_DAYS - 1)
         within_warm_window = today <= day <= last_warm_day

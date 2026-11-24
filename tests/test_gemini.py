@@ -1,6 +1,7 @@
 """Exercise the Gemini adapter with a stubbed SDK transport."""
 
 import asyncio
+from contextlib import aclosing
 from types import SimpleNamespace
 from unittest import IsolatedAsyncioTestCase
 from unittest.mock import AsyncMock, patch
@@ -8,7 +9,7 @@ from unittest.mock import AsyncMock, patch
 from google.genai._interactions.core.error import APIStatusError
 
 from backend.gemini import GeminiClient
-from backend.model import ModelCompletion, ModelError, ModelText, ToolCall
+from backend.model import ModelCompletion, ModelError, ModelStreamStart, ModelText, ToolCall
 
 
 def step_start(index, step_type, **fields):
@@ -72,6 +73,23 @@ class StubAsyncClient:
         self.closed = True
 
 
+class DeadlineClock:
+    now = 0.0
+    expire_next = False
+
+    def time(self):
+        return self.now
+
+    def timeout_at(self, _deadline):
+        # Use virtual time for the thresholds and real task cancellation for a blocked read.
+        deadline = asyncio.get_running_loop().time() if self.expire_next else None
+        self.expire_next = False
+        return asyncio.timeout_at(deadline)
+
+    def install(self):
+        return patch("backend.gemini.asyncio", SimpleNamespace(get_running_loop=lambda: self, timeout_at=self.timeout_at))
+
+
 class GeminiClientTests(IsolatedAsyncioTestCase):
     async def test_unexpected_failure_logs_only_exception_type(self):
         self.sdk.interactions.create.side_effect = RuntimeError("unredacted provider content")
@@ -88,13 +106,16 @@ class GeminiClientTests(IsolatedAsyncioTestCase):
         self.tools = [{"type": "function", "name": "find_slots"}]
         self.client = GeminiClient("test-key")
 
-    def stream(self, previous_id=None):
-        return self.client.stream(
+    async def stream(self, previous_id=None, *, include_timing=False):
+        async with aclosing(self.client.stream(
             input_steps=self.input_steps,
             previous_interaction_id=previous_id,
             system_instruction="Test scheduler",
             tools=self.tools,
-        )
+        )) as events:
+            async for event in events:
+                if include_timing or not isinstance(event, ModelStreamStart):
+                    yield event
 
     async def test_streams_text_incrementally_and_counts_final_usage(self):
         stream = StubStream((
@@ -316,17 +337,6 @@ class GeminiClientTests(IsolatedAsyncioTestCase):
                 self.assertTrue(stream.closed)
 
     async def test_raw_activity_renews_idle_deadline_and_idle_exposes_only_partial_text(self):
-        class DeadlineClock:
-            now = 0.0
-            expire_next = False
-
-            def time(self):
-                return self.now
-
-            def timeout_at(self, _deadline):
-                # Keep virtual time independent of the scheduler, but genuinely cancel the last read.
-                return asyncio.timeout_at(asyncio.get_running_loop().time() if self.expire_next else None)
-
         class ThoughtActivity(StubStream):
             async def __aiter__(self):
                 yield step_start(1, "model_output")
@@ -347,11 +357,10 @@ class GeminiClientTests(IsolatedAsyncioTestCase):
         for fast_start in (8.0, None):
             with self.subTest(fast_start=fast_start):
                 clock = DeadlineClock()
-                adapter_asyncio = SimpleNamespace(get_running_loop=lambda: clock, timeout_at=clock.timeout_at)
                 self.client = GeminiClient("test-key", first_event_timeout=fast_start)
                 stream = ThoughtActivity()
                 self.sdk.interactions.create.return_value = stream
-                with patch("backend.gemini.asyncio", adapter_asyncio):
+                with clock.install():
                     self.assertEqual([event async for event in self.stream("prior")], [
                         ModelText("First"),
                         ModelCompletion("", "incomplete", can_continue=False, reason="stream_idle_timeout"),
@@ -361,16 +370,42 @@ class GeminiClientTests(IsolatedAsyncioTestCase):
                 self.assertTrue(stream.closed)
 
     async def test_deadline_covers_the_remaining_stream_after_a_text_chunk(self):
-        stream = StubStream((step_start(0, "model_output"), step_delta(0, "text", text="First")), block=True)
+        clock = DeadlineClock()
+
+        class LateText(StubStream):
+            async def __aiter__(self):
+                clock.now = 0.25
+                yield SimpleNamespace(event_type="interaction.created")
+                clock.now = 13.0
+                yield step_start(0, "model_output")
+                clock.expire_next = True
+                yield step_delta(0, "text", text="First")
+                async for event in super().__aiter__():
+                    yield event
+
+        stream = LateText(block=True)
         self.sdk.interactions.create.return_value = stream
-        with patch("backend.gemini._TIMEOUT_SECONDS", 0.05):
-            events = self.stream()
+        with clock.install():
+            events = self.stream(include_timing=True)
+            self.assertEqual(await anext(events), ModelStreamStart(250.0))
             self.assertEqual(await anext(events), ModelText("First"))
-            with self.assertRaises(ModelError) as raised:
+            self.assertEqual(await anext(events), ModelCompletion(
+                "", "incomplete", can_continue=False, reason="overall_timeout",
+            ))
+            with self.assertRaises(StopAsyncIteration):
                 await anext(events)
-        self.assertEqual(raised.exception.code, "timeout")
+        self.assertTrue(stream.read_cancelled)
         self.assertTrue(stream.closed)
         self.assertTrue(self.sdk.closed)
+
+    async def test_provider_reported_timeout_after_text_is_noncontinuable_partial(self):
+        stream = StubStream((step_start(0, "model_output"), step_delta(0, "text", text="First"),
+                             error_event("deadline_exceeded")))
+        self.sdk.interactions.create.return_value = stream
+        self.assertEqual([event async for event in self.stream()], [
+            ModelText("First"), ModelCompletion("", "incomplete", can_continue=False, reason="provider_timeout"),
+        ])
+        self.assertTrue(stream.closed)
 
     async def test_cancellation_closes_both_stream_and_transport(self):
         stream = StubStream(block=True)

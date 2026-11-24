@@ -5,6 +5,7 @@ import os
 from threading import Event, current_thread
 import unittest
 from unittest.mock import patch
+from zoneinfo import ZoneInfo
 
 from backend.model import ModelCompletion, ModelError, ModelText, ToolCall
 from backend.protocol import ChatRequest
@@ -55,6 +56,29 @@ def turn_state(reply):
 
 
 class TurnTests(unittest.IsolatedAsyncioTestCase):
+    async def test_exclusions_filter_prefetched_and_previously_signed_slot_refs(self):
+        model = ScriptedModel((ModelText("Try [[S1]] or [[S2]]."), ModelCompletion("done", "completed")),)
+        turn_service = service(model)
+        self.addCleanup(turn_service.close_prefetch)
+        state = new_state(ZONE, NOW)
+        # This Monday in the user's zone is still Sunday in UTC.
+        for start, end in (("2026-11-29T17:00:00Z", "2026-11-29T17:30:00Z"),
+                           ("2026-12-01T17:00:00Z", "2026-12-01T17:30:00Z")):
+            add_slot(state, SlotEntry(start_utc=start, end_utc=end, event_type_id=9001, fetched_at=NOW.timestamp()))
+        events = await collect(turn_service, text("Show next week's slots. Mondays and Wednesdays are out for me."),
+                               sign_state(state, SECRET))
+        shown = [ref for event in events if event["type"] == "slot_chips" for ref in event["refs"]]
+        self.assertTrue(shown)
+        reply = "".join(event["text"] for event in events if event["type"] == "text_delta")
+        self.assertNotRegex(reply, r"\[\[S[12]\]\]|01:00")
+        state = turn_state(events)
+        self.assertTrue(all(ref not in {"S1", "S2"} for ref in shown))
+        self.assertTrue(all(datetime.fromisoformat(state.slots[ref].start_utc).astimezone(ZoneInfo(ZONE)).weekday()
+                            not in {0, 2} for ref in shown))
+        context = model.requests[0]["input_steps"][0]["content"][0]["text"]
+        self.assertIn("Excluded weekdays: Monday, Wednesday.", context)
+        self.assertNotIn("Known slot S1:", context)
+
     async def test_capped_text_finishes_with_notice_and_only_verified_history(self):
         for can_continue in (True, False):
             with self.subTest(can_continue=can_continue):
@@ -143,6 +167,21 @@ class TurnTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(request["tools"], [])
                 displayed = [event["refs"] for event in reply if event["type"] == "booking_cards"]
                 self.assertEqual(displayed, [[]] if email else [])
+
+    async def test_rephrased_booking_list_requests_use_one_model_and_no_read_tool(self):
+        for phrase, email in (("What appointments are coming up?", None),
+                              ("Show me the meetings I'm booked for.", "sam@example.com")):
+            with self.subTest(text=phrase):
+                calendar = FakeCal(fixture_overrides={"active_bookings": ["sam_intro"]})
+                model = ScriptedModel((ModelText("Scheduling reply"), ModelCompletion("done", "completed")),)
+                turn_service = service(model, calendar)
+                self.addCleanup(turn_service.close_prefetch)
+                state = new_state(ZONE, NOW)
+                state.user.email = email
+                events = await collect(turn_service, text(phrase), sign_state(state, SECRET))
+                self.assertEqual(len(events[-1]["metrics"]["modelCalls"]), 1)
+                self.assertEqual(model.requests[0]["tools"], [])
+                self.assertEqual(events[-1]["metrics"]["prefetch"]["bookings"], int(bool(email)))
 
     async def test_unadvertised_tool_cannot_regenerate_booking_inventory(self):
         calendar = FakeCal(fixture_overrides={"active_bookings": ["sam_injected_title"]})

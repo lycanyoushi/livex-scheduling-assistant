@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 
 from backend.cal_client import CalError
 from backend.limits import RateLimits
-from backend.model import ModelCompletion, ModelError, ModelText, ToolCall
+from backend.model import ModelCompletion, ModelError, ModelStreamStart, ModelText, ToolCall
 from backend.protocol import ChatRequest
 from backend.server import create_app
 from backend.state import NoActionYetOutcome, PendingCall, new_state, sign_state, verify_state
@@ -77,12 +77,24 @@ class ModelRecoveryTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual([call["modelRole"] for call in metrics["modelCalls"]], ["primary", "backup"])
                 if error.reason:
                     self.assertEqual(metrics["modelCalls"][0]["reason"], error.reason)
+                self.assertNotIn("firstEventMs", metrics["modelCalls"][0])
                 self.assertEqual(primary.requests, backup.requests)
                 self.assertEqual(len(primary.requests), 1)
                 self.assertEqual(self.state(events).interaction_id, "backup-parent")
 
+    async def test_first_raw_event_timing_is_kept_per_attempt_through_timeout_and_backup(self):
+        primary = ScriptedModel((ModelStreamStart(245.0), ModelError("timeout", reason="overall_timeout")))
+        backup = ScriptedModel((ModelStreamStart(120.0), *reply("backup-parent")))
+        events = await self.turn(self.service(primary, backup_model=backup), text("Hello"))
+        metrics = events[-1]["metrics"]
+        self.assertEqual(metrics["outcome"], "ok")
+        self.assertEqual([call["firstEventMs"] for call in metrics["modelCalls"]], [245.0, 120.0])
+        self.assertEqual(metrics["modelCalls"][0]["ttftMs"], 0)
+        self.assertEqual(metrics["modelCalls"][0]["reason"], "overall_timeout")
+        self.assertEqual([event["text"] for event in events if event["type"] == "text_delta"], ["Here is the status."])
+
     async def test_stream_idle_keeps_partial_reply_and_restores_previous_history(self):
-        partial = (ModelText("A usable start"),
+        partial = (ModelStreamStart(350.0), ModelText("A usable start"),
                    ModelCompletion("", "incomplete", can_continue=False, reason="stream_idle_timeout"))
         for idle_role in ("primary", "backup"):
             with self.subTest(idle_role=idle_role):
@@ -105,6 +117,7 @@ class ModelRecoveryTests(unittest.IsolatedAsyncioTestCase):
                 last = metrics["modelCalls"][-1]
                 self.assertEqual((last["modelRole"], last["status"], last["reason"]),
                                  (idle_role, "incomplete", "stream_idle_timeout"))
+                self.assertEqual(last["firstEventMs"], 350.0)
                 self.assertEqual(len(backup.requests), int(idle_role == "backup"))
                 self.assertEqual(metrics["outcome"], "ok")
                 self.assertEqual(state.interaction_id, previous.interaction_id)

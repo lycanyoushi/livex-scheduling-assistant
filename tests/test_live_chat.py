@@ -19,6 +19,19 @@ class LocalResponse(BytesIO):
 
 
 class LiveChatDriverTests(unittest.TestCase):
+    def test_first_raw_event_summary_counts_only_healthy_measured_calls(self):
+        rows = [{"modelCalls": [
+            {"status": "completed", "firstEventMs": 100},
+            {"status": "requires_action", "firstEventMs": 1000},
+            {"status": "completed", "firstEventMs": 2500},
+            {"status": "timeout", "firstEventMs": 4500},
+            {"status": "incomplete", "firstEventMs": 4200},
+            {"status": "completed"},
+        ]}]
+        self.assertEqual(live_chat._healthy_first_event(rows),
+                         {"p50": 1000, "p90": 2200, "max": 2500, "calls": 3})
+        self.assertIsNone(live_chat._healthy_first_event([]))
+
     def test_fixture_keeps_future_openings_except_thursday_afternoon_and_refuses_writes(self):
         calendar = live_chat.fixture_calendar()
         start = datetime.fromisoformat("2026-11-26T08:00:00+08:00")

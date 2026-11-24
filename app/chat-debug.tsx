@@ -5,6 +5,7 @@ type DebugModelCall = {
   modelRole?: string;
   status?: string;
   reason?: string;
+  firstEventMs?: number;
   ttftMs?: number;
   totalMs?: number;
   inputTokens?: number;
@@ -58,7 +59,7 @@ export function ChatDebug({ snapshot, onClose }: { snapshot: DebugSnapshot | nul
           {(metrics.modelCalls ?? []).map((call, index) => (
             <section key={index} aria-label={`Model call ${index + 1}`} className="rounded-lg border border-border p-3 text-sm">
               <p className="font-semibold">{call.modelRole === "backup" ? "Backup" : "Primary"} · {call.status ?? "—"}</p>
-              <p className="text-muted-foreground">First text {milliseconds(call.ttftMs)} · Total {milliseconds(call.totalMs)}</p>
+              <p className="text-muted-foreground">First event {milliseconds(call.firstEventMs)} · First text {milliseconds(call.ttftMs)} · Total {milliseconds(call.totalMs)}</p>
               <p className="text-muted-foreground">Tokens {call.inputTokens ?? "—"} in / {call.outputTokens ?? "—"} out</p>
               {call.reason && <p className="wrap-anywhere text-muted-foreground">{call.reason}</p>}
             </section>

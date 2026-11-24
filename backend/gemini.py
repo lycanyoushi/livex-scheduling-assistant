@@ -10,7 +10,7 @@ from google import genai
 from google.genai import errors as genai_errors, types
 from google.genai._interactions.core.error import APIError, APITimeoutError
 
-from backend.model import ModelCompletion, ModelError, ModelText, ToolCall
+from backend.model import ModelCompletion, ModelError, ModelStreamStart, ModelText, ToolCall
 
 
 _TIMEOUT_SECONDS = 20.0
@@ -127,13 +127,14 @@ class GeminiClient:
         previous_interaction_id: str | None,
         system_instruction: str,
         tools: list[dict],
-    ) -> AsyncIterator[ModelText | ModelCompletion]:
+    ) -> AsyncIterator[ModelStreamStart | ModelText | ModelCompletion]:
         session = {"previous_interaction_id": previous_interaction_id} if previous_interaction_id else {}
         completion = None
         output_steps: set[int] = set()
         pending_calls: dict[int, tuple[ToolCall, list[str]]] = {}
         finished_calls: dict[int, ToolCall] = {}
         argument_error = None
+        received_event = False
         has_text = False
         loop = asyncio.get_running_loop()
         started = loop.time()
@@ -167,6 +168,9 @@ class GeminiClient:
                     async with timer:
                         event = await anext(events, None)
                     received = loop.time()
+                    if event is not None and not received_event:
+                        received_event = True
+                        yield ModelStreamStart((received - started) * 1000)
                     if received >= deadline:
                         raise _DeadlineExpired
                     if event is None:
@@ -245,27 +249,30 @@ class GeminiClient:
                         break
             if completion is None:
                 raise ModelError("model_down", reason=argument_error or "stream_ended_without_completion")
-        except ModelError as error:
-            if error.reason:
-                _LOGGER.warning("Gemini model_down reason=%s", error.reason)
-            raise
-        except TimeoutError as error:
-            expired = timer.expired() or isinstance(error, _DeadlineExpired)
-            if expired and deadline < overall_deadline:
-                if not has_text:
-                    raise ModelError("timeout", reason="first_event_timeout") from None
-                completion = ModelCompletion("", "incomplete", can_continue=False, reason="stream_idle_timeout")
-            else:
-                raise ModelError("timeout") from None
-        except APITimeoutError:
-            raise ModelError("timeout") from None
-        except APIError as error:
-            mapped = _model_error(_sdk_service_code(error), error.status_code, previous_interaction_id)
-            if mapped.reason:
-                _LOGGER.warning("Gemini model_down reason=%s", mapped.reason)
-            raise mapped from None
         except Exception as error:
-            reason = f"unexpected_exception:{type(error).__name__}"
-            _LOGGER.warning("Gemini model_down reason=%s", reason)
-            raise ModelError("model_down", reason=reason) from None
+            if isinstance(error, ModelError):
+                mapped = error
+            elif isinstance(error, TimeoutError) and (timer.expired() or isinstance(error, _DeadlineExpired)):
+                if deadline == overall_deadline:
+                    reason = "overall_timeout"
+                else:
+                    reason = "stream_idle_timeout" if has_text else "first_event_timeout"
+                mapped = ModelError("timeout", reason=reason)
+            elif isinstance(error, (TimeoutError, APITimeoutError)):
+                mapped = ModelError("timeout", reason="provider_timeout")
+            elif isinstance(error, APIError):
+                mapped = _model_error(_sdk_service_code(error), error.status_code, previous_interaction_id)
+            else:
+                mapped = ModelError("model_down", reason=f"unexpected_exception:{type(error).__name__}")
+
+            if has_text and mapped.code == "timeout":
+                completion = ModelCompletion(
+                    "", "incomplete", can_continue=False, reason=mapped.reason or "provider_timeout",
+                )
+            else:
+                if mapped.code == "model_down" and mapped.reason:
+                    _LOGGER.warning("Gemini model_down reason=%s", mapped.reason)
+                if mapped is error:
+                    raise
+                raise mapped from None
         yield completion

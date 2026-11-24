@@ -352,6 +352,18 @@ class PrefetchTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Nearest", chips["note"])
         self.assertEqual([refs[ref]["startLocalIso"][:16] for ref in chips["refs"]], ["2026-11-24T14:00"])
 
+    async def test_multiple_exclusions_shape_early_offers_and_unresolved_cues_skip_them(self):
+        service = self.service(FakeCal())
+        events = await self.collect(service, "Look for an opening next week. Mondays and Wednesdays are out.")
+        refs = next(event["slots"] for event in events if event["type"] == "refs")
+        chips = next(event["refs"] for event in events if event["type"] == "slot_chips")
+        self.assertEqual({refs[ref]["startLocalIso"][:10] for ref in chips}, {"2026-12-01", "2026-12-03", "2026-12-04"})
+        self.assertLessEqual(len(chips), 4)
+
+        events = await self.collect(service, "Can you look next week except for Monday afternoon?")
+        self.assertFalse(any(event["type"] in {"refs", "slot_chips"} for event in events))
+        self.assertEqual(events[-1]["metrics"]["prefetch"]["slots"], 0)
+
     async def test_prefetched_reschedule_slots_keep_their_owned_booking_binding(self):
         class RecordedCalendar(FakeCal):
             def slots(self, *args, **kwargs):

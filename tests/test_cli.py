@@ -113,7 +113,8 @@ class TerminalIntegrationTests(unittest.TestCase):
         self.assertIn("Meeting booked", transcript)
         self.assertIn("Move this meeting?", transcript)
         self.assertIn("Meeting moved", transcript)
-        self.assertIn("Your meeting is 30 Minute Meeting · Fri 27 Nov", transcript)
+        self.assertIn("Your meeting is [B2].", transcript)
+        self.assertEqual(transcript.count("[B2] 30 Minute Meeting · Fri 27 Nov 2026, 09:00–09:30 · accepted"), 1)
         self.assertEqual(transcript.count("Cancel this meeting?"), 2)
         self.assertIn("Meeting cancelled", transcript)
         self.assertIn('"modelCalls": []', transcript)
@@ -145,6 +146,44 @@ class TerminalIntegrationTests(unittest.TestCase):
 
 
 class TerminalEventTests(unittest.IsolatedAsyncioTestCase):
+    async def test_inline_number_reuses_immediately_preceding_time_range(self):
+        second = {**SLOT, "timeLabel": "14:30–15:00"}
+        service = TurnFixture([
+            {"type": "refs", "slots": {"S1": SLOT, "S2": second}},
+            {"type": "text_delta", "text": "Thu 26 Nov\n13:30—14:"},
+            {"type": "text_delta", "text": "00 ("},
+            {"type": "text_delta", "text": "[[S"},
+            {"type": "text_delta", "text": "1]]"},
+            {"type": "text_delta", "text": ")\n2:30 to 3:00 p.m. "},
+            {"type": "text_delta", "text": "[[S2]]."},
+            terminal(),
+        ])
+        output = StringIO()
+        chat = TerminalChat(service, ZONE, read=lambda _: "", output=output)
+
+        await chat.send({"kind": "text", "text": "What times are free?"})
+
+        self.assertEqual(output.getvalue(), "Assistant: Thu 26 Nov\n13:30—14:00 [1]\n2:30 to 3:00 p.m. [2].\n")
+        self.assertEqual(chat.choices, {1: "S1", 2: "S2"})
+        self.assertEqual(chat._input("2"), {"kind": "ui", "action": {"type": "pick_slot", "slotRef": "S2"}})
+
+    async def test_inline_booking_omits_only_the_immediately_repeated_range(self):
+        booking = {"title": "Fixture appointment", "whenLabel": "Thu 26 Nov, 12:00–12:30"}
+        service = TurnFixture([
+            {"type": "refs", "bookings": {"B1": booking}},
+            {"type": "text_delta", "text": "You booked from 12:00–12:30 ("},
+            {"type": "text_delta", "text": "[[B1]])"},
+            {"type": "text_delta", "text": ". A 12:00–13:00 range differs from [[B1]]."},
+            terminal(),
+        ])
+        output = StringIO()
+        chat = TerminalChat(service, ZONE, read=lambda _: "", output=output)
+
+        await chat.send({"kind": "text", "text": "Which meeting did I book?"})
+
+        self.assertEqual(output.getvalue(), "Assistant: You booked from 12:00–12:30 (Fixture appointment · Thu 26 Nov). "
+                         "A 12:00–13:00 range differs from Fixture appointment · Thu 26 Nov, 12:00–12:30.\n")
+
     async def test_plain_times_do_not_receive_numbers_and_previous_choices_stay_available(self):
         overflow = {"dayLabel": "Fri 27 Nov", "timeLabel": "09:00", "startLocalIso": "2026-11-27T09:00:00+08:00"}
         service = TurnFixture([
@@ -180,9 +219,10 @@ class TerminalEventTests(unittest.IsolatedAsyncioTestCase):
         await chat.send({"kind": "text", "text": "Show context"})
         self.assertEqual(output.getvalue(), "")
         await chat.send({"kind": "text", "text": "List meetings"})
-        self.assertEqual([line for line in output.getvalue().splitlines() if line.endswith(" · accepted")], [
-            "Earlier listed appointment · Thu 26 Nov, 13:30–14:00 · accepted",
-            "Listed appointment · Thu 26 Nov, 13:30–14:00 · accepted",
+        self.assertEqual(output.getvalue().splitlines(), [
+            "Assistant: Check [B2] first.",
+            "[B3] Earlier listed appointment · Thu 26 Nov, 13:30–14:00 · accepted",
+            "[B2] Listed appointment · Thu 26 Nov, 13:30–14:00 · accepted",
         ])
         self.assertNotIn("Inventory appointment", output.getvalue())
         await chat.send({"kind": "text", "text": "What did I choose?"})

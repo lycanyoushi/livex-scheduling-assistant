@@ -20,3 +20,29 @@ Python limits each reply to four distinct selectable slot refs across groups and
 ## Build and test results
 
 The Vitest suite passed all 16 tests across three files. The Python suite passed all 208 tests. ESLint passed with zero warnings. The production Next.js build type-checked and produced `/` and `/widget-demo` as static page routes.
+
+## Review follow-up
+
+Weekday exclusions now apply in the request's local time zone to prefetched chips, `find_slots` results and alternatives, and previously issued slot refs used in a reply or proposal. The app skips early slot offers if it cannot resolve an exclusion. The two booking-list rewordings also reach the one-call path. These changes followed the frozen 5/8 held-out run. [Held-out evidence](m7-eval-report.md#held-out-rewordings)
+
+The model receives a four-time offer limit and uses reference markers for exact time labels. The terminal keeps the number for a selectable time and elides its adjacent duplicate label. A booking already shown in an explicit list can appear inline by ref, with its full details printed once in the list. For standalone bookings, the terminal removes an immediately repeated time range and keeps the title and date. Repeated ranges at overflow refs are also elided.
+
+Gemini call metrics now record `firstEventMs` for the first raw stream event, including an event with no user-visible text. Any timeout after visible text keeps the partial reply, adds `(reply cut short)`, and preserves the last good interaction. The named regression test moves the first text to 13 seconds and exercises the 20-second overall timeout.
+
+### First raw event measurement
+
+The fixed ten-turn driver ran once through Next.js and Flask against its read-only fixture on an unbilled Gemini key. All ten turns completed with one model call each. Healthy means a call that returned `completed` or `requires_action`. The measurement starts before the provider connection opens and ends at the first raw stream event. [Per-turn trace](m8-review-live-trace.jsonl)
+
+| Healthy calls | p50 | p90 | Maximum |
+| ---: | ---: | ---: | ---: |
+| 10 | 2,476.50 ms | 3,234.70 ms | 4,078.00 ms |
+
+The maximum exceeded the three-second threshold for switching to five seconds, so the primary uses the eight-second first-event deadline.
+
+### Live terminal check
+
+In the final `DEMO_MODE=fake` session, “What times are free tomorrow afternoon?” returned four numbered times on November 24 and said more were available. A confirmed fictional booking appeared as one entry when asked “Could you pull up the meetings I'm booked for?” Diagnostics reported one completed model call, one prefetched booking, and zero tool calls. The first smoke had exposed a second rendering of an inline ref for an already-listed booking. The final session verified that correction.
+
+The follow-up with Mondays and Wednesdays excluded showed only Tuesday, Thursday, and Friday. The model referred back to two of the displayed times and introduced no additional time. The fictional booking was cancelled before exiting. All calendar changes were in memory.
+
+The final suite passed 222 Python tests and 16 frontend tests. ESLint and the production build also passed.

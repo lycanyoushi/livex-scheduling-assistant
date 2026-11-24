@@ -17,10 +17,11 @@ from urllib.parse import urlsplit
 from backend.cal_client import CalError
 from backend.prescan import EMAIL
 from backend.protocol import BookingView, ChatRequest, ProposalView, SlotView, TurnMetrics, validate_time_zone
+from backend.reference_text import ReferenceLabel, ReferenceText, repeats_time
 from backend.server import _public_url, load_service
 from backend.state import MAX_BOOKINGS, MAX_SLOTS, new_state
 from backend.tools import CalendarTools, ToolRejected
-from backend.turn import REFS, TurnService
+from backend.turn import TurnService
 
 
 _CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
@@ -91,37 +92,40 @@ class _TurnDisplay:
         self.error: str | None = None
         self.retryable = False
         self.booker = False
-        self.pending_text = ""
+        self.text = ReferenceText(self.label)
         self.line_open = False
 
-    def slot_label(self, ref: str) -> str:
+    def slot_number(self, ref: str) -> int:
         if ref not in self.numbers:
             self.numbers[ref] = self.chat.next_choice
             self.chat.next_choice += 1
-        slot = self.slots[ref]
-        return f"[{self.numbers[ref]}] {slot['dayLabel']} {slot['timeLabel']}"
+        return self.numbers[ref]
 
-    def label(self, match: re.Match[str]) -> str:
-        ref = match[1]
+    def slot_label(self, ref: str) -> str:
+        slot = self.slots[ref]
+        return f"[{self.slot_number(ref)}] {slot['dayLabel']} {slot['timeLabel']}"
+
+    def label(self, ref: str, preceding: str) -> ReferenceLabel:
         if ref in self.slots:
-            return self.slot_label(ref)
+            if repeats_time(preceding, self.slots[ref]["timeLabel"]):
+                return ReferenceLabel(f"[{self.slot_number(ref)}]", compact=True)
+            return ReferenceLabel(self.slot_label(ref))
         if ref in self.bookings:
             booking = self.bookings[ref]
-            return f"{booking['title']} · {booking['whenLabel']}"
-        return ref
+            when = booking["whenLabel"]
+            repeated = repeats_time(preceding, when)
+            if ref in self.listed:
+                return ReferenceLabel("", compact=True) if repeated else ReferenceLabel(f"[{ref}]")
+            if repeated:
+                when = when.rsplit(", ", 1)[0] if ", " in when else ""
+            return ReferenceLabel(f"{booking['title']} · {when}" if when else booking["title"])
+        return ReferenceLabel(ref)
 
     def delta(self, value: str, *, final: bool = False) -> None:
-        text = self.pending_text + value
-        self.pending_text = ""
-        if not final:
-            start = text.rfind("[[")
-            if start > text.rfind("]]"):
-                text, self.pending_text = text[:start], text[start:]
-            elif text.endswith("["):
-                text, self.pending_text = text[:-1], "["
+        text = self.text.feed(value, final=final)
         if text:
             prefix = "" if self.line_open else "Assistant: "
-            self.chat.write(prefix + REFS.sub(self.label, text), end="")
+            self.chat.write(prefix + text, end="")
             self.line_open = True
 
     def finish_text(self) -> None:
@@ -198,7 +202,7 @@ class _TurnDisplay:
             for ref in dict.fromkeys(self.listed):
                 booking = self.bookings.get(ref)
                 if booking is not None and (self.result is None or ref != self.result[1]["ref"]):
-                    chat.write(f"{booking['title']} · {booking['whenLabel']} · {booking['status']}")
+                    chat.write(f"[{ref}] {booking['title']} · {booking['whenLabel']} · {booking['status']}")
             if self.result is not None:
                 action, booking = self.result
                 if booking["status"] in _ACTIVE:

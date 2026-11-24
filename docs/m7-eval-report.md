@@ -70,6 +70,8 @@ Commit `19814969f325eb882a21f44cb4d462978d045843` froze eight prompts and their 
 
 The run used 11 live primary calls and two live backup calls, with zero HTTP 429s or 503s. All slot-offering turns stayed within four selectable times. First model text was 2.21 s p50 and 6.33 s p90. Text-turn latency was 5.93 s p50 and 14.22 s p90, excluding pacing. Four of eight text turns used one model call. The runner recorded zero calendar writes across the held-out cases. [Run metrics](../evals/results/gemini-3.5-flash-lite-2026-11-23-held-out.json)
 
+The general weekday-exclusion parser and wider booking-list prescan landed after this held-out run. The recorded result is 5/8. [Follow-up verification](m8-checks.md#review-follow-up)
+
 ## Replacement comparison on Gemini 3.1 Flash-Lite
 
 Gemini 3.1 Flash-Lite with minimal thinking ran each of the 23 approved cases once with the same clock and FakeCal fixture. The comparison used no live backup. Case 23 still exercised its scripted primary and backup failures. The run made 24 live calls, with zero HTTP 429s or 503s, and **passed 21 of 23 cases** and 421 of 426 assertions. Cases 16, 18, 19, and 20 all passed. [Per-check results](../evals/results/gemini-3.1-flash-lite-2026-11-23.json)

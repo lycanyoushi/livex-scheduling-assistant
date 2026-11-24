@@ -1,21 +1,25 @@
 """Keep streamed and explicit time choices within the reply's offer limit."""
 
 from collections.abc import Callable, Iterator
-import re
 
 from backend.protocol import ServerEvent, SlotView
+from backend.reference_text import ReferenceLabel, ReferenceText, repeats_time
 
 _MAX_OFFERS = 4
-_SLOT_MARKER = re.compile(r"\[\[(S[1-9][0-9]*)\]\]")
-_PARTIAL_MARKER = re.compile(r"\[\[(?:S(?:[1-9][0-9]*\]?)?)?\Z|\[\Z")
 
 
 class SlotOfferLimit:
-    def __init__(self, earlier_label: Callable[[str], str | None]) -> None:
+    def __init__(
+        self,
+        earlier_label: Callable[[str], str | None],
+        *,
+        excluded_ref: Callable[[str], bool] | None = None,
+    ) -> None:
         self.earlier_label = earlier_label
+        self.excluded_ref = excluded_ref
         self.slots: dict[str, SlotView] = {}
         self.offered: set[str] = set()
-        self.partial = ""
+        self.text = ReferenceText(self._replace_marker)
 
     def _label(self, ref: str) -> str | None:
         slot = self.slots.get(ref)
@@ -27,37 +31,42 @@ class SlotOfferLimit:
         self.offered.add(ref)
         return True
 
-    def _replace_marker(self, match: re.Match[str]) -> str:
-        ref = match[1]
+    def _replace_marker(self, ref: str, preceding: str) -> ReferenceLabel | None:
+        if not ref.startswith("S"):
+            return None
+        if self.excluded_ref is not None and self.excluded_ref(ref):
+            return ReferenceLabel("", compact=True)
         label = self._label(ref)
         if label is None:
-            return ref
-        return match[0] if self._offer(ref) else label
+            return ReferenceLabel(ref)
+        if self._offer(ref):
+            return None
+        if repeats_time(preceding, label):
+            return ReferenceLabel("", compact=True)
+        return ReferenceLabel(label)
 
     def finish(self) -> Iterator[ServerEvent]:
-        if self.partial:
-            yield {"type": "text_delta", "text": self.partial}
-            self.partial = ""
+        text = self.text.feed("", final=True)
+        if text:
+            yield {"type": "text_delta", "text": text}
 
     def apply(self, event: ServerEvent) -> Iterator[ServerEvent]:
         kind = event["type"]
         if kind == "refs":
             self.slots.update(event.get("slots", {}))
         elif kind == "text_delta":
-            text = self.partial + event["text"]
-            suffix = _PARTIAL_MARKER.search(text)
-            self.partial = suffix[0] if suffix else ""
-            if suffix:
-                text = text[:suffix.start()]
+            text = self.text.feed(event["text"])
             if text:
-                yield {"type": "text_delta", "text": _SLOT_MARKER.sub(self._replace_marker, text)}
+                yield {"type": "text_delta", "text": text}
             return
         elif kind == "assistant_text":
             yield from self.finish()
-            event = {"type": kind, "text": _SLOT_MARKER.sub(self._replace_marker, event["text"])}
+            event = {"type": kind, "text": self.text.feed(event["text"], final=True)}
         elif kind == "slot_chips":
             choices, plain = [], []
             for ref in dict.fromkeys(event["refs"]):
+                if self.excluded_ref is not None and self.excluded_ref(ref):
+                    continue
                 if self._label(ref) is not None:
                     (choices if self._offer(ref) else plain).append(ref)
             event = {"type": kind, "refs": choices, **({"note": event["note"]} if "note" in event else {})}

@@ -1,5 +1,5 @@
 from contextvars import ContextVar
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from threading import Event
 import unittest
 from zoneinfo import ZoneInfo
@@ -108,18 +108,26 @@ class AvailabilityHintTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(len(starts(result)), 4)
                 self.assertNotIn(excluded, {stamp.date().isoformat() for stamp in starts(result)})
 
-    async def test_unsupported_exclusions_keep_model_context_without_automatic_offer(self):
-        for phrase in (
-            "Can you show me some times next week, but not November 23?",
-            "Can you show me some times next week except on Friday afternoon?",
-        ):
-            with self.subTest(phrase=phrase):
-                plan = build_plan(phrase)
-                self.assertFalse(plan.show_openings)
-                self.assertGreater(len(plan.days), 1)
-                result = await self.fetch(plan)
-                self.assertTrue(result.slots_checked)
-                self.assertTrue(result.slots)
+    async def test_exact_date_exclusion_filters_automatic_offers_without_recurrence(self):
+        plan = build_plan("Can you show me some times next week, but not November 23?")
+        self.assertTrue(plan.show_openings)
+        self.assertFalse(plan.exclusion_unresolved)
+        self.assertEqual(plan.excluded_days, {date(2026, 11, 23)})
+        self.assertFalse(plan.excludes(date(2026, 11, 30)))
+        result = await self.fetch(plan)
+        self.assertTrue(result.slots_checked)
+        self.assertEqual({stamp.date().day for stamp in starts(result)}, {24, 25, 26, 27})
+
+    async def test_unresolved_partial_day_exclusion_skips_automatic_availability(self):
+        plan = build_plan("Can you show me some times next week except on Friday afternoon?")
+        self.assertTrue(plan.exclusion_unresolved)
+        self.assertFalse(plan.show_openings)
+        self.assertFalse(plan.days)
+        self.assertFalse(plan.excludes(date(2026, 11, 27)))
+        result = await self.fetch(plan)
+        self.assertFalse(result.slots_checked)
+        self.assertEqual(result.slots, [])
+        self.assertEqual(result.alternatives, [])
 
     def test_existing_booking_and_explanation_requests_are_not_automatic_offers(self):
         for phrase in (
@@ -137,7 +145,9 @@ class AvailabilityHintTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(build_plan("What about Friday morning?", state).show_openings)
         constrained = build_plan("sometime next week but not Monday", state)
         self.assertFalse(constrained.show_openings)
-        self.assertFalse(constrained.excluded_days)
+        self.assertEqual(constrained.excluded_days, {date(2026, 11, 23)})
+        self.assertEqual(constrained.excluded_weekdays, {0})
+        self.assertNotIn(date(2026, 11, 23), constrained.days)
 
     async def test_failed_or_late_reads_do_not_make_an_empty_scope_authoritative(self):
         plan = build_plan("What about Friday morning?")

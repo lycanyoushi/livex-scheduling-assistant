@@ -132,3 +132,7 @@ The fake calendar reuses the fixture's booking checks and mutations with weekday
 ## M9 preparation
 
 Use the current Vercel `services` configuration with ordered rewrites for Flask's existing API paths and Next.js for all other routes. The WSGI entrypoint logs a process identifier and local app setup time so Preview can verify the `/api/warm` request reaches Flask and compare it with the next chat request. Both services keep their existing repository-root layout. [Deployment plan and local checks](deploy-plan.md)
+
+## Review after M8
+
+Apply parsed exclusions by local weekday or exact date across the prefetch window, calendar tools, and offered refs. An unresolved exclusion suppresses early offers. Keep the recorded held-out score from before the parser change. Preserve a partial response after any timeout following visible text and record the first raw stream event separately from first text. The driver's 4.08-second maximum on healthy calls keeps the primary's first-event deadline at eight seconds. [Follow-up verification](m8-checks.md#review-follow-up)

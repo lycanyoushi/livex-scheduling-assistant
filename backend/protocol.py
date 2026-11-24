@@ -183,6 +183,7 @@ class PrefetchMetrics(TypedDict):
 class ModelCallMetrics(TypedDict):
     reason: NotRequired[str]
     httpStatus: NotRequired[int]
+    firstEventMs: NotRequired[float]
     ttftMs: float
     totalMs: float
     inputTokens: int

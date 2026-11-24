@@ -60,6 +60,11 @@ class PrefetchPlan:
     reschedule: _Reschedule | None
     show_openings: bool = False
     excluded_days: frozenset[date] = frozenset()
+    excluded_weekdays: frozenset[int] = frozenset()
+    exclusion_unresolved: bool = False
+
+    def excludes(self, day: date) -> bool:
+        return day in self.excluded_days or day.weekday() in self.excluded_weekdays
 
     def status(self) -> str:
         if self.days and self.attendee_email is not None:
@@ -78,8 +83,11 @@ def plan_prefetch(state: SessionState, now: datetime, hints: PrescanResult, *, t
     instant = parse_instant(now)
     today = instant.astimezone(ZoneInfo(state.time_zone)).date()
     intents = set(hints.intents)
-    days = tuple(sorted({hint.day for hint in hints.dates if hint.day >= today})[:_MAX_HINT_DAYS])
-    spread = not hints.dates and not hints.excluded_days and ("book" in intents or hints.availability_request)
+    days = () if hints.exclusion_unresolved else tuple(sorted({
+        hint.day for hint in hints.dates if hint.day >= today and not hints.excludes(hint.day)
+    })[:_MAX_HINT_DAYS])
+    spread = (not hints.exclusion_unresolved and not hints.dates and not hints.excluded_days
+              and not hints.excluded_weekdays and ("book" in intents or hints.availability_request))
     if spread:
         days = tuple(today + timedelta(days=offset) for offset in range(_MAX_HINT_DAYS))
     email = state.user.email
@@ -110,7 +118,8 @@ def plan_prefetch(state: SessionState, now: datetime, hints: PrescanResult, *, t
     return PrefetchPlan(
         days, hints.dates, hints.part_of_day, spread, lookup_email, target,
         show_openings=bool(days and hints.availability_request and not has_pending_change),
-        excluded_days=hints.excluded_days if not has_pending_change else frozenset(),
+        excluded_days=hints.excluded_days, excluded_weekdays=hints.excluded_weekdays,
+        exclusion_unresolved=hints.exclusion_unresolved,
     )
 
 
@@ -200,10 +209,9 @@ def _prefetch_slots(tools: CalendarTools, plan: PrefetchPlan) -> _SlotResults:
             anchors = tuple(hint for hint in plan.times if hint.day in wanted_days)
             if not anchors:
                 anchors = tuple(DateHint(day) for day in plan.days)
-            if plan.excluded_days:
-                excluded_weekdays = {day.weekday() for day in plan.excluded_days}
+            if plan.excluded_days or plan.excluded_weekdays:
                 warm_entries = [entry for entry in warm_entries
-                                if parse_instant(entry.start_utc).astimezone(zone).weekday() not in excluded_weekdays]
+                                if not plan.excludes(parse_instant(entry.start_utc).astimezone(zone).date())]
             return _SlotResults(alternatives=nearest_slots(warm_entries, anchors, plan.part_of_day, tools.time_zone))
 
     if plan.spread_slots:
@@ -219,7 +227,7 @@ def _prefetch_slots(tools: CalendarTools, plan: PrefetchPlan) -> _SlotResults:
     remainder = sorted(
         (entry for entries in days for entry in entries[1:]), key=lambda entry: not matches_time(entry)
     )
-    limit = _CONSTRAINED_WEEK_SLOTS if plan.excluded_days else _MAX_DATED_SLOTS
+    limit = _CONSTRAINED_WEEK_SLOTS if plan.excluded_days or plan.excluded_weekdays else _MAX_DATED_SLOTS
     return _SlotResults(slots=sorted([*initial, *remainder][:limit], key=lambda entry: entry.start_utc))
 
 

@@ -90,20 +90,68 @@ class PrescanTests(unittest.TestCase):
         self.assertEqual(hints.excluded_days, {date(2026, 11, day) for day in (23, 25, 27)})
         self.assertEqual(hints.dates, tuple(DateHint(date(2026, 11, day)) for day in (24, 26)))
 
-    def test_ambiguous_exclusions_and_change_requests_still_go_to_the_model(self):
+    def test_recurring_exclusions_and_positive_dates_in_both_zones(self):
+        examples = {
+            "Could we find a slot next week? Mondays and Wednesdays are out for me.": {0, 2},
+            "I'd like a slot next week, anything but Tuesday or Friday.": {1, 4},
+            "Can we meet next week? I can’t do Tuesdays or Thursdays.": {1, 3},
+            "Book next week, no Mondays.": {0},
+            "Show some times next week excluding Wednesday, Thursday, and Friday.": {2, 3, 4},
+        }
+        start = date(2026, 11, 30)
+        for zone in ZONES:
+            for phrase, excluded in examples.items():
+                with self.subTest(phrase=phrase, zone=zone):
+                    hints = self.scan(phrase, zone)
+                    self.assertFalse(hints.exclusion_unresolved)
+                    self.assertTrue(hints.availability_request)
+                    self.assertEqual(hints.excluded_weekdays, excluded)
+                    self.assertEqual(hints.dates, tuple(
+                        DateHint(start + timedelta(days=day)) for day in range(5) if day not in excluded
+                    ))
+
+    def test_explicit_date_exclusions_are_limited_to_the_named_date(self):
+        hints = self.scan("Book a time next week except Monday and December 2", ZONES[0])
+        self.assertTrue(hints.availability_request)
+        self.assertEqual(hints.excluded_weekdays, {0})
+        self.assertTrue(hints.excludes(date(2026, 12, 2)))
+        self.assertFalse(hints.excludes(date(2026, 12, 9)))
+        self.assertEqual(hints.dates, tuple(DateHint(date(2026, 12, day)) for day in (1, 3, 4)))
+
+        for phrase in ("Book next week except November 30", "Book next week except next Monday"):
+            with self.subTest(phrase=phrase):
+                hints = self.scan(phrase, ZONES[0])
+                self.assertEqual(hints.excluded_days, {date(2026, 11, 30)})
+                self.assertFalse(hints.excludes(date(2026, 11, 23)))
+
+    def test_unresolved_constraints_block_early_availability_without_excluding_a_full_day(self):
+        for phrase, weekdays in (
+            ("Book a time next week except Monday afternoon", set()),
+            ("Book a time next week except Monday and Tuesday mornings", set()),
+            ("Book a time next week except Monday and the end of December", {0}),
+            ("Show times next week but not before noon", set()),
+            ("Find a slot next week except the first week of December", set()),
+        ):
+            with self.subTest(phrase=phrase):
+                hints = self.scan(phrase, ZONES[0])
+                self.assertTrue(hints.exclusion_unresolved)
+                self.assertFalse(hints.availability_request)
+                self.assertEqual(hints.excluded_weekdays, weekdays)
+                self.assertEqual(hints.part_of_day, "any")
+                self.assertEqual(hints.dates, ())
+
+    def test_excluded_phrases_keep_explicit_positive_dates_and_intents(self):
+        hints = self.scan("Book a time Thursday but not Monday", ZONES[0])
+        self.assertTrue(hints.availability_request)
+        self.assertEqual(hints.dates, (DateHint(date(2026, 11, 26)),))
+        hints = self.scan("Book next week, except Monday, Wednesday is good", ZONES[0])
+        self.assertEqual(hints.excluded_weekdays, {0})
         for phrase in (
-            "Book a time next week except November 30",
-            "Book a time next week except Monday and December 2",
-            "Book a time next week except Monday afternoon",
-            "Book a time next week except next Monday",
-            "Book a time Thursday but not Monday",
             "Move my meeting to next week but not Monday",
             "Write a poem about how to book next week but not Monday",
         ):
             with self.subTest(phrase=phrase):
-                hints = self.scan(phrase, ZONES[0])
-                self.assertFalse(hints.availability_request)
-                self.assertEqual(hints.excluded_days, set())
+                self.assertFalse(self.scan(phrase, ZONES[0]).availability_request)
 
     def test_email_intents_and_unrelated_numbers(self):
         hints = self.scan("Book a 30 min call Tuesday 10am for Sam@Example.com", ZONES[0])

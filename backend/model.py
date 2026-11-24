@@ -11,6 +11,13 @@ class ModelText:
 
 
 @dataclass(frozen=True)
+class ModelStreamStart:
+    """Time of the first raw event from one provider stream attempt."""
+
+    elapsed_ms: float
+
+
+@dataclass(frozen=True)
 class ToolCall:
     id: str
     name: str
@@ -48,4 +55,4 @@ class ModelClient(Protocol):
         previous_interaction_id: str | None,
         system_instruction: str,
         tools: list[dict],
-    ) -> AsyncIterator[ModelText | ModelCompletion]: ...
+    ) -> AsyncIterator[ModelStreamStart | ModelText | ModelCompletion]: ...

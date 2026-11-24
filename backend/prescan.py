@@ -41,7 +41,10 @@ PARTS: dict[PartOfDay, re.Pattern[str]] = {
 }
 INTENTS = {
     "book": re.compile(r"\b(?:book|schedule|meet|meeting|call|slots?|available|free|time|reservar)\b", re.I),
-    "list": re.compile(r"\b(?:my meetings|my bookings|upcoming|scheduled|what do i have|what meetings)\b", re.I),
+    "list": re.compile(
+        r"\b(?:my meetings|my bookings|upcoming|scheduled|what do i have|what meetings|"
+        r"appointments? (?:are |is )?coming up|meetings? i(?:['’]m| am) booked for)\b", re.I,
+    ),
     "cancel": re.compile(r"\b(?:cancel|call off|drop|cancelar)\b", re.I),
     "reschedule": re.compile(r"\b(?:reschedule|move|push|change the time|reprogramar)\b", re.I),
 }
@@ -59,30 +62,33 @@ TIME_REQUEST = re.compile(
 )
 DATED_FOLLOWUP = re.compile(r"^\s*¿?\s*(?:what about|how about|qué tal)\b", re.I)
 EXPLANATION = re.compile(
-    r"\b(?:why|explain|how (?:does|do|did|would|will)|what can you help (?:me|us)|por qué|cómo funciona)\b",
+    r"\b(?:why|explain|how (?:to|does|do|did|would|will)|what can you help (?:me|us)|por qué|cómo funciona)\b",
     re.I,
 )
 EXISTING_BOOKING = re.compile(
     r"\b(?:my|our)\s+(?:(?:existing|current|upcoming|scheduled)\s+)?(?:bookings?|meetings?|appointments?|calendar)\b",
     re.I,
 )
-DATE_EXCLUSION = re.compile(
-    r"\b(?:no|not|except(?:\s+for)?|excluding|other than|anything but|besides|menos|excepto|salvo)"
-    r"\s+(?:(?:on|for|el)\s+)?",
-    re.I,
+_WEEKDAY_TOKEN = re.compile(rf"\b(?P<weekday>{'|'.join(WEEKDAYS)})(?:s)?\b")
+_EXCLUSION_PREFIX = re.compile(
+    r"\b(?:(?P<short>no|not)|except(?:\s+for)?|excluding|other than|anything but|besides|"
+    r"(?:can['’]t|cannot)\s+(?:do|make)|menos|excepto|salvo)\s+(?:(?:on|for|el)\s+)?"
 )
-_WEEK_REQUEST_PREFIX = re.compile(
-    r"(?:(?:please|(?:can|could|would|may) (?:i|we|you))\s+)?"
-    r"(?:(?:(?:book|schedule|reserve)(?:\s+(?:me|a (?:time|meeting|call)|an appointment))?"
-    r"|(?:show|find|check|offer)(?:\s+me)?\s+(?:some\s+)?(?:times|openings|availability)"
-    r"|(?:what|how)\s+about)(?:\s+(?:sometime|any\s*time|some\s+time|for|in))?"
-    r"|(?:sometime|any\s*time|some\s+time)(?:\s+in)?)?",
+_EXCLUSION_SUFFIX = re.compile(
+    r"\s+(?:are out|is out|(?:don['’]t|doesn['’]t|do not|does not|won['’]t) work|"
+    r"(?:are|is) (?:off limits|unavailable)|(?:aren['’]t|isn['’]t) (?:good|available))\b"
 )
-_WEEKDAY = rf"(?:{'|'.join(WEEKDAYS)})"
-_WEEK_EXCLUSION_SUFFIX = re.compile(
-    r"(?:(?:\s+in the)?\s+(?:morning|afternoon|evening))?[,\s]+(?:but\s+)?"
-    + DATE_EXCLUSION.pattern
-    + rf"(?P<weekdays>{_WEEKDAY}(?:(?:\s*,\s*(?:(?:and|or)\s+)?|\s+(?:and|or)\s+){_WEEKDAY})*)[\s.!?]*",
+_LIST_SEPARATOR = re.compile(r"\s*(?:,\s*(?:(?:and|or|y|o)\s+)?|\s+(?:and|or|y|o)\s+|\s*&\s*)")
+_EXCLUSION_QUALIFIER = re.compile(
+    r"\s+(?:(?:in the|during the|por la)\s+)?(?:mornings?|afternoons?|evenings?|nights?|ma[nñ]anas?|tardes?|noches?)\b"
+    r"|\s+(?:between|before|after|at|a las|until|through|to)\b"
+)
+_POSITIVE_DATE_SUFFIX = re.compile(
+    r"\s+(?:works?|(?:would|could) work|is (?:fine|okay|good|available|an option))\b"
+)
+_UNPARSED_EXCLUSION = re.compile(
+    r"(?:before|after|between|until|during|too (?:early|late)|mornings?|afternoons?|evenings?|"
+    r"weekdays?|weekends?|holidays?|the \d|\d|(?:jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec)\.)\b"
 )
 
 
@@ -100,6 +106,11 @@ class PrescanResult:
     intents: tuple[str, ...]
     availability_request: bool = False
     excluded_days: frozenset[date] = frozenset()
+    excluded_weekdays: frozenset[int] = frozenset()
+    exclusion_unresolved: bool = False
+
+    def excludes(self, day: date) -> bool:
+        return day in self.excluded_days or day.weekday() in self.excluded_weekdays
 
 
 def _requested_time(match: re.Match[str] | None) -> time | None:
@@ -175,21 +186,84 @@ def _dates(text: str, reference: datetime) -> tuple[DateHint, ...]:
     return tuple(dict.fromkeys(results))
 
 
-def _week_exclusions(text: str, today: date) -> tuple[tuple[DateHint, ...], frozenset[date]] | None:
-    week = DATES.search(text)
-    if not week or not week["week"] or not week["week"].startswith(("this", "next")):
+def _excluded_date(text: str, start: int, reference: datetime) -> tuple[int, int | date | None] | None:
+    weekday = _WEEKDAY_TOKEN.match(text, start)
+    if weekday:
+        return weekday.end(), WEEKDAYS[weekday["weekday"]]
+    match = DATES.match(text, start)
+    if not match:
         return None
-    if not _WEEK_REQUEST_PREFIX.fullmatch(text[:week.start()].strip()):
-        return None
-    suffix = _WEEK_EXCLUSION_SUFFIX.fullmatch(text[week.end():])
-    if not suffix:
-        return None
-    start = _week_start(today - timedelta(days=today.weekday()), week["week"])
-    excluded = frozenset(
-        start + timedelta(days=WEEKDAYS[match["weekday"]]) for match in DATES.finditer(suffix["weekdays"])
-    )
-    days = (start + timedelta(days=index) for index in range(5))
-    return tuple(DateHint(day) for day in days if day >= today and day not in excluded), excluded
+    if match["weekday"] and match["modifier"] == "this":
+        offset = WEEKDAYS[match["weekday"]] - reference.weekday()
+        return match.end(), reference.date() + timedelta(days=offset)
+    days = _dates(match[0], reference)
+    return match.end(), days[0].day if len(days) == 1 and not match["week"] else None
+
+
+def _exclusion_list(text: str, start: int, reference: datetime) -> tuple[int, list[int | date], bool]:
+    end = start
+    targets: list[int | date] = []
+    unresolved = False
+    next_start = start
+    while match := _excluded_date(text, next_start, reference):
+        if _POSITIVE_DATE_SUFFIX.match(text, match[0]):
+            return end, targets, not targets
+        end, target = match
+        if _EXCLUSION_QUALIFIER.match(text, end) or _requested_time(ATTACHED_TIME.match(text[end:])) is not None:
+            return end, [], True
+        if target is None:
+            unresolved = True
+        else:
+            targets.append(target)
+        separator = _LIST_SEPARATOR.match(text, end)
+        if not separator:
+            break
+        if _excluded_date(text, separator.end(), reference) is None:
+            unresolved |= bool(re.search(r"\b(?:and|or|y|o)\b|&", separator[0]))
+            break
+        next_start = separator.end()
+    return end, targets, unresolved
+
+
+def _exclusions(text: str, reference: datetime) -> tuple[str, frozenset[date], frozenset[int], bool]:
+    days: set[date] = set()
+    weekdays: set[int] = set()
+    unresolved = False
+    removed: list[tuple[int, int]] = []
+
+    def collect(start: int, end: int, targets: list[int | date]) -> None:
+        removed.append((start, end))
+        days.update(target for target in targets if isinstance(target, date))
+        weekdays.update(target for target in targets if isinstance(target, int))
+
+    for cue in _EXCLUSION_PREFIX.finditer(text):
+        end, targets, partial = _exclusion_list(text, cue.end(), reference)
+        if end == cue.end():
+            unresolved |= not cue["short"] or bool(_UNPARSED_EXCLUSION.match(text, end))
+            continue
+        unresolved |= partial
+        collect(cue.start(), end, targets)
+    for cue in _EXCLUSION_SUFFIX.finditer(text):
+        for start in sorted({match.start() for pattern in (DATES, _WEEKDAY_TOKEN)
+                             for match in pattern.finditer(text, 0, cue.start())}):
+            end, targets, partial = _exclusion_list(text, start, reference)
+            if end == cue.start() and targets:
+                unresolved |= partial
+                collect(start, cue.end(), targets)
+                break
+        else:
+            unresolved = True
+
+    cleaned = list(text)
+    for first, last in removed:
+        cleaned[first:last] = " " * (last - first)
+    positive = "".join(cleaned)
+    monday = reference.date() - timedelta(days=reference.weekday())
+    for scope in DATES.finditer(positive):
+        if scope["week"]:
+            start = _week_start(monday, scope["week"])
+            days.update(start + timedelta(days=weekday) for weekday in weekdays)
+    return positive, frozenset(days), frozenset(weekdays), unresolved
 
 
 def _availability_request(
@@ -198,8 +272,6 @@ def _availability_request(
     if any(intent in intents for intent in ("list", "cancel", "reschedule")):
         return False
     if EXPLANATION.search(text) or EXISTING_BOOKING.search(text):
-        return False
-    if any(DATES.match(text, match.end()) for match in DATE_EXCLUSION.finditer(text)):
         return False
     if BOOKING_REQUEST.search(text) or AVAILABILITY_REQUEST.search(text) or TIME_REQUEST.search(text):
         return True
@@ -222,17 +294,27 @@ def prescan(text: str, *, now: datetime, time_zone: str) -> PrescanResult:
     reference = now.astimezone(ZoneInfo(time_zone))
     match = EMAIL.search(text)
     text_without_email = EMAIL.sub(" ", text.casefold())
-    part: PartOfDay = next((name for name, pattern in PARTS.items() if pattern.search(text_without_email)), "any")
-    constrained = _week_exclusions(text_without_email, reference.date())
-    dates, excluded = constrained if constrained is not None else (_dates(text_without_email, reference), frozenset())
+    positive, excluded, weekdays, unresolved = _exclusions(text_without_email, reference)
+    part: PartOfDay = "any"
+    dates: tuple[DateHint, ...] = ()
+    if not unresolved:
+        part = next((name for name, pattern in PARTS.items() if pattern.search(positive)), "any")
+        dates = tuple(hint for hint in _dates(positive, reference)
+                      if hint.day not in excluded and hint.day.weekday() not in weekdays)
     intents = tuple(name for name, pattern in INTENTS.items() if pattern.search(text_without_email))
+    relative_week = bool(excluded or weekdays) and any(match["week"] for match in DATES.finditer(positive))
+    availability = not unresolved and _availability_request(positive, dates, part, intents)
+    if relative_week and not unresolved and not set(intents) & {"list", "cancel", "reschedule"}:
+        availability |= not EXPLANATION.search(text_without_email) and not EXISTING_BOOKING.search(text_without_email)
     return PrescanResult(
         match.group().casefold() if match else None,
         dates,
         part,
         intents,
-        constrained is not None or _availability_request(text_without_email, dates, part, intents),
+        availability,
         excluded,
+        weekdays,
+        unresolved,
     )
 
 

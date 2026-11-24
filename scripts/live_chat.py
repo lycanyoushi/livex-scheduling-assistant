@@ -291,6 +291,13 @@ def _percentiles(values: list[float]) -> dict | None:
     }
 
 
+def _healthy_first_event(rows: list[dict]) -> dict | None:
+    values = [call["firstEventMs"] for row in rows for call in row.get("modelCalls", [])
+              if call.get("status") in {"completed", "requires_action"} and "firstEventMs" in call]
+    percentiles = _percentiles(values)
+    return {**percentiles, "max": max(values), "calls": len(values)} if percentiles is not None else None
+
+
 def run(origin: str, label: str, report_path: Path) -> int:
     with report_path.open("x", encoding="utf-8") as report:
         def emit(item: dict) -> None:
@@ -321,12 +328,18 @@ def run(origin: str, label: str, report_path: Path) -> int:
 
         accepted = [row for row in rows if row["outcome"] == "ok"]
         timings = ("firstStatusMs", "firstTextMs", "firstChipsMs", "firstUsefulMs", "elapsedMs", "serverMs")
+        first_event = _healthy_first_event(rows)
         emit({
             "type": "summary", "label": label, "attempts": len(rows), "successful": len(accepted),
             "failed": dict(Counter(row.get("error", "unknown") for row in rows if row["outcome"] != "ok")),
             "oneModelCallTurns": sum(len(row.get("modelCalls", [])) == 1 for row in accepted),
+            "healthyFirstEventMs": first_event,
             "timings": {name: _percentiles([row[name] for row in accepted if name in row]) for name in timings},
         })
+        if first_event:
+            print(f"Healthy first raw event, {first_event['calls']} calls: "
+                  f"p50 {first_event['p50']:.2f} ms, p90 {first_event['p90']:.2f} ms, "
+                  f"max {first_event['max']:.2f} ms", flush=True)
         return 0 if len(accepted) == len(PROMPTS) else 1
 
 
