@@ -26,12 +26,14 @@ class ModelCompletion:
     output_tokens: int = 0
     cached_tokens: int = 0
     thought_tokens: int = 0
+    can_continue: bool = True
 
 
 @dataclass
 class ModelError(Exception):
     code: str
     http_status: int | None = None
+    reason: str | None = None
 
     def __post_init__(self) -> None:
         super().__init__(self.code)

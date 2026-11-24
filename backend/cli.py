@@ -84,7 +84,7 @@ class _TurnDisplay:
         self.bookings = dict(chat.bookings)
         self.numbers = {ref: number for number, ref in chat.choices.items()}
         self.listed: list[str] = []
-        self.shown_bookings: set[str] = set()
+        self.retired_bookings: set[str] = set()
         self.recovery_refs: set[str] = set()
         self.proposal: ProposalView | None = None
         self.result: tuple[str, BookingView] | None = None
@@ -106,7 +106,6 @@ class _TurnDisplay:
         if ref in self.slots:
             return self.slot_label(ref)
         if ref in self.bookings:
-            self.shown_bookings.add(ref)
             booking = self.bookings[ref]
             return f"{booking['title']} · {booking['whenLabel']}"
         return ref
@@ -136,7 +135,11 @@ class _TurnDisplay:
         if kind == "refs":
             self.slots.update(event.get("slots", {}))
             self.bookings.update(event.get("bookings", {}))
-            self.listed.extend(event.get("bookings", {}))
+            self.retired_bookings.update(event.get("retiredBookings", ()))
+            for ref in self.retired_bookings:
+                self.bookings.pop(ref, None)
+        elif kind == "booking_cards":
+            self.listed.extend(ref for ref in event["refs"] if ref in self.bookings)
         elif kind == "text_delta":
             self.delta(event["text"])
         else:
@@ -168,6 +171,10 @@ class _TurnDisplay:
     def commit(self, event, request: dict) -> None:
         chat = self.chat
         chat.token, chat.metrics = event["stateToken"], event["metrics"]
+        for ref in self.retired_bookings:
+            chat.bookings.pop(ref, None)
+        if chat.latest_booking in self.retired_bookings:
+            chat.latest_booking = None
         success = chat.metrics["outcome"] == "ok" or chat.metrics.get("fallback") == "code_only"
         slot_action = request["kind"] == "ui" and request["action"]["type"] in {"pick_slot", "confirm_proposal"}
         if self.error in {"session_expired", "interaction_expired"}:
@@ -185,8 +192,8 @@ class _TurnDisplay:
             chat.bookings = _recent(self.bookings, MAX_BOOKINGS)
             chat.choices = {number: ref for ref, number in self.numbers.items() if ref in chat.slots}
             for ref in dict.fromkeys(self.listed):
-                if ref not in self.shown_bookings and (self.result is None or ref != self.result[1]["ref"]):
-                    booking = self.bookings[ref]
+                booking = self.bookings.get(ref)
+                if booking is not None and (self.result is None or ref != self.result[1]["ref"]):
                     chat.write(f"{booking['title']} · {booking['whenLabel']} · {booking['status']}")
             if self.result is not None:
                 action, booking = self.result
@@ -293,32 +300,38 @@ class TerminalChat:
             if self.booking_url is not None:
                 self.write(f"Book directly: {self.booking_url}")
 
-    def _prompt(self) -> str:
-        if self.proposal is None:
-            return "You: "
-        if self.proposal["kind"] == "book":
+    def _contact_field(self) -> str | None:
+        if self.proposal is not None and self.proposal["kind"] == "book":
             if not self.proposal.get("name"):
-                return "Name: "
+                return "name"
             if not self.proposal.get("email"):
-                return "Email: "
-        return "Confirm? [y/n] "
+                return "email"
+        return None
+
+    def _prompt(self) -> str:
+        field = self._contact_field()
+        if field is not None:
+            return f"{field.title()}: "
+        return "You: " if self.proposal is None else "Confirm? [y/n] "
 
     def _proposed_action(self, answer: str) -> dict | None:
         proposal = self.proposal
         assert proposal is not None
-        if proposal["kind"] == "book":
-            if not proposal.get("name"):
-                if len(answer) <= 200:
-                    proposal["name"] = answer
-                else:
-                    self.write("Use a name of 200 characters or fewer.")
-                return None
-            if not proposal.get("email"):
-                if len(answer) <= 254 and EMAIL.fullmatch(answer):
-                    proposal["email"] = answer
-                else:
-                    self.write("Enter a valid email address.")
-                return None
+        field = self._contact_field()
+        if field is not None and answer.casefold() in {"", "/cancel"}:
+            return _ui("dismiss_proposal", proposalId=proposal["id"])
+        if field == "name":
+            if len(answer) <= 200:
+                proposal["name"] = answer
+            else:
+                self.write("Use a name of 200 characters or fewer.")
+            return None
+        if field == "email":
+            if len(answer) <= 254 and EMAIL.fullmatch(answer):
+                proposal["email"] = answer
+            else:
+                self.write("Enter a valid email address.")
+            return None
         if answer.casefold() == "n":
             return _ui("dismiss_proposal", proposalId=proposal["id"])
         if answer.casefold() == "y":
@@ -376,9 +389,10 @@ class TerminalChat:
             choice = self.read(self._prompt()).strip()
             if choice == "/quit":
                 return
-            if choice.startswith("/"):
+            collecting_contact = self._contact_field() is not None
+            if choice.startswith("/") and not (collecting_contact and choice.casefold() == "/cancel"):
                 self._command(choice)
-            elif choice and (source := self._input(choice)) is not None:
+            elif (choice or collecting_contact) and (source := self._input(choice)) is not None:
                 runner.run(self.send(source))
 
 

@@ -171,6 +171,11 @@ def _availability_request(
         return True
     if dates and DATED_FOLLOWUP.match(text):
         return True
+    if len(dates) == 1 and dates[0].at is not None:
+        phrase = text.strip(" \t\r\n¿?¡!,.")
+        day = DATES.match(phrase)
+        if day and ATTACHED_TIME.fullmatch(phrase[day.end():]):
+            return True
     if dates and part != "any":
         remaining = PARTS[part].sub("", DATES.sub("", text))
         return not remaining.strip(" \t\r\n¿?¡!,.")

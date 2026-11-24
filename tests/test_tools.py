@@ -203,6 +203,7 @@ class CalendarToolsTests(unittest.TestCase):
         for private in ("sam@example.com", "taylor@example.com", "visitor@calendar.invalid", "fixture-sam-intro"):
             self.assertNotIn(private, serialized)
         self.assertTrue(all(entry["attendees"] == ["sam@example.com"] for entry in result.events[0]["bookings"].values()))
+        self.assertEqual(result.events[1], {"type": "booking_cards", "refs": list(result.events[0]["bookings"])})
 
     def test_empty_list_emits_an_empty_booking_map_and_resets_the_move_context(self):
         self.state.rescheduling_booking_ref = self.known_booking()
@@ -211,7 +212,10 @@ class CalendarToolsTests(unittest.TestCase):
         result = tools.execute("list_bookings", {"email": "", "which": "upcoming"})
 
         self.assertEqual(result.result["bookings"], [])
-        self.assertEqual(result.events, [{"type": "refs", "bookings": {}}])
+        self.assertEqual(result.events, [
+            {"type": "refs", "bookings": {}},
+            {"type": "booking_cards", "refs": []},
+        ])
         self.assertIsNone(self.state.rescheduling_booking_ref)
 
     def test_booking_proposal_prefills_contact_and_only_emits_confirmation(self):

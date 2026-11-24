@@ -1,4 +1,4 @@
-"""Process-local admission control for chat requests and Gemini calls."""
+"""Process-local admission control for chat, warm-up, and Gemini calls."""
 
 from collections import deque
 from collections.abc import Callable
@@ -20,21 +20,21 @@ class RateLimits:
         self._turn_limit = turns_per_window
         self._model_limit = model_calls_per_day
         self._clock = clock
-        self._turns: dict[str, deque[float]] = {}
+        self._requests: dict[tuple[str, bool], deque[float]] = {}
         self._next_cleanup = float("-inf")
         self._model_day = None
         self._model_count = 0
         self._lock = Lock()
 
-    def request_retry_after(self, address: str) -> int:
-        """Admit this request, or return seconds until the address can retry."""
+    def request_retry_after(self, address: str, *, warm: bool = False) -> int:
+        """Admit the request in its route bucket, or return seconds until a retry."""
         with self._lock:
             now = self._clock()
             cutoff = now - _WINDOW_SECONDS
             if now >= self._next_cleanup:
-                self._turns = {ip: times for ip, times in self._turns.items() if times[-1] > cutoff}
+                self._requests = {key: times for key, times in self._requests.items() if times[-1] > cutoff}
                 self._next_cleanup = now + _WINDOW_SECONDS
-            times = self._turns.setdefault(address, deque())
+            times = self._requests.setdefault((address, warm), deque())
             while times and times[0] <= cutoff:
                 times.popleft()
             if len(times) >= self._turn_limit:

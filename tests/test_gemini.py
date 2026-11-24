@@ -73,7 +73,8 @@ class GeminiClientTests(IsolatedAsyncioTestCase):
         with self.assertLogs("backend.gemini", level="WARNING") as logged, self.assertRaises(ModelError) as raised:
             await anext(self.stream())
         self.assertEqual(raised.exception.code, "model_down")
-        self.assertEqual(logged.output, ["WARNING:backend.gemini:Unexpected Gemini exception: RuntimeError"])
+        self.assertEqual(raised.exception.reason, "unexpected_exception:RuntimeError")
+        self.assertEqual(logged.output, ["WARNING:backend.gemini:Gemini model_down reason=unexpected_exception:RuntimeError"])
 
     def setUp(self):
         self.sdk = StubAsyncClient()
@@ -120,7 +121,7 @@ class GeminiClientTests(IsolatedAsyncioTestCase):
             input=self.input_steps,
             system_instruction="Test scheduler",
             tools=self.tools,
-            generation_config={"thinking_level": "minimal", "max_output_tokens": 300},
+            generation_config={"thinking_level": "minimal", "max_output_tokens": 800},
             store=True,
             stream=True,
             automatic_continuation=False,
@@ -188,24 +189,39 @@ class GeminiClientTests(IsolatedAsyncioTestCase):
         request = self.sdk.interactions.create.call_args.kwargs
         self.assertEqual(request["previous_interaction_id"], "parent")
         self.assertEqual(request["model"], "gemini-3.1-flash-lite")
-        self.assertEqual(request["generation_config"], {"thinking_level": "low", "max_output_tokens": 300})
+        self.assertEqual(request["generation_config"], {"thinking_level": "low", "max_output_tokens": 800})
 
     async def test_incomplete_or_malformed_stream_exposes_no_calls(self):
         start = step_start(1, "function_call", id="call-1", name="find_slots", arguments={})
-        for events in (
-            (start, step_stop(1), completed("incomplete")),
-            (start, completed("requires_action")),
-            (start, step_delta(1, "arguments_delta", arguments='{"window":'), step_stop(1)),
-            (start, step_delta(1, "arguments_delta", arguments='["afternoon"]'), step_stop(1)),
-            (start, step_stop(1)),
+        for events, reason in (
+            ((start, step_stop(1), completed("incomplete")), "incomplete_without_text"),
+            ((start, completed("requires_action")), "unclosed_stream_step"),
+            ((start, step_delta(1, "arguments_delta", arguments='{"window":'), step_stop(1)), "invalid_arguments_json"),
+            ((start, step_delta(1, "arguments_delta", arguments='["afternoon"]'), step_stop(1)), "arguments_not_an_object"),
+            ((start, step_stop(1)), "stream_ended_without_completion"),
+            ((completed("failed"),), "terminal_status_failed"),
         ):
             with self.subTest(event_count=len(events)):
                 stream = StubStream(events)
                 self.sdk.interactions.create.return_value = stream
-                with self.assertRaises(ModelError) as raised:
+                with self.assertLogs("backend.gemini", level="WARNING"), self.assertRaises(ModelError) as raised:
                     await anext(self.stream("parent"))
                 self.assertEqual(raised.exception.code, "model_down")
+                self.assertEqual(raised.exception.reason, reason)
                 self.assertTrue(stream.closed)
+
+    async def test_capped_text_matches_probe_and_disallows_continuing_an_unfinished_tool(self):
+        output = (step_start(0, "model_output"), step_delta(0, "text", text="Partial reply"), step_stop(0))
+        for tool_steps, can_continue in (
+            ((), True),
+            ((step_start(1, "function_call", id="call-1", name="find_slots", arguments={}),), False),
+        ):
+            with self.subTest(tool_steps=bool(tool_steps)):
+                self.sdk.interactions.create.return_value = StubStream((*output, *tool_steps, completed("incomplete")))
+                self.assertEqual([event async for event in self.stream("parent")], [
+                    ModelText("Partial reply"),
+                    ModelCompletion("new-interaction", "incomplete", can_continue=can_continue),
+                ])
 
     async def test_sanitizes_sdk_status_errors_and_retains_transport_status(self):
         for status, service_code, previous_id, expected in (

@@ -181,6 +181,8 @@ class PrefetchMetrics(TypedDict):
 
 
 class ModelCallMetrics(TypedDict):
+    reason: NotRequired[str]
+    httpStatus: NotRequired[int]
     ttftMs: float
     totalMs: float
     inputTokens: int
@@ -226,6 +228,7 @@ class StatusEvent(TypedDict):
 
 class RefsEvent(TypedDict):
     type: Literal["refs"]
+    retiredBookings: NotRequired[list[str]]
     slots: NotRequired[dict[str, SlotView]]
     bookings: NotRequired[dict[str, BookingView]]
 
@@ -244,6 +247,11 @@ class BookingResultEvent(TypedDict):
     type: Literal["booking_result"]
     kind: Literal["booked", "cancelled", "rescheduled"]
     booking: BookingView
+
+
+class BookingCardsEvent(TypedDict):
+    type: Literal["booking_cards"]
+    refs: list[str]
 
 
 class SlotChipsEvent(TypedDict):
@@ -273,5 +281,5 @@ class TurnEndEvent(TypedDict):
 
 ServerEvent = (
     StatusEvent | RefsEvent | TextDeltaEvent | ProposalEvent | BookingResultEvent
-    | SlotChipsEvent | AssistantTextEvent | ErrorEvent | TurnEndEvent
+    | BookingCardsEvent | SlotChipsEvent | AssistantTextEvent | ErrorEvent | TurnEndEvent
 )

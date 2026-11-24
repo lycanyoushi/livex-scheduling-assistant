@@ -237,12 +237,26 @@ def create_app(service: TurnService | None = None, *, turn_loop: TurnLoop | None
         atexit.register(turn_service.close_prefetch)
         atexit.register(turn_loop.close)
 
+    def rate_limit_response(*, warm: bool = False) -> Response | None:
+        limits = turn_service.rate_limits
+        retry_after = limits.request_retry_after(_client_address(), warm=warm) if limits is not None else 0
+        if not retry_after:
+            return None
+        result = jsonify(error=ERRORS["rate_limited"], code="rate_limited")
+        result.status_code = 429
+        result.headers["Retry-After"] = str(retry_after)
+        result.headers["Cache-Control"] = "no-store"
+        return result
+
     @app.get("/api/warm")
     def warm() -> Response | tuple[Response, int]:
         try:
             time_zone = _WARM_TIME_ZONE.validate_python(request.args.get("timeZone", "UTC"))
         except ValidationError:
             return jsonify(error="Invalid time zone.", code="invalid_request"), 400
+
+        if (limited := rate_limit_response(warm=True)) is not None:
+            return limited
 
         now = turn_service.clock()
         calendar = turn_service.calendar
@@ -284,14 +298,8 @@ def create_app(service: TurnService | None = None, *, turn_loop: TurnLoop | None
             result = jsonify(error="Invalid chat request.", code="invalid_request")
             result.status_code = 400
             return result
-        if turn_service.rate_limits is not None:
-            retry_after = turn_service.rate_limits.request_retry_after(_client_address())
-            if retry_after:
-                result = jsonify(error=ERRORS["rate_limited"], code="rate_limited")
-                result.status_code = 429
-                result.headers["Retry-After"] = str(retry_after)
-                result.headers["Cache-Control"] = "no-store"
-                return result
+        if (limited := rate_limit_response()) is not None:
+            return limited
         return Response(
             stream_with_context(stream_ndjson(turn_service.events(chat_request), turn_loop)),
             content_type="application/x-ndjson; charset=utf-8",

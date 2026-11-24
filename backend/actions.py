@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from time import sleep
 from typing import Literal, Protocol
 from zoneinfo import ZoneInfo
 
@@ -47,6 +48,7 @@ from backend.tools import CalendarReader, CalendarTools, ToolRejected, booking_e
 _UPCOMING_STATUS = {"accepted", "pending"}
 _SLOT_TAKEN = "That time was just taken. Here are the closest open times:"
 _MAX_VERIFY_PAGES = 3
+_WRITE_READBACK_DELAY_SECONDS = 2.0
 
 
 class CalendarWriter(CalendarReader, Protocol):
@@ -99,6 +101,7 @@ class CalendarActions:
         allowed_slugs: Iterable[str] = (),
         default_slug: str | None = None,
         ledger: ConfirmationLedger | None = None,
+        wait: Callable[[float], None] = sleep,
     ) -> None:
         self.calendar = calendar
         self.state = state
@@ -106,6 +109,7 @@ class CalendarActions:
         self.zone = ZoneInfo(state.time_zone)
         self.tools = CalendarTools(calendar, state, self.now, allowed_slugs=allowed_slugs, default_slug=default_slug)
         self.ledger = ledger
+        self.wait = wait
 
     def execute(self, action: UiAction) -> ActionOutcome:
         try:
@@ -349,6 +353,7 @@ class CalendarActions:
             data = self.calendar.cancel_booking(booking.uid, proposal.reason or "User requested cancellation")
         except CalError as error:
             if error.code == "unavailable":
+                self.wait(_WRITE_READBACK_DELAY_SECONDS)
                 data = self._recover_cancel(proposal, booking)
             elif error.code == "upstream":
                 return self._unverified(proposal, "I couldn’t verify whether the booking was cancelled.")
@@ -468,6 +473,13 @@ class CalendarActions:
                 return self._not_applied("Cal.com still shows the original booking as active. You can retry.")
         return self._unverified(proposal, "I couldn’t verify whether the booking was cancelled.")
 
+    @staticmethod
+    def _linked_replacement(original: Booking, replacement: Booking) -> bool:
+        return (
+            original.get("rescheduledToUid") in (None, "", replacement["uid"])
+            and replacement.get("rescheduledFromUid") in (None, "", original["uid"])
+        )
+
     def _recover_reschedule(
         self, proposal: Proposal, before: BookingEntry, event_type_id: int, requested: tuple[datetime, datetime],
     ) -> Booking | ActionOutcome:
@@ -478,10 +490,7 @@ class CalendarActions:
         if original is not None:
             data, current = original
             if current.status == "cancelled":
-                if replacement is not None and (
-                    data.get("rescheduledToUid") in (None, "", replacement["uid"])
-                    and replacement.get("rescheduledFromUid") in (None, "", before.uid)
-                ):
+                if replacement is not None and self._linked_replacement(data, replacement):
                     return replacement
                 return self._unverified(
                     proposal, "Cal.com shows the original booking was cancelled, but I couldn’t verify its replacement.",
@@ -501,6 +510,23 @@ class CalendarActions:
             )
         return self._unverified(proposal, "I couldn’t verify whether the booking was rescheduled.")
 
+    def _confirm_taken_slot(
+        self, proposal: Proposal, slot: SlotEntry, booking: BookingEntry | None,
+        requested: tuple[datetime, datetime], name: str, email: str,
+        *, options: list[tuple[datetime, datetime]] | None = None,
+    ) -> ActionOutcome:
+        matches = self._matching_bookings(
+            email, slot.event_type_id, requested, exclude_uid=booking.uid if booking is not None else None,
+        )
+        if matches is not None and len(matches) == 1:
+            match = matches[0]
+            if booking is None:
+                return self._complete_slot(proposal, slot, booking, requested, name, email, match)
+            original = self._original_after_write(booking)
+            if original is not None and original[1].status == "cancelled" and self._linked_replacement(original[0], match):
+                return self._complete_slot(proposal, slot, booking, requested, name, email, match)
+        return self._recover_slot(slot, proposal.booking_ref, booking, proposal=proposal, options=options)
+
     def _confirm_slot(
         self, action: ConfirmProposal, proposal: Proposal, booking: BookingEntry | None,
     ) -> ActionOutcome:
@@ -511,7 +537,7 @@ class CalendarActions:
         ):
             raise ActionError("invalid_action", "Choose a time for this booking from the current slots.")
         event = self._event(slot.event_type_id)
-        name, email = "", ""
+        name, email = "", self.state.user.email or ""
         if proposal.kind == "book":
             name = (action.name or proposal.name or "").strip()
             email = (action.email or proposal.email or "").strip()
@@ -520,8 +546,10 @@ class CalendarActions:
         start = parse_instant(slot.start_utc)
         requested = (start, parse_instant(slot.end_utc))
         day = start.astimezone(self.zone).date()
-        if start <= self.now or requested not in self._fresh_slots(slot.event_type_id, day, day, booking):
+        if start <= self.now:
             return self._recover_slot(slot, ref, booking, proposal=proposal)
+        if requested not in self._fresh_slots(slot.event_type_id, day, day, booking):
+            return self._confirm_taken_slot(proposal, slot, booking, requested, name, email)
         try:
             if booking is not None:
                 data = self.calendar.reschedule_booking(
@@ -539,6 +567,7 @@ class CalendarActions:
                 )
         except CalError as error:
             if error.code == "unavailable":
+                self.wait(_WRITE_READBACK_DELAY_SECONDS)
                 data = (
                     self._recover_reschedule(proposal, booking, slot.event_type_id, requested)
                     if booking is not None else self._recover_create(proposal, email, slot.event_type_id, requested)
@@ -546,22 +575,31 @@ class CalendarActions:
             elif error.code == "upstream":
                 action_name = "rescheduled" if booking is not None else "created"
                 return self._unverified(proposal, f"I couldn’t verify whether the booking was {action_name}.")
-            elif error.code != "slot_taken" and error.status not in {400, 409, 422}:
+            elif error.code == "slot_taken":
+                return self._confirm_taken_slot(proposal, slot, booking, requested, name, email)
+            elif error.status not in {400, 409, 422}:
                 raise
             else:
                 options = self._recovery_options(slot, booking)
-                if error.code != "slot_taken" and requested in options:
+                if requested in options:
                     raise
-                return self._recover_slot(slot, ref, booking, proposal=proposal, options=options)
+                return self._confirm_taken_slot(proposal, slot, booking, requested, name, email, options=options)
 
         if isinstance(data, ActionOutcome):
             return data
+        return self._complete_slot(proposal, slot, booking, requested, name, email, data)
+
+    def _complete_slot(
+        self, proposal: Proposal, slot: SlotEntry, booking: BookingEntry | None,
+        requested: tuple[datetime, datetime], name: str, email: str, data: Booking,
+    ) -> ActionOutcome:
+        ref = proposal.booking_ref
         entry = self._booking_result(data)
         if (
             entry is None or entry.status not in _UPCOMING_STATUS
             or self._interval(entry) != requested
             or entry.event_type_id != slot.event_type_id
-            or not _has_attendee(entry, self.state.user.email if booking is not None else email)
+            or not _has_attendee(entry, email)
             or (booking is not None and entry.uid == booking.uid)
         ):
             action_name = "rescheduled" if booking is not None else "created"

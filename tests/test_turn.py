@@ -55,6 +55,76 @@ def turn_state(reply):
 
 
 class TurnTests(unittest.IsolatedAsyncioTestCase):
+    async def test_capped_text_finishes_with_notice_and_only_verified_history(self):
+        for can_continue in (True, False):
+            with self.subTest(can_continue=can_continue):
+                model = ScriptedModel(
+                    (ModelText("Partial reply"), ModelCompletion("capped", "incomplete", input_tokens=60,
+                                                                  can_continue=can_continue)),
+                    (ModelText("Next reply"), ModelCompletion("after", "completed")),
+                )
+                turn_service = service(model)
+                self.addCleanup(turn_service.close_prefetch)
+                previous = new_state(ZONE, NOW)
+                previous.interaction_id = "previous-good"
+                events = await collect(turn_service, text("Hello"), sign_state(previous, SECRET))
+                self.assertEqual([event["text"] for event in events if event["type"] == "text_delta"],
+                                 ["Partial reply", "\n\n(reply cut short)"])
+                metrics = events[-1]["metrics"]
+                self.assertEqual(metrics["outcome"], "ok")
+                self.assertEqual(metrics["modelCalls"][0]["status"], "incomplete")
+                expected_parent = "capped" if can_continue else "previous-good"
+                self.assertEqual(turn_state(events).interaction_id, expected_parent)
+                await collect(turn_service, text("Next"), events[-1]["stateToken"])
+                self.assertEqual(model.requests[-1]["previous_interaction_id"], expected_parent)
+
+    async def test_provider_reason_and_http_status_are_recorded(self):
+        model = ScriptedModel((ModelError("model_down", 503, reason="provider_http_503"),))
+        turn_service = service(model)
+        self.addCleanup(turn_service.close_prefetch)
+        events = await collect(turn_service, text("Hello"))
+        diagnostics = events[-1]["metrics"]["modelCalls"][0]
+        self.assertEqual(diagnostics["reason"], "provider_http_503")
+        self.assertEqual(diagnostics["httpStatus"], 503)
+
+    async def test_foreign_inactive_and_missing_refs_share_the_same_private_context(self):
+        for fixture_id, status in (("other_intro", "accepted"), ("sam_intro", "cancelled"), (None, None)):
+            with self.subTest(fixture_id=fixture_id):
+                calendar = FakeCal(fixture_overrides={"active_bookings": [fixture_id] if fixture_id else []})
+                state = new_state(ZONE, NOW)
+                state.user.email = "sam@example.com"
+                if fixture_id:
+                    booking = booking_entry(calendar.booking("fixture-" + fixture_id.replace("_", "-")))
+                    booking.status = status
+                    booking.title = "PRIVATE FIXTURE TITLE"
+                    add_booking(state, booking)
+                model = ScriptedModel((ModelText("I can’t change that booking."), ModelCompletion("done", "completed")),)
+                turn_service = service(model, calendar)
+                self.addCleanup(turn_service.close_prefetch)
+                events = await collect(turn_service, text("Cancel B1, please."), sign_state(state, SECRET))
+                request = model.requests[0]
+                context = request["input_steps"][0]["content"][0]["text"]
+                self.assertIn("B1 is not one of this attendee's bookings.", context)
+                self.assertNotIn("PRIVATE FIXTURE TITLE", context)
+                self.assertNotIn("fixture-", context)
+                self.assertEqual(request["tools"], [])
+                self.assertFalse(any(event["type"] in {"booking_cards", "proposal"} for event in events))
+
+    async def test_booking_prefetch_emits_card_order_independently_of_refs(self):
+        model = ScriptedModel((ModelText("Which meeting?"), ModelCompletion("asked", "completed")),)
+        calendar = FakeCal(fixture_overrides={"active_bookings": ["sam_intro", "sam_followup"]})
+        state = new_state(ZONE, NOW)
+        state.user.email = "sam@example.com"
+        turn_service = service(model, calendar)
+        self.addCleanup(turn_service.close_prefetch)
+        events = await collect(turn_service, text("Cancel my meeting"), sign_state(state, SECRET))
+        inventory = next(event for event in events if event["type"] == "refs")
+        display = next(event for event in events if event["type"] == "booking_cards")
+        self.assertEqual(display["refs"], list(inventory["bookings"]))
+        self.assertLess(events.index(inventory), events.index(display))
+        context = model.requests[0]["input_steps"][0]["content"][0]["text"]
+        self.assertIn("Booking cards already on screen in this order: B1, B2.", context)
+
     async def test_calendar_context_is_sent_once_per_local_date(self):
         model = ScriptedModel(*(
             (ModelText("Hello."), ModelCompletion(f"turn-{index}", "completed")) for index in range(3)
@@ -157,6 +227,8 @@ class TurnTests(unittest.IsolatedAsyncioTestCase):
         context = model.requests[1]["input_steps"][0]["content"][0]["text"]
         self.assertIn(f"Retired refs: {ref}", context)
         self.assertNotIn(f"Known booking {ref}:", context)
+        self.assertIsNone(model.requests[1]["previous_interaction_id"])
+        self.assertEqual(next(event["retiredBookings"] for event in current if event["type"] == "refs"), [ref])
         self.assertEqual(current[-1]["metrics"]["unknownRefs"], 1)
 
     async def test_model_input_redacts_all_emails_and_strips_untrusted_context_tags(self):

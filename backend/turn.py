@@ -8,6 +8,7 @@ from collections.abc import AsyncIterator, Callable
 from contextlib import aclosing
 from contextvars import ContextVar
 from copy import deepcopy
+from dataclasses import replace
 from datetime import date, datetime, time, timedelta
 from hashlib import sha256
 import json
@@ -51,6 +52,7 @@ For a move, use a slot associated with that exact booking ref, or supply that re
 Use list_bookings for the session email, with email="" when the app already has it.
 Ask for an email only when needed to look up or change the attendee's existing bookings. New bookings collect it on Confirm.
 Never offer or change another attendee's meetings, or cancel everyone's bookings.
+When the app identifies an unavailable booking ref or a denied group change, explain that you can't make the change and can only help with the attendee's own bookings.
 For a specific agreed slot, propose_booking. Set email="" to use the session email.
 Use an empty name or notes if unknown.
 For cancellation or moving a selected meeting, use the corresponding propose tool.
@@ -59,6 +61,7 @@ Use a propose tool alone as the final step and give a short explanation before i
 Reply in the user's language. Keep replies brief. Ask which meeting when a request is ambiguous."""
 PROPOSE_TOOLS = frozenset({"propose_booking", "propose_cancel", "propose_reschedule"})
 REFS = re.compile(r"\[\[([SB][1-9]\d*)\]\]")
+BOOKING_MENTION = re.compile(r"\bB[1-9]\d{0,8}\b", re.IGNORECASE)
 CONTEXT_TAG = re.compile(r"</?\s*turn_context\b[^>]*>", re.IGNORECASE)
 HISTORY_TOKEN_LIMIT = 6_000
 _NAME_WORD = r"[^\W\d_]+(?:[-'’][^\W\d_]+)*"
@@ -194,7 +197,7 @@ def _alternatives_note(hints: PrescanResult) -> str:
         label = f"{day:%a} {day.day} {day:%b}"
         times = {hint.at for hint in hints.dates}
         if len(times) == 1 and None not in times:
-            return f"No opening {label} at {next(iter(times)):%H:%M}. Nearest:"
+            return f"No openings {label} at {next(iter(times)):%H:%M}. Nearest:"
         scope = label
     else:
         scope = "in the requested window"
@@ -210,6 +213,9 @@ def _context(
     *,
     prefetched_slots: frozenset[str] = frozenset(),
     prefetched_bookings: tuple[str, ...] | None = None,
+    unavailable_bookings: tuple[str, ...] = (),
+    retired_bookings: tuple[str, ...] = (),
+    denied_change: bool = False,
     displayed: tuple[str, ...] = (),
     checked_empty: bool = False,
     rotated: bool = False,
@@ -220,23 +226,32 @@ def _context(
     same_zone = previous is not None and previous.time_zone == state.time_zone
     owned = _owned_bookings(state)
     available = _visible_slots(state, owned, now)
+    hidden_bookings = set(unavailable_bookings)
     snapshot = ModelContext(
         local_date=today, time_zone=state.time_zone,
         slots={ref: stamp for ref, stamp in previous.slots.items() if ref in available} if same_zone else {},
-        bookings={ref: stamp for ref, stamp in previous.bookings.items() if ref in owned} if same_zone else {},
+        bookings={ref: stamp for ref, stamp in previous.bookings.items()
+                  if ref in owned and ref not in hidden_bookings} if same_zone else {},
     )
     lines = [
         f"Current local time: {local:%a %d %b %Y %H:%M} ({state.time_zone})",
         f"Session email: {'known' if state.user.email else 'unknown'}",
     ]
+    for ref in unavailable_bookings:
+        lines.append(f"{ref} is not one of this attendee's bookings.")
+    if denied_change:
+        lines.append("The requested change is denied. Reply with a short refusal.")
+    if prefetched_bookings:
+        lines.append(f"Booking cards already on screen in this order: {', '.join(prefetched_bookings)}.")
     if not same_zone or previous.local_date != today:
         days = ", ".join((local + timedelta(days=index)).strftime("%a %d %b %Y") for index in range(14))
         lines.append(f"Upcoming days: {days}")
+    retired = list(retired_bookings)
     if previous is not None:
-        retired = [ref for ref in previous.slots if ref not in available]
+        retired.extend(ref for ref in previous.slots if ref not in available)
         retired.extend(ref for ref in previous.bookings if ref not in owned)
-        if retired:
-            lines.append(f"Retired refs: {', '.join(retired)}.")
+    if retired:
+        lines.append(f"Retired refs: {', '.join(dict.fromkeys(retired))}.")
     if hints.dates:
         lines.append("Dates suggested by prescan: " + ", ".join(
             item.day.isoformat() + (f" at {item.at:%H:%M}" if item.at else "") for item in hints.dates[:7]
@@ -252,7 +267,7 @@ def _context(
     current_bookings = prefetched_bookings if prefetched_bookings is not None else tuple(owned)[-10:]
     current_slots = [ref for ref in state.slots if ref in prefetched_slots]
     if rotated:
-        name = state.user.conversation_name or state.user.name
+        name = state.user.conversation_name
         lines.append(f"Session recap, user-provided name: {json.dumps(_redact_contact(name)) if name else 'unknown'}.")
         active = tuple(ref for ref, booking in owned.items() if booking.status in {"accepted", "pending"}
                        and parse_instant(booking.start_utc) > now)
@@ -277,9 +292,9 @@ def _context(
         _note_details(lines, snapshot.slots, ref, f"{source} slot", _slot_details(state, ref))
     if prefetched_bookings is not None and not prefetched_bookings:
         lines.append("Prefetched upcoming bookings: none for the session attendee.")
-    for ref in current_bookings:
+    for ref in () if denied_change else current_bookings:
         booking = owned.get(ref)
-        if booking is None:
+        if booking is None or ref in hidden_bookings:
             continue
         source = "Active" if rotated else "Prefetched upcoming" if prefetched_bookings is not None else "Known"
         _note_details(lines, snapshot.bookings, ref, f"{source} booking", _booking_details(booking, state.time_zone))
@@ -428,7 +443,17 @@ class TurnService:
             "availabilityRequest": hints.availability_request,
             "exactTimes": [f"{hint.day.isoformat()}T{hint.at:%H:%M}" for hint in hints.dates if hint.at is not None],
         }
+        retired_bookings: tuple[str, ...] = ()
         if hints.email and len(hints.email) <= 254:
+            if state.user.email and state.user.email.casefold() != hints.email.casefold():
+                retired_bookings = tuple(_owned_bookings(state))
+                state.interaction_id = None
+                state.pending_call = None
+                state.last_model_input_tokens = 0
+                state.model_context = None
+                state.proposal = None
+                state.rescheduling_booking_ref = None
+                state.notes.clear()
             state.user.email = hints.email
         _remember_name(state, text, hints)
         original_history = state.interaction_id, state.pending_call, state.last_model_input_tokens
@@ -436,9 +461,18 @@ class TurnService:
         if rotated:
             state.interaction_id = None
             state.pending_call = None
-        denied = bool(BULK_TARGET.search(text) and {"cancel", "reschedule"}.intersection(hints.intents))
-        tools = self._tools(state, now, deny_mutations=denied)
+        active_bookings = {ref for ref, booking in _owned_bookings(state).items()
+                           if booking.status in {"accepted", "pending"} and parse_instant(booking.start_utc) > now}
+        requested_bookings = dict.fromkeys(BOOKING_MENTION.findall(_redact_contact(text).upper()))
+        unavailable_bookings = tuple(ref for ref in requested_bookings if ref not in active_bookings)[:10]
+        is_change = bool({"cancel", "reschedule"}.intersection(hints.intents))
+        denied = is_change and bool(unavailable_bookings or BULK_TARGET.search(text))
+        retired_bookings = tuple(dict.fromkeys((*retired_bookings, *unavailable_bookings)))
+        listing_only = "list" in hints.intents and not {"book", "cancel", "reschedule"}.intersection(hints.intents)
+        tools = self._tools(state, now, deny_mutations=denied or listing_only)
         plan = plan_prefetch(state, now, hints, text=text)
+        if denied:
+            plan = replace(plan, attendee_email=None, days=(), show_openings=False, reschedule=None)
         yield {"type": "status", "text": plan.status()}
         prefetched = await self._prefetch.fetch(tools, plan)
         slots = prefetched.alternatives or prefetched.slots
@@ -462,13 +496,17 @@ class TurnService:
             "slotsChecked": prefetched.slots_checked, "shownSlots": len(displayed),
         }
         metrics["calCalls"].extend(prefetched.cal_calls)
-        if slot_refs or booking_refs is not None:
+        if slot_refs or booking_refs is not None or retired_bookings:
             event: RefsEvent = {"type": "refs"}
             if slot_refs:
                 event["slots"] = slot_refs
             if booking_refs is not None:
                 event["bookings"] = booking_refs
+            if retired_bookings:
+                event["retiredBookings"] = list(retired_bookings)
             yield event
+        if booking_refs is not None:
+            yield {"type": "booking_cards", "refs": list(booking_refs)}
         if displayed:
             if checked_empty:
                 note = _alternatives_note(hints)
@@ -478,10 +516,15 @@ class TurnService:
                 if hints.part_of_day != "any":
                     note += f", {hints.part_of_day}"
             yield {"type": "slot_chips", "refs": displayed, "note": note}
-        schemas = [] if checked_empty else await asyncio.to_thread(tools.schemas, allow_lazy_catalog=bool(plan.days))
+        schemas = [] if checked_empty or denied else await asyncio.to_thread(tools.schemas, allow_lazy_catalog=bool(plan.days))
+        if listing_only:
+            schemas = [schema for schema in schemas if schema["name"] not in PROPOSE_TOOLS]
         context, snapshot = _context(
             state, now, hints, prefetched_slots=frozenset(slot_refs),
             prefetched_bookings=tuple(booking_refs) if booking_refs is not None else None,
+            unavailable_bookings=unavailable_bookings,
+            retired_bookings=retired_bookings,
+            denied_change=denied,
             displayed=tuple(displayed),
             checked_empty=checked_empty,
             rotated=rotated,
@@ -519,8 +562,20 @@ class TurnService:
                             yield {"type": "text_delta", "text": chunk.text}
                         elif isinstance(chunk, ModelCompletion):
                             completion = chunk
+                if completion is None:
+                    raise ModelError("model_down", reason="missing_model_completion")
+                if completion.status not in {"completed", "requires_action", "incomplete"}:
+                    raise ModelError("model_down", reason="unexpected_completion_status")
+                if completion.status == "requires_action" and not completion.tool_calls:
+                    raise ModelError("model_down", reason="requires_action_without_calls")
+                if completion.status == "incomplete" and not "".join(text_parts).strip():
+                    raise ModelError("model_down", reason="incomplete_without_text")
             except ModelError as error:
                 metric["status"] = error.code
+                if error.code == "model_down":
+                    metric["reason"] = error.reason or "provider_model_down"
+                if error.http_status is not None:
+                    metric["httpStatus"] = error.http_status
                 if error.code == "interaction_expired" and role == "primary":
                     raise TurnError(error.code, retryable=False) from None
                 if not text_parts and (error.code in _PROVIDER_FALLBACK_ERRORS or error.code == "interaction_expired"):
@@ -537,13 +592,19 @@ class TurnService:
                 raise
             finally:
                 metric["totalMs"] = (perf_counter() - began) * 1000
-            if completion is None or completion.status not in {"completed", "requires_action"}:
-                raise TurnError("model_down")
-            if completion.status == "requires_action" and not completion.tool_calls:
-                raise TurnError("model_down")
             metric.update(status=completion.status, inputTokens=completion.input_tokens,
                           outputTokens=completion.output_tokens, cachedTokens=completion.cached_tokens,
                           thoughtTokens=completion.thought_tokens)
+            if completion.status == "incomplete":
+                if completion.can_continue and completion.interaction_id and not completion.tool_calls:
+                    state.last_model_input_tokens = completion.input_tokens
+                    self._complete_text(state, completion.interaction_id, None, snapshot, now, text_parts, metrics)
+                else:
+                    state.interaction_id, state.pending_call, state.last_model_input_tokens = original_history
+                    state.counters.turns += 1
+                    self._count_unknown_refs(state, now, text_parts, metrics)
+                yield {"type": "text_delta", "text": "\n\n(reply cut short)"}
+                return
             previous_id = completion.interaction_id
             state.last_model_input_tokens = completion.input_tokens
             if not completion.tool_calls:
@@ -602,6 +663,12 @@ class TurnService:
         state.model_context = snapshot
         state.notes.clear()
         state.counters.turns += 1
+        TurnService._count_unknown_refs(state, now, text, metrics)
+
+    @staticmethod
+    def _count_unknown_refs(state: SessionState, now: datetime, text: list[str], metrics: TurnMetrics) -> None:
+        owned = _owned_bookings(state)
+        available = _visible_slots(state, owned, now)
         metrics["unknownRefs"] = sum(ref not in available and ref not in owned
                                      for ref in REFS.findall("".join(text)))
 

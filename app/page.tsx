@@ -11,9 +11,11 @@ import {
   type UiAction,
   canRetryTurn,
   controlsForTurn,
+  listedBookingRefs,
   readChatStream,
   splitReferenceText,
   unverifiedWrite,
+  withoutRetiredBookings,
 } from "./chat-protocol";
 import { BookerFallback, safePublicBookingUrl } from "./booker-fallback";
 import { BookingCard, ConfirmCard, OUTLINE_BUTTON, PRIMARY_BUTTON, RefText, SlotChips } from "./chat-cards";
@@ -122,6 +124,7 @@ export default function Home() {
     let bookingResultReceived = false;
     let rejectedBeforeConfirm = false;
     const recoveryRefs = new Set<string>();
+    const retiredBookings = new Set<string>();
     const confirmsProposal = input.kind === "ui" && input.action.type === "confirm_proposal";
     const originalBookingRef = confirmsProposal ? activeProposal?.value.bookingRef : undefined;
 
@@ -171,16 +174,34 @@ export default function Home() {
             updateTurn((turn) => ({ ...turn, text: [turn.text, event.text].filter(Boolean).join("\n\n") }));
             break;
           case "refs": {
+            if (event.retiredBookings?.length) {
+              for (const ref of event.retiredBookings) retiredBookings.add(ref);
+              savedViews.current = {
+                ...savedViews.current,
+                bookings: withoutRetiredBookings(savedViews.current.bookings, retiredBookings),
+              };
+              setCurrentViews(savedViews.current);
+              setActiveProposal((current) =>
+                current?.value.bookingRef && retiredBookings.has(current.value.bookingRef) ? null : current
+              );
+            }
             const nextViews = {
               slots: { ...views.slots, ...event.slots },
-              bookings: { ...views.bookings, ...event.bookings },
+              bookings: withoutRetiredBookings({ ...views.bookings, ...event.bookings }, retiredBookings),
             };
             views = nextViews;
-            const listedRefs = input.kind === "text" && event.bookings && Object.keys(event.bookings);
             updateTurn((turn) => ({
               ...turn,
               views: nextViews,
-              ...(listedRefs ? { listedBookings: [...new Set([...(turn.listedBookings ?? []), ...listedRefs])] } : {}),
+              results: turn.results.filter((result) => !retiredBookings.has(result.booking.ref)),
+            }));
+            break;
+          }
+          case "booking_cards": {
+            if (event.refs.length) setStatus("");
+            updateTurn((turn) => ({
+              ...turn,
+              listedBookings: [...new Set([...(turn.listedBookings ?? []), ...event.refs])],
             }));
             break;
           }
@@ -198,6 +219,7 @@ export default function Home() {
             break;
           case "booking_result": {
             bookingResultReceived = true;
+            if (retiredBookings.has(event.booking.ref)) break;
             const bookings = { ...views.bookings, [event.booking.ref]: event.booking };
             if (originalBookingRef && originalBookingRef !== event.booking.ref && bookings[originalBookingRef]) {
               bookings[originalBookingRef] = { ...bookings[originalBookingRef], status: event.kind };
@@ -232,6 +254,8 @@ export default function Home() {
       setCurrentViews(savedViews.current);
 
       const proposalLostItsSlot = controls === "alternatives" && confirmsProposal;
+      const proposalBookingRetired = Boolean(nextProposal?.bookingRef && retiredBookings.has(nextProposal.bookingRef));
+      const committedProposal = controls === "all" && !proposalBookingRetired ? nextProposal : undefined;
       if (proposalLostItsSlot && activeProposal) {
         setTurns((previous) => previous.map((turn) => turn.id === activeProposal.turnId ? { ...turn, proposal: undefined } : turn));
       }
@@ -240,10 +264,9 @@ export default function Home() {
       } else if (resetSession || bookingResultReceived || proposalLostItsSlot) {
         setActiveProposal(null);
       } else if (controls === "all") {
-        if (nextProposal) setActiveProposal({ turnId: id, value: nextProposal });
+        if (committedProposal) setActiveProposal({ turnId: id, value: committedProposal });
         else if (input.kind === "ui") setActiveProposal(null);
       }
-      const committedProposal = controls === "all" ? nextProposal : undefined;
       updateTurn((turn) => ({ ...turn, controls, proposal: committedProposal }));
 
       if (failure) {
@@ -325,8 +348,7 @@ export default function Home() {
               const live = sameSession && !sending;
               const currentBookings = sameSession ? currentViews.bookings : EMPTY_VIEWS.bookings;
               const parts = splitReferenceText(turn.text, sending && isLatest);
-              const referredBookings = new Set(parts.flatMap((part) => "ref" in part ? [part.ref] : []));
-              const listed = turn.listedBookings?.filter((ref) => !referredBookings.has(ref)) ?? [];
+              const listed = listedBookingRefs(turn.listedBookings, turn.views.bookings);
               const slotAvailable = (ref: string) => live && Boolean(currentViews.slots[ref]);
               const bookingAvailable = (ref: string) => live && turn.controls === "all" && Boolean(currentBookings[ref]);
               const slotGroups = turn.groups.map((group, index) => (
@@ -354,6 +376,7 @@ export default function Home() {
                       parts={parts}
                       views={turn.views}
                       currentBookings={currentBookings}
+                      listedBookings={listed}
                       slotAvailable={(ref) => turn.controls === "all" && slotAvailable(ref)}
                       bookingAvailable={bookingAvailable}
                       showMore={turn.groups.length === 0 && turn.controls !== "alternatives"}
@@ -364,7 +387,12 @@ export default function Home() {
                     <ul aria-label="Meetings" className="grid gap-1">
                       {listed.map((ref) => (
                         <li key={ref}>
-                          <BookingCard booking={currentBookings[ref] ?? turn.views.bookings[ref]} available={bookingAvailable(ref)} onAction={takeAction} />
+                          <BookingCard
+                            booking={currentBookings[ref] ?? turn.views.bookings[ref]}
+                            available={bookingAvailable(ref)}
+                            linksAvailable={Boolean(currentBookings[ref])}
+                            onAction={takeAction}
+                          />
                         </li>
                       ))}
                     </ul>
@@ -384,6 +412,7 @@ export default function Home() {
                       booking={currentBookings[result.booking.ref] ?? result.booking}
                       result={result.kind}
                       available={bookingAvailable(result.booking.ref)}
+                      linksAvailable={Boolean(currentBookings[result.booking.ref])}
                       onAction={takeAction}
                     />
                   ))}

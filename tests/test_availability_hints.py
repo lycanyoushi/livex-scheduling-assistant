@@ -61,6 +61,16 @@ class AvailabilityHintTests(unittest.IsolatedAsyncioTestCase):
             ["2026-11-27T09:00+08:00", "2026-11-27T10:30+08:00"],
         )
 
+    def test_bare_local_date_and_clock_requests_exact_availability(self):
+        zone = "America/New_York"
+        now = datetime.fromisoformat("2026-11-22T21:00:00-05:00")
+        phrase = "tomorrow 9am"
+        hints = prescan(phrase, now=now, time_zone=zone)
+        plan = plan_prefetch(new_state(zone, now), now, hints, text=phrase)
+        self.assertTrue(plan.show_openings)
+        self.assertEqual(plan.times[0].day.isoformat(), "2026-11-23")
+        self.assertEqual(plan.times[0].at.isoformat(), "09:00:00")
+
     async def test_next_week_times_are_recognized_and_available_for_display(self):
         plan = build_plan("Can you show me some times next week?")
         self.assertTrue(plan.show_openings)

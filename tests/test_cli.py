@@ -51,6 +51,38 @@ def terminal(token="synthetic.token", *, outcome="ok", fallback=None):
 
 
 class TerminalIntegrationTests(unittest.TestCase):
+    def test_empty_or_cancel_at_either_contact_prompt_dismisses_the_proposal(self):
+        for contact_field in ("Name: ", "Email: "):
+            for dismissal in ("   ", " /CaNcEl "):
+                with self.subTest(contact_field=contact_field, dismissal=dismissal):
+                    service = TurnFixture([
+                        {"type": "assistant_text", "text": "Okay. The schedule is unchanged."},
+                        terminal("dismissed.token"),
+                    ])
+                    answers = iter((dismissal, "/quit"))
+                    prompts = []
+
+                    def read(prompt):
+                        prompts.append(prompt)
+                        return next(answers)
+
+                    chat = TerminalChat(service, ZONE, read=read, output=StringIO())
+                    chat.token = "proposal.token"
+                    chat.proposal = {"id": "P1", "kind": "book"}
+                    if contact_field == "Email: ":
+                        chat.proposal["name"] = "Nova Fixture"
+                    with asyncio.Runner() as runner:
+                        chat.run(runner)
+
+                    self.assertEqual(prompts, [contact_field, "You: "])
+                    self.assertEqual(len(service.requests), 1)
+                    request = service.requests[0]
+                    self.assertEqual(request.state_token, "proposal.token")
+                    self.assertEqual(request.input.action.type, "dismiss_proposal")
+                    self.assertEqual(request.input.action.proposal_id, "P1")
+                    self.assertEqual(chat.token, "dismissed.token")
+                    self.assertIsNone(chat.proposal)
+
     def test_terminal_books_lists_moves_and_cancels_on_the_shared_service(self):
         calendar = FakeCal(fixture_overrides={"open_local_starts": ["2026-11-26T13:30", "2026-11-27T09:00"]})
         model = ScriptedModel(
@@ -113,6 +145,53 @@ class TerminalIntegrationTests(unittest.TestCase):
 
 
 class TerminalEventTests(unittest.IsolatedAsyncioTestCase):
+    async def test_booking_refs_support_inline_text_and_explicit_cards_control_list_output(self):
+        booking = {"title": "Inventory appointment", "whenLabel": "Thu 26 Nov, 13:30–14:00", "status": "accepted"}
+        offered = {**booking, "title": "Listed appointment"}
+        earlier = {**booking, "title": "Earlier listed appointment"}
+        service = TurnFixture(
+            [{"type": "refs", "bookings": {"B1": booking, "B2": offered, "B3": earlier}}, terminal()],
+            [{"type": "booking_cards", "refs": ["B3", "B2"]},
+             {"type": "text_delta", "text": "Check [[B2]] first."}, terminal()],
+            [{"type": "assistant_text", "text": "You chose [[B1]]."}, terminal()],
+        )
+        output = StringIO()
+        chat = TerminalChat(service, ZONE, read=lambda _: "", output=output)
+
+        await chat.send({"kind": "text", "text": "Show context"})
+        self.assertEqual(output.getvalue(), "")
+        await chat.send({"kind": "text", "text": "List meetings"})
+        self.assertEqual([line for line in output.getvalue().splitlines() if line.endswith(" · accepted")], [
+            "Earlier listed appointment · Thu 26 Nov, 13:30–14:00 · accepted",
+            "Listed appointment · Thu 26 Nov, 13:30–14:00 · accepted",
+        ])
+        self.assertNotIn("Inventory appointment", output.getvalue())
+        await chat.send({"kind": "text", "text": "What did I choose?"})
+        self.assertIn("You chose Inventory appointment · Thu 26 Nov, 13:30–14:00.", output.getvalue())
+
+    async def test_retired_refs_drop_booking_lookup_even_when_the_turn_fails(self):
+        old = {"title": "Retired appointment", "whenLabel": "Thu 26 Nov, 13:30–14:00", "status": "accepted"}
+        current = {**old, "title": "Current appointment"}
+        service = TurnFixture(
+            [{"type": "refs", "bookings": {"B1": old, "B2": current}},
+             {"type": "text_delta", "text": "Look at [[B1]]."}, terminal()],
+            [{"type": "refs", "retiredBookings": ["B1"]},
+             {"type": "text_delta", "text": "I can see [[B2]]."}, terminal(outcome="failed")],
+            [{"type": "text_delta", "text": "You mentioned [[B1]]."}, terminal()],
+        )
+        output = StringIO()
+        chat = TerminalChat(service, ZONE, read=lambda _: "", output=output)
+
+        await chat.send({"kind": "text", "text": "What do I have?"})
+        chat.latest_booking = "B1"
+        await chat.send({"kind": "text", "text": "Cancel the old booking"})
+        await chat.send({"kind": "text", "text": "Which booking?"})
+
+        self.assertEqual(chat.bookings, {"B2": current})
+        self.assertIsNone(chat.latest_booking)
+        self.assertEqual(output.getvalue().count("Retired appointment"), 1)
+        self.assertIn("I can see Current appointment", output.getvalue())
+
     async def test_failed_text_choices_are_not_selectable_and_split_refs_do_not_flash(self):
         service = TurnFixture([
             {"type": "refs", "slots": {"S1": SLOT}},

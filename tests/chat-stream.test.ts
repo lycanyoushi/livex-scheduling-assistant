@@ -1,7 +1,7 @@
 import { expect, it } from "vitest";
 
 import { calendarFile, googleCalendarLink, safeMeetingLink } from "../app/calendar-export";
-import { type BookingView, type ChatInput, type ServerEvent, canRetryTurn, controlsForTurn, nextSlotDate, readChatStream, splitReferenceText, unverifiedWrite } from "../app/chat-protocol";
+import { type BookingView, type ChatInput, type ServerEvent, canRetryTurn, controlsForTurn, listedBookingRefs, nextSlotDate, readChatStream, splitReferenceText, unverifiedWrite, withoutRetiredBookings } from "../app/chat-protocol";
 
 const encoder = new TextEncoder();
 
@@ -49,6 +49,42 @@ it("buffers incomplete reference syntax and preserves only complete chips while 
   ]);
   expect(splitReferenceText("Try [", true)).toEqual([{ text: "Try " }]);
   expect(splitReferenceText("Then [[B2]].", false)).toEqual([{ text: "Then " }, { ref: "B2" }, { text: "." }]);
+});
+
+it("keeps explicit booking cards in order and removes retired references from the current view", async () => {
+  const booking: BookingView = {
+    ref: "B1", title: "Fixture booking", whenLabel: "Thu 26 Nov, 2:30 pm", status: "accepted", attendees: [],
+    startUtc: "2026-11-26T14:30:00Z", endUtc: "2026-11-26T15:00:00Z",
+  };
+  const inventory = { B1: booking, B2: { ...booking, ref: "B2", title: "Another fixture booking" } };
+  const events: ServerEvent[] = [
+    { type: "refs", bookings: inventory },
+    { type: "booking_cards", refs: ["B1", "B2", "B3"] },
+    { type: "refs", retiredBookings: ["B1"] },
+    { type: "turn_end", stateToken: "fixture.signature", metrics: { outcome: "ok" } },
+  ];
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const event of events) controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
+      controller.close();
+    },
+  });
+  let refs: string[] | undefined;
+  let current: Record<string, BookingView> = {};
+  await readChatStream(body, (event) => {
+    if (event.type === "refs") {
+      current = withoutRetiredBookings({ ...current, ...event.bookings }, new Set(event.retiredBookings));
+      if (!refs) expect(listedBookingRefs(refs, current)).toEqual([]);
+    }
+    if (event.type === "booking_cards") {
+      refs = event.refs;
+      expect(listedBookingRefs(refs, current)).toEqual(["B1", "B2"]);
+    }
+  });
+
+  expect(listedBookingRefs(refs, current)).toEqual(["B2"]);
+  expect(listedBookingRefs(refs, inventory)).toEqual(["B1", "B2"]);
+  expect(listedBookingRefs([], inventory)).toEqual([]);
 });
 
 it("permits only terminal alternatives after a slot-taken UI action", () => {

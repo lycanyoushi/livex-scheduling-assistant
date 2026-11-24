@@ -107,10 +107,11 @@ function downloadCalendarFile(booking: BookingView) {
   window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
 }
 
-export function BookingCard({ booking, result, available, onAction }: {
+export function BookingCard({ booking, result, available, linksAvailable, onAction }: {
   booking: BookingView;
   result?: BookingResult["kind"];
   available: boolean;
+  linksAvailable: boolean;
   onAction: SendAction;
 }) {
   const article = useRef<HTMLElement>(null);
@@ -120,8 +121,8 @@ export function BookingCard({ booking, result, available, onAction }: {
 
   const status = booking.status.toLowerCase();
   const canManage = status === "accepted" || status === "pending";
-  const join = canManage ? safeMeetingLink(booking.meetingUrl) : undefined;
-  const google = canManage ? googleCalendarLink(booking) : undefined;
+  const join = canManage && linksAvailable ? safeMeetingLink(booking.meetingUrl) : undefined;
+  const google = canManage && linksAvailable ? googleCalendarLink(booking) : undefined;
   const statusLabel = status === "accepted" ? "Confirmed" : status[0]?.toUpperCase() + status.slice(1).replaceAll("_", " ");
   const button = `${OUTLINE_BUTTON} inline-flex items-center border border-border`;
 
@@ -250,10 +251,11 @@ export function SlotChips({ refs, slots, note, available, allowMore, onAction }:
   );
 }
 
-export function RefText({ parts, views, currentBookings, slotAvailable, bookingAvailable, showMore, onAction }: {
+export function RefText({ parts, views, currentBookings, listedBookings, slotAvailable, bookingAvailable, showMore, onAction }: {
   parts: ReferencePart[];
   views: ReferenceViews;
   currentBookings: ReferenceViews["bookings"];
+  listedBookings: readonly string[];
   slotAvailable: IsAvailable;
   bookingAvailable: IsAvailable;
   showMore: boolean;
@@ -268,8 +270,16 @@ export function RefText({ parts, views, currentBookings, slotAvailable, bookingA
         const slot = views.slots[part.ref];
         if (slot) return <TimeChip key={index} refId={part.ref} slot={slot} includeDay available={slotAvailable(part.ref)} onAction={onAction} />;
         const booking = views.bookings[part.ref];
-        if (booking) {
-          return <BookingCard key={index} booking={currentBookings[part.ref] ?? booking} available={bookingAvailable(part.ref)} onAction={onAction} />;
+        if (booking && !listedBookings.includes(part.ref)) {
+          return (
+            <BookingCard
+              key={index}
+              booking={currentBookings[part.ref] ?? booking}
+              available={bookingAvailable(part.ref)}
+              linksAvailable={Boolean(currentBookings[part.ref])}
+              onAction={onAction}
+            />
+          );
         }
         return <span key={index} className="text-muted-foreground">{part.ref}</span>;
       })}

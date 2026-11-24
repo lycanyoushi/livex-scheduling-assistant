@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { expect, it } from "vitest";
 
 import { BookerFallback, calEmbedLink, safePublicBookingUrl } from "../app/booker-fallback";
-import { ConfirmCard, SlotChips } from "../app/chat-cards";
+import { ConfirmCard, RefText, SlotChips } from "../app/chat-cards";
 import Home from "../app/page";
 
 it("renders the chat with an enabled, labeled composer and an empty draft", () => {
@@ -34,6 +34,35 @@ it("renders grouped date-labeled chips and greys out unavailable references", ()
   expect(html).not.toMatch(/aria-label="Thu 26 Nov at 2:30 pm"[^>]*disabled/);
   expect(html).toMatch(/aria-label="Fri 27 Nov at 9:00 am"[^>]*disabled=""/);
   expect(html).toContain("More times");
+});
+
+it("leaves explicit booking mentions as text and disables controls on historical cards", () => {
+  const view = {
+    ref: "B2", title: "Synthetic meeting", whenLabel: "Fri 27 Nov, 9:00 am", status: "accepted", attendees: [],
+    meetingUrl: "https://meet.example.com/fixture",
+    startUtc: "2026-11-27T09:00:00Z", endUtc: "2026-11-27T09:30:00Z",
+  };
+  const inline = {
+    parts: [{ text: "See " }, { ref: "B2" }],
+    views: { slots: {}, bookings: { B2: view } },
+    slotAvailable: () => false,
+    showMore: false,
+    onAction: () => {},
+  };
+  const explicit = renderToStaticMarkup(createElement(RefText, {
+    ...inline, currentBookings: { B2: view }, listedBookings: ["B1", "B2"], bookingAvailable: () => true,
+  }));
+  expect(explicit).toContain(">B2</span>");
+  expect(explicit).not.toContain("<article");
+
+  const historical = renderToStaticMarkup(createElement(RefText, {
+    ...inline, currentBookings: {}, listedBookings: [], bookingAvailable: () => false,
+  }));
+  expect(historical).toContain("Synthetic meeting");
+  expect(historical).toMatch(/<button\b[^>]*disabled=""[^>]*>Reschedule<\/button>/);
+  expect(historical).toMatch(/<button\b[^>]*disabled=""[^>]*>Cancel<\/button>/);
+  expect(historical).not.toContain("meet.example.com");
+  expect(historical).not.toContain("Add to calendar");
 });
 
 it("uses a contact-free confirmation for moving a booking", () => {

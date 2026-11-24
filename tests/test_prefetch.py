@@ -149,7 +149,7 @@ class PrefetchTests(unittest.IsolatedAsyncioTestCase):
         events = await self.collect(service, "Book Thursday at 10am")
         refs = next(event["slots"] for event in events if event["type"] == "refs")
         chips = next(event for event in events if event["type"] == "slot_chips")
-        self.assertEqual(chips["note"], "No opening Thu 26 Nov at 10:00. Nearest:")
+        self.assertEqual(chips["note"], "No openings Thu 26 Nov at 10:00. Nearest:")
         self.assertEqual(
             [refs[ref]["startLocalIso"] for ref in chips["refs"]],
             ["2026-11-26T09:00:00+08:00", "2026-11-26T11:00:00+08:00", "2026-11-27T10:30:00+08:00"],

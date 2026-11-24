@@ -49,9 +49,10 @@ type TurnEnd = {
 
 export type ServerEvent =
   | { type: "status" | "text_delta" | "assistant_text"; text: string }
-  | ({ type: "refs" } & Partial<ReferenceViews>)
+  | ({ type: "refs"; retiredBookings?: string[] } & Partial<ReferenceViews>)
   | { type: "proposal"; proposal: ProposalView }
   | BookingResult
+  | { type: "booking_cards"; refs: string[] }
   | { type: "slot_chips"; refs: string[]; note?: string }
   | { type: "error"; code: string; message: string; retryable: boolean; fallback?: "booker" }
   | TurnEnd;
@@ -81,6 +82,23 @@ export function canRetryTurn(
 }
 
 export type ReferencePart = { text: string } | { ref: string };
+
+export function listedBookingRefs(
+  list: string[] | undefined,
+  bookings: ReferenceViews["bookings"],
+): string[] {
+  return list?.filter((ref) => Object.hasOwn(bookings, ref)) ?? [];
+}
+
+export function withoutRetiredBookings(
+  bookings: ReferenceViews["bookings"],
+  retired: ReadonlySet<string>,
+): ReferenceViews["bookings"] {
+  if (!retired.size) return bookings;
+  const remaining = { ...bookings };
+  for (const ref of retired) delete remaining[ref];
+  return remaining;
+}
 
 export function splitReferenceText(text: string, streaming: boolean): ReferencePart[] {
   if (streaming) {

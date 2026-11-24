@@ -11,6 +11,7 @@
     "build": "next build",
     "lint": "eslint .",
     "test": "vitest run && node scripts/run-python.mjs -m unittest discover -s tests",
+    "eval": "node scripts/run-python.mjs -m evals.runner",
     "cal:probe": "node scripts/run-python.mjs -m scripts.cal_probe",
     "model:probe": "node scripts/run-python.mjs -m scripts.model_probe",
     "typecheck": "tsc --noEmit"

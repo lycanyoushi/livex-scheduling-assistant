@@ -5,6 +5,7 @@ from unittest.mock import Mock
 from urllib.parse import parse_qs, urlsplit
 
 from backend.cal_client import CalClient
+from backend.limits import RateLimits
 from backend.prefetch import warm_slot_bounds
 from backend.server import create_app
 from backend.turn import TurnService
@@ -35,12 +36,13 @@ class WarmRouteTests(unittest.TestCase):
         self.model = Mock()
         self.transport = Mock(side_effect=self.response)
         self.calendar = CalClient("test-cal-key", transport=self.transport)
-        service = TurnService(
+        self.service = TurnService(
             model=self.model, calendar=self.calendar, secret="test-warm-signing-key-1234567890abcdef",
             clock=lambda: NOW, allowed_slugs=("alternate-meeting", "test-meeting", "hidden-meeting"),
             default_slug="test-meeting",
         )
-        self.client = create_app(service).test_client()
+        self.addCleanup(self.service.close_prefetch)
+        self.client = create_app(self.service).test_client()
 
     def response(self, request, _timeout):
         data = self.data[urlsplit(request.full_url).path]
@@ -75,6 +77,33 @@ class WarmRouteTests(unittest.TestCase):
                 self.assertEqual(response.status_code, 400)
                 self.assertEqual(response.json["code"], "invalid_request")
         self.transport.assert_not_called()
+        self.assertEqual(self.model.mock_calls, [])
+
+    def test_warm_admission_is_per_ip_and_does_not_consume_chat_quota(self):
+        elapsed = 0.0
+        self.service.rate_limits = RateLimits(1, 500, clock=lambda: elapsed)
+        chat = {
+            "timeZone": "UTC", "stateToken": None,
+            "input": {"kind": "ui", "action": {"type": "more_slots", "fromDate": "2026-11-24"}},
+        }
+
+        self.assertEqual(self.client.get("/api/warm").status_code, 200)
+        call_count = self.transport.call_count
+        elapsed = 20.0
+        blocked = self.client.get("/api/warm", query_string={"timeZone": ZONE})
+        self.assertEqual(blocked.status_code, 429)
+        self.assertEqual(blocked.json["code"], "rate_limited")
+        self.assertEqual(blocked.headers["Retry-After"], "580")
+        self.assertEqual(blocked.headers["Cache-Control"], "no-store")
+        self.assertEqual(self.transport.call_count, call_count)
+
+        self.assertEqual(self.client.post("/api/chat", json=chat, buffered=True).status_code, 200)
+        self.assertEqual(self.client.post("/api/chat", json=chat).status_code, 429)
+        other_ip = {"REMOTE_ADDR": "192.0.2.3"}
+        self.assertEqual(self.client.post("/api/chat", json=chat, buffered=True, environ_overrides=other_ip).status_code, 200)
+        self.assertEqual(self.client.get("/api/warm", environ_overrides=other_ip).status_code, 200)
+        elapsed = 600.0
+        self.assertEqual(self.client.get("/api/warm").status_code, 200)
         self.assertEqual(self.model.mock_calls, [])
 
     def test_defaults_to_utc_and_excludes_unsafe_links(self):

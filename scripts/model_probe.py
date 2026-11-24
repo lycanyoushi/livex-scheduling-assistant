@@ -315,7 +315,28 @@ async def legacy_diagnostic(client, model: str) -> bool:
     return result["finish_reason"] == "STOP"
 
 
-async def run_probe(key: str, model: str, use_legacy: bool) -> bool:
+async def probe_incomplete(client, model: str) -> bool:
+    marker = "AMBER-COMET-728"
+    seed = await stream_interaction(
+        client, "capped_stored_reply",
+        [user_input(f"Remember {marker} as my code. Reply with {marker} first, then list 100 numbered planets from fiction.")],
+        model=model, store=True, tools=[], generation_config={"max_output_tokens": 48},
+    )
+    if seed.status != "incomplete" or not seed.id or not "".join(seed.text).strip():
+        print(json.dumps({"capped_reply_continued": None, "capped_reply_has_text": bool(seed.text)}), flush=True)
+        return False
+    await asyncio.sleep(10)
+    reply = await stream_interaction(
+        client, "continue_capped_stored_reply",
+        [user_input("What code did I ask you to remember? Reply with the code alone.")],
+        model=model, store=True, tools=[], previous_interaction_id=seed.id,
+    )
+    retained = reply.status == "completed" and reply.contains(marker)
+    print(json.dumps({"capped_reply_continued": retained, "capped_reply_has_text": True}), flush=True)
+    return retained
+
+
+async def run_probe(key: str, model: str, use_legacy: bool, *, incomplete: bool = False) -> bool:
     async with genai.Client(
         api_key=key,
         vertexai=False,
@@ -324,14 +345,17 @@ async def run_probe(key: str, model: str, use_legacy: bool) -> bool:
             retry_options=types.HttpRetryOptions(attempts=1),
         ),
     ).aio as client:
-        run = legacy_diagnostic if use_legacy else probe
+        run = probe_incomplete if incomplete else legacy_diagnostic if use_legacy else probe
         return await run(client, model)
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--model", choices=(FLASH, FLASH_LITE), help="Override GEMINI_MODEL.")
-    parser.add_argument("--legacy-diagnostic", action="store_true", help="Only check legacy streaming.")
+    backup = "gemini-3.1-flash-lite"
+    parser.add_argument("--model", choices=(FLASH, FLASH_LITE, backup), help="Override GEMINI_MODEL.")
+    diagnostics = parser.add_mutually_exclusive_group()
+    diagnostics.add_argument("--legacy-diagnostic", action="store_true", help="Only check legacy streaming.")
+    diagnostics.add_argument("--incomplete", action="store_true", help="Check continuation after an intentionally capped reply.")
     arguments = parser.parse_args()
     logging.disable(logging.CRITICAL)
     warnings.simplefilter("ignore")
@@ -342,11 +366,11 @@ def main() -> int:
             print("Set GEMINI_API_KEY for an unbilled AI Studio project in .env.local.")
             return 1
         model = arguments.model or settings.get("GEMINI_MODEL") or FLASH_LITE
-        if model not in (FLASH, FLASH_LITE):
-            print("GEMINI_MODEL must be one of the two planned Flash models.")
+        if model not in (FLASH, FLASH_LITE, backup):
+            print("Choose a planned Flash model.")
             return 1
         print(json.dumps({"google_genai_version": genai.__version__}), flush=True)
-        return 0 if asyncio.run(run_probe(key, model, arguments.legacy_diagnostic)) else 1
+        return 0 if asyncio.run(run_probe(key, model, arguments.legacy_diagnostic, incomplete=arguments.incomplete)) else 1
     except ProbeUnavailable:
         return 1
     except Exception as error:

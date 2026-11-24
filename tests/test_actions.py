@@ -3,6 +3,7 @@ from datetime import datetime
 import json
 from threading import Event
 import unittest
+from unittest.mock import Mock
 
 from backend.actions import ActionError, CalendarActions, ConfirmationLedger
 from backend.cal_client import CalError
@@ -265,6 +266,56 @@ class CalendarActionsTests(unittest.TestCase):
         self.assertTrue(all(fresh for read, _, fresh in calendar.reads if read == "slots"))
         self.assertEqual(calendar.writes, [])
 
+    def test_confirm_reuses_the_attendees_exact_active_booking_before_alternatives(self):
+        class ConcurrentBooking(Calendar):
+            def create_booking(self, **kwargs):
+                self.writes.append(("create", kwargs))
+                self.held = FakeCal.create_booking(self, **kwargs)
+                raise CalError("slot_taken", "Synthetic booking conflict.", status=409)
+
+        for taken_during_write in (False, True):
+            with self.subTest(taken_during_write=taken_during_write):
+                self.setUp()
+                calendar = ConcurrentBooking() if taken_during_write else Calendar()
+                wait = Mock()
+                actions = CalendarActions(calendar, self.state, NOW, wait=wait)
+                slot_ref = stored_slot(self.state)
+                card = event(actions.execute(PickSlot(type="pick_slot", slotRef=slot_ref)), "proposal")["proposal"]
+                if not taken_during_write:
+                    calendar.held = FakeCal.create_booking(
+                        calendar, start=FIRST, event_type_id=9001, name="Sam",
+                        email="sam@example.com", time_zone=ZONE,
+                    )
+                calendar.reads.clear()
+
+                outcome = actions.execute(ConfirmProposal(type="confirm_proposal", proposalId=card["id"]))
+
+                self.assertIsNone(outcome.error_code)
+                result = event(outcome, "booking_result")
+                self.assertEqual(result["kind"], "booked")
+                self.assertEqual(self.state.bookings[result["booking"]["ref"]].uid, calendar.held["uid"])
+                self.assertEqual(calendar.reads, [("slots", None, True)])
+                self.assertEqual(len(calendar.writes), int(taken_during_write))
+                wait.assert_not_called()
+
+    def test_existing_target_does_not_report_move_while_original_is_active(self):
+        calendar = Calendar(fixture_overrides={"active_bookings": ["sam_intro"]})
+        ref = self.record(calendar)
+        actions = self.actions(calendar)
+        options = actions.execute(RequestReschedule(type="request_reschedule", bookingRef=ref))
+        slot = ref_at(options, SECOND)
+        card = event(actions.execute(PickSlot(type="pick_slot", slotRef=slot)), "proposal")["proposal"]
+        FakeCal.create_booking(
+            calendar, start=SECOND, event_type_id=9001, name="Sam", email="sam@example.com", time_zone=ZONE,
+        )
+
+        outcome = actions.execute(ConfirmProposal(type="confirm_proposal", proposalId=card["id"]))
+
+        self.assertEqual(outcome.error_code, "slot_taken")
+        self.assertEqual(len(event(outcome, "slot_chips")["refs"]), 3)
+        self.assertEqual(self.state.bookings[ref].status, "accepted")
+        self.assertEqual(calendar.writes, [])
+
     def test_reschedule_race_rechecks_the_latest_booking_uid_and_tags_recovery_slots(self):
         class RacingCalendar(Calendar):
             def reschedule_booking(self, uid, start, reason="User requested reschedule"):
@@ -324,11 +375,14 @@ class CalendarActionsTests(unittest.TestCase):
 
 
 class ConfirmationRecoveryTests(unittest.TestCase):
+    def actions(self, calendar, state, *, ledger=None, wait=lambda _seconds: None):
+        return CalendarActions(calendar, state, NOW, ledger=ledger, wait=wait)
+
     def prepare(self, calendar, kind="book"):
         state = new_state(ZONE, NOW)
         state.user.name = "Sam"
         state.user.email = "sam@example.com"
-        actions = CalendarActions(calendar, state, NOW)
+        actions = self.actions(calendar, state)
         if kind == "book":
             slot = stored_slot(state)
             outcome = actions.execute(PickSlot(type="pick_slot", slotRef=slot))
@@ -356,7 +410,18 @@ class ConfirmationRecoveryTests(unittest.TestCase):
                     "active_bookings": ["sam_intro"] if kind != "book" else [],
                 })
                 state, original, action = self.prepare(calendar, kind)
-                outcome = CalendarActions(calendar, state, NOW).execute(action)
+                calendar.reads.clear()
+
+                def wait(seconds):
+                    self.assertEqual(seconds, 2.0)
+                    self.assertEqual(len(calendar.writes), 1)
+                    self.assertEqual(calendar.verification_reads, [])
+                    expected = {"book": ["slots"], "cancel": ["booking"], "reschedule": ["booking", "slots"]}
+                    self.assertEqual([read[0] for read in calendar.reads], expected[kind])
+
+                pause = Mock(side_effect=wait)
+                outcome = self.actions(calendar, state, wait=pause).execute(action)
+                pause.assert_called_once_with(2.0)
                 self.assertIsNone(outcome.error_code)
                 result = event(outcome, "booking_result")
                 self.assertEqual(result["kind"], result_kind)
@@ -381,7 +446,7 @@ class ConfirmationRecoveryTests(unittest.TestCase):
                     "active_bookings": ["sam_intro"] if kind != "book" else [],
                 })
                 state, _, action = self.prepare(calendar, kind)
-                outcome = CalendarActions(calendar, state, NOW, ledger=ConfirmationLedger()).execute(action)
+                outcome = self.actions(calendar, state, ledger=ConfirmationLedger()).execute(action)
                 self.assertEqual(outcome.error_code, "write_not_applied")
                 error = event(outcome, "error")
                 self.assertIn(fragment, error["message"])
@@ -399,7 +464,7 @@ class ConfirmationRecoveryTests(unittest.TestCase):
                 state, _, action = self.prepare(calendar, kind)
                 original = sign_state(state, KEY)
                 ledger = ConfirmationLedger()
-                outcome = CalendarActions(calendar, state, NOW, ledger=ledger).execute(action)
+                outcome = self.actions(calendar, state, ledger=ledger).execute(action)
                 self.assertEqual(outcome.error_code, "write_unverified")
                 self.assertFalse(event(outcome, "error")["retryable"])
                 self.assertIn("Check Cal.com", event(outcome, "error")["message"])
@@ -407,7 +472,7 @@ class ConfirmationRecoveryTests(unittest.TestCase):
                 self.assertEqual(state.pending_call.outcome.outcome, "no_action_yet")
                 verification = len(calendar.verification_reads), len(calendar.reads)
                 duplicate = verify_state(original, KEY, NOW)
-                replayed = CalendarActions(calendar, duplicate, NOW, ledger=ledger).execute(action)
+                replayed = self.actions(calendar, duplicate, ledger=ledger).execute(action)
                 self.assertEqual(replayed, outcome)
                 self.assertEqual(duplicate, state)
                 self.assertEqual((len(calendar.verification_reads), len(calendar.reads)), verification)
@@ -418,17 +483,17 @@ class ConfirmationRecoveryTests(unittest.TestCase):
         state, _, action = self.prepare(calendar)
         token = sign_state(state, KEY)
         ledger = ConfirmationLedger()
-        failed = CalendarActions(calendar, state, NOW, ledger=ledger).execute(action)
+        failed = self.actions(calendar, state, ledger=ledger).execute(action)
         self.assertEqual(failed.error_code, "write_not_applied")
         calendar.mode = "normal"
-        recovered = CalendarActions(calendar, verify_state(token, KEY, NOW), NOW, ledger=ledger).execute(action)
+        recovered = self.actions(calendar, verify_state(token, KEY, NOW), ledger=ledger).execute(action)
         self.assertEqual(event(recovered, "booking_result")["kind"], "booked")
         self.assertEqual(len(calendar.writes), 2)
 
     def test_partial_move_makes_verified_original_cancellation_visible(self):
         calendar = TimedCalendar("partial", fixture_overrides={"active_bookings": ["sam_intro"]})
         state, original, action = self.prepare(calendar, "reschedule")
-        outcome = CalendarActions(calendar, state, NOW, ledger=ConfirmationLedger()).execute(action)
+        outcome = self.actions(calendar, state, ledger=ConfirmationLedger()).execute(action)
         self.assertEqual(outcome.error_code, "reschedule_partial")
         self.assertIn("original booking was cancelled", event(outcome, "error")["message"])
         self.assertFalse(event(outcome, "error")["retryable"])
@@ -448,7 +513,7 @@ class ConfirmationRecoveryTests(unittest.TestCase):
 
         calendar = MismatchedLink("applied", fixture_overrides={"active_bookings": ["sam_intro"]})
         state, original, action = self.prepare(calendar, "reschedule")
-        outcome = CalendarActions(calendar, state, NOW).execute(action)
+        outcome = self.actions(calendar, state).execute(action)
         self.assertEqual(outcome.error_code, "reschedule_partial")
         self.assertEqual(state.bookings[original].status, "cancelled")
         self.assertTrue(all(item["type"] != "booking_result" for item in outcome.events))
@@ -465,7 +530,7 @@ class ConfirmationRecoveryTests(unittest.TestCase):
 
         calendar = NewOnly("unchanged", fixture_overrides={"active_bookings": ["sam_intro"]})
         state, original, action = self.prepare(calendar, "reschedule")
-        outcome = CalendarActions(calendar, state, NOW).execute(action)
+        outcome = self.actions(calendar, state).execute(action)
         self.assertEqual(outcome.error_code, "reschedule_partial")
         self.assertIn("original booking is still active", event(outcome, "error")["message"])
         self.assertEqual(state.bookings[original].status, "accepted")
@@ -491,7 +556,7 @@ class ConfirmationRecoveryTests(unittest.TestCase):
 
         calendar = Paginated("applied")
         state, _, action = self.prepare(calendar)
-        outcome = CalendarActions(calendar, state, NOW).execute(action)
+        outcome = self.actions(calendar, state).execute(action)
         self.assertEqual(event(outcome, "booking_result")["kind"], "booked")
         self.assertEqual(
             calendar.verification_reads,
@@ -507,7 +572,7 @@ class ConfirmationRecoveryTests(unittest.TestCase):
 
         calendar = MissingPages("unchanged")
         state, _, action = self.prepare(calendar)
-        outcome = CalendarActions(calendar, state, NOW).execute(action)
+        outcome = self.actions(calendar, state).execute(action)
         self.assertEqual(outcome.error_code, "write_unverified")
         self.assertEqual(len(calendar.verification_reads), 2)
         self.assertFalse(event(outcome, "error")["retryable"])
@@ -521,7 +586,7 @@ class ConfirmationRecoveryTests(unittest.TestCase):
 
         calendar = Ambiguous("applied")
         state, _, action = self.prepare(calendar)
-        outcome = CalendarActions(calendar, state, NOW).execute(action)
+        outcome = self.actions(calendar, state).execute(action)
         self.assertEqual(outcome.error_code, "write_unverified")
         self.assertFalse(event(outcome, "error")["retryable"])
         self.assertEqual(state.bookings, {})
@@ -539,8 +604,10 @@ class ConfirmationRecoveryTests(unittest.TestCase):
         state, _, action = self.prepare(calendar)
         token = sign_state(state, KEY)
         ledger = ConfirmationLedger()
+        wait = Mock()
         with self.assertRaises(CalError):
-            CalendarActions(calendar, state, NOW, ledger=ledger).execute(action)
+            self.actions(calendar, state, ledger=ledger, wait=wait).execute(action)
+        wait.assert_not_called()
         self.assertEqual(calendar.verification_reads, [])
         self.assertEqual(calendar.writes, [])
         calendar.fail_preflight = False

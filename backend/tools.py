@@ -24,6 +24,7 @@ from backend.cal_client import (
 )
 from backend.prescan import EMAIL, PART_HOURS, DateHint, PartOfDay
 from backend.protocol import (
+    BookingCardsEvent,
     BookingRef,
     BookingView,
     CalendarDate,
@@ -574,7 +575,8 @@ class CalendarTools:
             "hasMore": has_more,
         }
         event: RefsEvent = {"type": "refs", "bookings": refs}
-        return ToolOutcome(result, [event])
+        cards: BookingCardsEvent = {"type": "booking_cards", "refs": list(refs)}
+        return ToolOutcome(result, [event, cards])
 
     def read_booking_entries(self, email: str, status: BookingFilter) -> tuple[list[BookingEntry], bool]:
         page = self.calendar.list_bookings(attendee_email=email, status=status)

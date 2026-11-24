@@ -110,3 +110,13 @@ The size probe measured a 2.49 s median first-text difference between the shorte
 ## Closed-window alternatives
 
 A completed new-booking lookup that misses the requested window or exact start shows up to three real alternatives from the 14-day availability window. The ranking prefers the same part of day on nearby dates, then other times on the requested day. Stale proposals use the same ranking on freshly checked availability. The alternative chips precede a single tool-free explanation on the normal response path.
+
+## M7 review changes
+
+Raise the output cap from 300 to 800 tokens. Treat `incomplete` with streamed text as a usable reply and label it as cut short. Continue from capped text-only replies on 3.5 and 3.1 Flash-Lite, where the live probe verified the interaction ID and retained history. Keep the prior model history for other capped replies. Record `model_down` reasons without provider message content. [Output-cap probe](gemini-notes.md#m7-review-output-cap-probe)
+
+Booking cards, including an explicit empty list, are displayed by a `booking_cards` event. Ref inventory is lookup data. Booking-card order counts toward evaluation offers. Named refs missing from the attendee's active signed bookings receive the same diagnostic context whether the underlying record is missing, inactive, or owned by another attendee.
+
+Warm requests share the configured per-IP quota and window with chat but have their own bucket. A timed-out calendar write waits two seconds before reconciliation. A taken create slot checks for an active booking that already matches this attendee, event, and exact interval before looking up alternatives. Move success still requires verifying what happened to the original booking. In the terminal, blank input or `/cancel` at either contact prompt dismisses the proposal.
+
+M7 checks explicit card offers in observed order. Tool traces count named attempts separately from calls whose arguments resolve to the required fixture booking or slot. The approved YAML remains the source of truth. The runner reads a generated JSON snapshot checked against the YAML hash so `pnpm eval` uses the existing project dependencies.
