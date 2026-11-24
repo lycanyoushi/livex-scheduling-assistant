@@ -333,6 +333,7 @@ class CalendarTools:
         deny_mutations: bool = False,
         excluded_days: frozenset[date] = frozenset(),
         excluded_weekdays: frozenset[int] = frozenset(),
+        reuse_pending_proposal: bool = False,
     ) -> None:
         self.calendar = calendar
         self.state = state
@@ -344,6 +345,7 @@ class CalendarTools:
         self._deny_mutations = deny_mutations
         self._excluded_days = excluded_days
         self._excluded_weekdays = excluded_weekdays
+        self._reuse_pending_proposal = reuse_pending_proposal
         self._state_lock = Lock()
         self._events_lock = Lock()
         self._event_types: list[EventType] | None = None
@@ -666,6 +668,15 @@ class CalendarTools:
         with self._state_lock:
             return proposal_view(proposal, self.state, events)
 
+    def _proposal_target(self, proposal: Proposal) -> tuple[object, ...]:
+        slot = self.state.slots.get(proposal.slot_ref or "")
+        booking = self.state.bookings.get(proposal.booking_ref or "")
+        return (
+            (slot.event_type_id, parse_instant(slot.start_utc), parse_instant(slot.end_utc)) if slot else None,
+            booking.uid if booking else None,
+            proposal.kind, proposal.name, proposal.email, proposal.notes, proposal.reason,
+        )
+
     def _propose(
         self,
         kind: Literal["book", "cancel", "reschedule"],
@@ -684,6 +695,11 @@ class CalendarTools:
                 id=f"P{count}", kind=kind, slot_ref=slot_ref, booking_ref=booking_ref,
                 name=name, email=email, notes=notes, reason=reason, created_at=self.now.timestamp(),
             )
+            pending = self.state.proposal
+            if self._reuse_pending_proposal and pending and self._proposal_target(proposal) == self._proposal_target(pending):
+                verb = {"book": "book", "cancel": "cancel", "reschedule": "move"}[kind]
+                text = f"Type yes or click Confirm to {verb} it."
+                return ToolOutcome(events=[{"type": "assistant_text", "text": text}], proposal=pending)
             view = proposal_view(proposal, self.state, events)
             self.state.counters.p = count
             self.state.proposal = proposal

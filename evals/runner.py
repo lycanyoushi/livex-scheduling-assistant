@@ -25,16 +25,21 @@ from backend.server import TurnLoop, create_app
 from backend.state import SlotEntry, new_state, sign_state, verify_state
 from backend.tools import booking_entry
 from backend.turn import TurnService
-from evals.checker import EvalError, SAFE_STATUS, check_turn, confirms_signed_proposal, local_iso, require, safe_reason
+from evals.checker import (
+    EvalError, SAFE_STATUS, TYPED_CONFIRM_REPLIES, check_turn, confirms_signed_proposal, local_iso, require, safe_reason,
+)
 from evals.fake_cal import FakeCal
 from scripts.local_environment import load_local_environment
 
 
 SPEC_PATH = Path(__file__).with_name("conversations.yaml")
 HELD_OUT_PATH = SPEC_PATH.with_name("held_out.json")
-REGRESSION_SPEC_PATH = SPEC_PATH.with_name("regressions.yaml")
 APPROVED_CASE_IDS = range(1, 24)
-TYPED_CONFIRM_CASE = 32
+REGRESSION_SPECS = {
+    "regression_spec_sha256": (SPEC_PATH.with_name("regressions.yaml"), (32,)),
+    "typed_confirmation_variants_sha256": (SPEC_PATH.with_name("typed_confirmation_variants.yaml"), (33, 34)),
+}
+REGRESSION_CASE_IDS = frozenset(case_id for _, case_ids in REGRESSION_SPECS.values() for case_id in case_ids)
 DEFAULT_MODEL = "gemini-3.5-flash-lite"
 BACKUP_MODEL = "gemini-3.1-flash-lite"
 COMPARISON_MODEL = BACKUP_MODEL
@@ -77,7 +82,8 @@ def validate_case_checks(cases, *, allow_typed_confirm=False):
         for number, turn in enumerate(case["turns"], 1):
             if "proposal_from_turn" in turn:
                 source = turn["proposal_from_turn"]
-                require(allow_typed_confirm and turn.get("user") == "yes" and "action" not in turn
+                reply = turn.get("user")
+                require(allow_typed_confirm and isinstance(reply, str) and reply in TYPED_CONFIRM_REPLIES and "action" not in turn
                         and type(source) is int and 1 <= source < number, "Invalid typed confirmation fixture.")
             rules = turn["checks"]
             require(set(rules) <= SUPPORTED_CHECKS and rules.get("reply_language") in {None, "es"},
@@ -112,18 +118,28 @@ def held_out_cases(spec):
     return cases
 
 
-def validate_regressions(regressions, spec):
+def validate_regressions(regressions, spec, case_ids):
     require(all(regressions[name] == spec[name] for name in (
         "schema_version", "calendar_fixture", "default_clock", "default_time_zone",
     )), "Regression fixture settings must match the approved suite.")
     cases = regressions["cases"]
-    require([case["id"] for case in cases] == [TYPED_CONFIRM_CASE], "Missing or duplicate regression case.")
+    require(tuple(case["id"] for case in cases) == case_ids, "Missing or duplicate regression case.")
     validate_case_checks(cases, allow_typed_confirm=True)
     return cases
 
 
-def regression_cases(spec):
-    return validate_regressions(load_snapshot(REGRESSION_SPEC_PATH), spec)
+def regression_cases(spec, selected=REGRESSION_CASE_IDS):
+    cases = []
+    for path, case_ids in REGRESSION_SPECS.values():
+        if selected.intersection(case_ids):
+            cases.extend(validate_regressions(load_snapshot(path), spec, case_ids))
+    return cases
+
+
+def regression_hashes(case_ids):
+    selected = set(case_ids)
+    return {field: sha256(path.read_bytes()).hexdigest() for field, (path, ids) in REGRESSION_SPECS.items()
+            if selected.intersection(ids)}
 
 
 def model_profile(spec, model, held_out=False):
@@ -138,9 +154,12 @@ def model_profile(spec, model, held_out=False):
 def refresh_spec(yaml_python=None):
     spec = read_yaml(yaml_python)
     validate_spec(spec)
-    regressions = read_yaml(yaml_python, path=REGRESSION_SPEC_PATH)
-    validate_regressions(regressions, spec)
-    for path, source in ((SPEC_PATH, spec), (REGRESSION_SPEC_PATH, regressions)):
+    sources = {SPEC_PATH: spec}
+    for path, case_ids in REGRESSION_SPECS.values():
+        regressions = read_yaml(yaml_python, path=path)
+        validate_regressions(regressions, spec, case_ids)
+        sources[path] = regressions
+    for path, source in sources.items():
         checkpoint(path.with_suffix(".json"), {"yaml_sha256": sha256(path.read_bytes()).hexdigest(), "spec": source})
 
 
@@ -548,8 +567,7 @@ def run(spec, cases, repeats, profile, output, call_cap, reference=None, *, held
     }
     if held_out:
         document["held_out_sha256"] = sha256(HELD_OUT_PATH.read_bytes()).hexdigest()
-    if TYPED_CONFIRM_CASE in case_ids:
-        document["regression_spec_sha256"] = sha256(REGRESSION_SPEC_PATH.read_bytes()).hexdigest()
+    document.update(regression_hashes(case_ids))
 
     def save():
         http = {}
@@ -613,7 +631,7 @@ def main():
     args = parser.parse_args()
     if args.refresh_spec:
         refresh_spec(args.yaml_python)
-        print(f"Generated {SPEC_PATH.with_suffix('.json').name} and {REGRESSION_SPEC_PATH.with_suffix('.json').name}")
+        print("Regenerated the approved and supplemental JSON snapshots.")
         return 0
     if args.report is not None:
         spec = approved_spec()
@@ -622,9 +640,8 @@ def main():
         held_out = document.get("suite") == "held_out"
         if held_out:
             require(document["held_out_sha256"] == sha256(HELD_OUT_PATH.read_bytes()).hexdigest(), "The held-out spec differs.")
-        if TYPED_CONFIRM_CASE in document["case_ids"]:
-            require(document["regression_spec_sha256"] == sha256(REGRESSION_SPEC_PATH.read_bytes()).hexdigest(),
-                    "The regression spec differs.")
+        for field, digest in regression_hashes(document["case_ids"]).items():
+            require(document.get(field) == digest, "The regression spec differs.")
         profile = model_profile(spec, document["model"], held_out)
         repeats = document["repeats"]
         summary = aggregate(document["runs"], document["case_ids"], repeats,
@@ -641,13 +658,13 @@ def main():
                 "Use all frozen held-out cases exactly once on the default model.")
     logging.disable(logging.CRITICAL)
     spec = approved_spec()
-    regression_selected = bool(args.cases and TYPED_CONFIRM_CASE in args.cases)
+    regression_selected = bool(REGRESSION_CASE_IDS.intersection(args.cases or ()))
     if args.held_out:
         cases = held_out_cases(spec)
     else:
         selected = set(args.cases or APPROVED_CASE_IDS)
-        require(selected <= {*APPROVED_CASE_IDS, TYPED_CONFIRM_CASE}, "Unknown evaluation case.")
-        candidates = [*spec["cases"], *regression_cases(spec)] if regression_selected else spec["cases"]
+        require(selected <= {*APPROVED_CASE_IDS, *REGRESSION_CASE_IDS}, "Unknown evaluation case.")
+        candidates = [*spec["cases"], *regression_cases(spec, selected)]
         cases = [case for case in candidates if case["id"] in selected]
     profile = model_profile(spec, args.model, args.held_out)
     repeats = args.repeats or profile["repetitions_per_case"]

@@ -21,7 +21,7 @@ The LiveX brief requires an interactive Python chatbot that books, views, cancel
 
 The client uses `GET /v2/me` and `GET /v2/event-types` to find the host and eligible events. The single-booking read also helps verify changes when a write times out. [Cal.com API verification](docs/calcom-notes.md)
 
-At the Python terminal's confirmation prompt, type `y`. On the web, type `yes` in chat or click **Confirm** on the active proposal. Both use the name and email shown on the booking card. Fill in any missing details before confirming.
+At the Python terminal's confirmation prompt, type `y`. On the web, type `yes`, `yes please`, or `ok` in chat or click **Confirm** on the active proposal. Both use the name and email shown on the booking card. Fill in any missing details before confirming.
 
 ## Features
 

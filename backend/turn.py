@@ -64,8 +64,12 @@ For a new booking at a specific available time, if the user asks to skip confirm
 Use a propose tool alone as the final step and give a short explanation before it.
 Reply in the user's language. Keep replies brief. Ask which meeting when a request is ambiguous."""
 PROPOSE_TOOLS = frozenset({"propose_booking", "propose_cancel", "propose_reschedule"})
-CONFIRM_REPLIES = frozenset({"yes", "confirm", "book it", "sounds good", "go ahead"})
-DISMISS_REPLIES = frozenset({"no", "never mind", "don't"})
+CONFIRM_REPLY = re.compile(
+    r"(?:yes|yeah|yep|yup|sure|ok|okay|confirm|book it|go ahead|sounds good|that works|perfect|do it|please do)"
+    r"(?:(?: | *, *)(?:please|thanks|thank you|confirm it|book it|go ahead))*"
+)
+DISMISS_REPLY = re.compile(r"no|nope|no(?: | *, *)thanks|never mind|don't")
+MAX_PROPOSAL_REPLY_LENGTH = 120
 REFS = re.compile(r"\[\[([SB][1-9]\d*)\]\]")
 BOOKING_MENTION = re.compile(r"\bB[1-9]\d{0,8}\b", re.IGNORECASE)
 PAST_BOOKINGS = re.compile(r"\b(?:past|previous|earlier|history|last (?:week|month|year)|pasad[oa]s?|anteriores?)\b", re.I)
@@ -119,14 +123,16 @@ class TurnError(Exception):
 
 
 def _typed_proposal_action(reply: TextInput, proposal: Proposal | None) -> ConfirmProposal | DismissProposal | None:
-    # Bind an exact reply to the card the browser showed, using only the signed proposal as the target.
+    # Bind a short, unambiguous reply to the card the browser showed.
     if proposal is None or reply.proposal_id != proposal.id:
         return None
-    phrase = reply.text.strip().lower().replace("’", "'").rstrip(".!").rstrip()
-    if phrase in CONFIRM_REPLIES:
+    phrase = re.sub(r"[ \t]+", " ", reply.text.strip().lower().replace("’", "'").rstrip(".!").rstrip())
+    if len(phrase) > MAX_PROPOSAL_REPLY_LENGTH:
+        return None
+    if CONFIRM_REPLY.fullmatch(phrase):
         contact = reply.contact.model_dump(exclude_none=True) if proposal.kind == "book" and reply.contact else {}
         return ConfirmProposal(type="confirm_proposal", proposalId=proposal.id, **contact)
-    if phrase in DISMISS_REPLIES:
+    if DISMISS_REPLY.fullmatch(phrase):
         return DismissProposal(type="dismiss_proposal", proposalId=proposal.id)
     return None
 
@@ -418,6 +424,7 @@ class TurnService:
         return CalendarTools(
             self.calendar, state, now, allowed_slugs=self.allowed_slugs, default_slug=self.default_slug,
             deny_mutations=deny_mutations, excluded_days=hints.excluded_days, excluded_weekdays=hints.excluded_weekdays,
+            reuse_pending_proposal=True,
         )
 
     async def events(self, request: ChatRequest) -> AsyncIterator[ServerEvent]:

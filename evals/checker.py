@@ -21,6 +21,8 @@ SAFE_REASONS = frozenset({
     "first_event_timeout", "stream_idle_timeout", "overall_timeout", "provider_timeout",
 })
 REFERENCE = re.compile(r"\[\[([SB][1-9][0-9]*)\]\]")
+# Fixture literals are independent of the application's reply parser.
+TYPED_CONFIRM_REPLIES = frozenset({"yes", "yes please", "ok"})
 SPANISH = re.compile(
     r"\b(?:hay|puedo|puedes|tengo|tenemos|jueves|disponible[sn]?|horario[s]?|opci[oó]n(?:es)?|"
     r"para|elegir|prefieres|puede|reservar|por favor|elige|cu[aá]l)\b", re.IGNORECASE,
@@ -60,7 +62,8 @@ def confirms_signed_proposal(turn, payload, prior, state):
     if payload["kind"] != "text" or type(source) is not int:
         return False
     visible = prior.get(source, {}).get("proposal") or {}
-    return (turn.get("user") == payload.get("text") == "yes"
+    expected = turn.get("user")
+    return (isinstance(expected, str) and expected in TYPED_CONFIRM_REPLIES and expected == payload.get("text")
             and visible.get("id") == payload.get("proposalId") == proposal.id)
 
 

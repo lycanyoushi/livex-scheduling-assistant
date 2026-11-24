@@ -95,35 +95,42 @@ class EvalRunnerTests(TestCase):
                     self.assertTrue(all(item["simulated"] for item in errors))
 
     def test_typed_confirmation_is_a_literal_text_request_with_a_matching_signed_proposal(self):
-        turn = regression_cases(self.spec)[0]["turns"][1]
         prior = {1: {"proposal": {"id": "P1"}}}
         state = SimpleNamespace(proposal=SimpleNamespace(id="P1"))
-        literal = turn_payload(turn, prior)
-        self.assertEqual(literal, {"kind": "text", "text": "yes", "proposalId": "P1"})
-        self.assertTrue(confirms_signed_proposal(turn, literal, prior, state))
-        self.assertFalse(confirms_signed_proposal({"user": "yes"}, literal, prior, state))
-        self.assertFalse(confirms_signed_proposal(turn, {"kind": "text", "text": "yes"}, prior, state))
-        self.assertFalse(confirms_signed_proposal(turn, {**literal, "text": "yes if it's tomorrow"}, prior, state))
-        self.assertFalse(confirms_signed_proposal(turn, {**literal, "proposalId": "P2"}, prior, state))
-        self.assertFalse(confirms_signed_proposal(turn, literal, prior, SimpleNamespace(proposal=None)))
-        self.assertIsNone(turn_payload(turn, {}))
+        replies = {32: "yes", 33: "yes please", 34: "ok"}
+        for case in regression_cases(self.spec):
+            with self.subTest(case=case["id"]):
+                reply = replies[case["id"]]
+                turn = case["turns"][1]
+                literal = turn_payload(turn, prior)
+                self.assertEqual(literal, {"kind": "text", "text": reply, "proposalId": "P1"})
+                self.assertTrue(confirms_signed_proposal(turn, literal, prior, state))
+                self.assertFalse(confirms_signed_proposal({"user": reply}, literal, prior, state))
+                self.assertFalse(confirms_signed_proposal(turn, {"kind": "text", "text": reply}, prior, state))
+                self.assertFalse(confirms_signed_proposal(turn, {**literal, "text": f"{reply} if it's tomorrow"}, prior, state))
+                other_reply = next(value for value in replies.values() if value != reply)
+                self.assertFalse(confirms_signed_proposal(turn, {**literal, "text": other_reply}, prior, state))
+                self.assertFalse(confirms_signed_proposal(turn, {**literal, "proposalId": "P2"}, prior, state))
+                self.assertFalse(confirms_signed_proposal(turn, literal, prior, SimpleNamespace(proposal=None)))
+                self.assertIsNone(turn_payload(turn, {}))
 
-    def test_case_32_types_yes_through_flask_without_a_second_model_call(self):
-        case, = regression_cases(self.spec)
-        model = BookingScenario()
-        result = case_report(case, 1, run_case(self.spec, case, self.fixture, model, None, None,
-                                              model_name=DEFAULT_MODEL))
-        self.assertEqual(result["status"], "pass", result["turns"])
-        self.assertEqual(model.calls, 1)
-        proposed, confirmed = result["turns"]
-        self.assertEqual(confirmed["kind"], "text")
-        self.assertEqual(confirmed["model_calls"], 0)
-        before = {row["check"]: row["observed"] for row in proposed["checks"]}
-        after = {row["check"]: row["observed"] for row in confirmed["checks"]}
-        self.assertEqual(before["exact_calendar_writes"], [])
-        self.assertEqual([write["operation"] for write in after["exact_calendar_writes"]], ["create_booking"])
-        self.assertTrue(after["typed_confirmation_matches_signed_proposal"])
-        self.assertTrue(after["typed_confirmation_clears_proposal"])
+    def test_typed_confirmation_variants_book_through_flask_without_a_second_model_call(self):
+        for case in regression_cases(self.spec):
+            with self.subTest(case=case["id"]):
+                model = BookingScenario()
+                result = case_report(case, 1, run_case(self.spec, case, self.fixture, model, None, None,
+                                                      model_name=DEFAULT_MODEL))
+                self.assertEqual(result["status"], "pass", result["turns"])
+                self.assertEqual(model.calls, 1)
+                proposed, confirmed = result["turns"]
+                self.assertEqual(confirmed["kind"], "text")
+                self.assertEqual(confirmed["model_calls"], 0)
+                before = {row["check"]: row["observed"] for row in proposed["checks"]}
+                after = {row["check"]: row["observed"] for row in confirmed["checks"]}
+                self.assertEqual(before["exact_calendar_writes"], [])
+                self.assertEqual([write["operation"] for write in after["exact_calendar_writes"]], ["create_booking"])
+                self.assertTrue(after["typed_confirmation_matches_signed_proposal"])
+                self.assertTrue(after["typed_confirmation_clears_proposal"])
 
     def test_thresholds_and_wording_failures_stay_distinct(self):
         statuses = ["pass", "wording_only_failure", "pass"]

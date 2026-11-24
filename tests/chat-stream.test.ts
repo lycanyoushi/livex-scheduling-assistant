@@ -96,16 +96,24 @@ it("permits only terminal alternatives after a slot-taken UI action", () => {
 });
 
 it("sends recognized replies as text with only the active proposal ID attached", () => {
-  expect(JSON.stringify(typedInput("yes", "P1"))).toBe('{"kind":"text","text":"yes","proposalId":"P1"}');
-  expect(JSON.stringify(typedInput("yes"))).toBe('{"kind":"text","text":"yes"}');
-  for (const text of [" YES!. ", "CONFIRM", "Book it.", "Sounds good", "Go ahead!"]) {
-    expect(proposalDecision(typedInput(text, "P1"))).toBe("confirm");
+  expect(JSON.stringify(typedInput("yes please", "P1"))).toBe('{"kind":"text","text":"yes please","proposalId":"P1"}');
+  expect(JSON.stringify(typedInput("yes please"))).toBe('{"kind":"text","text":"yes please"}');
+  for (const text of [
+    " YES!. ", "yeah", "yep", "yup", "sure", "ok", "okay", "CONFIRM", "Book it.", "Sounds good",
+    "Go ahead!", "that works", "perfect", "do it", "please do", "yes please", "confirm please", "go ahead please",
+    "Yeah, thank you, confirm it, book it, go ahead!", "  sure,\tthanks, please.  ",
+  ]) {
+    expect(proposalDecision(typedInput(text, "P1")), text).toBe("confirm");
   }
-  for (const text of ["No.", " Never mind! ", "Don’t!"]) {
-    expect(proposalDecision(typedInput(text, "P1"))).toBe("dismiss");
+  for (const text of ["No.", "nope", "no thanks", "No, thanks!", " Never mind! ", "Don’t!"]) {
+    expect(proposalDecision(typedInput(text, "P1")), text).toBe("dismiss");
   }
-  for (const text of ["yes?", "confirm it", "sounds good, but Friday", "go ahead please", "don't book it"]) {
-    expect(typedInput(text, "P1")).toEqual({ kind: "text", text });
+  for (const text of [
+    "yes?", "yes, thanks?", "confirm it", "sounds good, but Friday", "go ahead instead", "don't book it",
+    "yes at 3pm", "yes, tomorrow", "ok 11/24", "sure Friday", "cancel that", "no thanks please", "surely",
+    "yes" + " please".repeat(20),
+  ]) {
+    expect(typedInput(text, "P1"), text).toEqual({ kind: "text", text });
   }
 });
 
@@ -129,7 +137,7 @@ it("retries verified rejections and never replays an interrupted confirmation", 
 });
 
 it("gives a typed confirmation the same transport and taken-slot safety as the button", () => {
-  const confirm = typedInput("yes!", "P1");
+  const confirm = typedInput("that works, please!", "P1");
   const dismiss = typedInput("never mind", "P1");
   const failed = { outcome: "failed", path: "ui_action" } as const;
   expect(canRetryTurn(confirm, { kind: "transport" })).toBe(false);

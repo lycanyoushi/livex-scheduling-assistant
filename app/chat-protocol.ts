@@ -10,21 +10,15 @@ type BookingContact = { name: string; email: string; notes?: string };
 type TextInput = { kind: "text"; text: string; proposalId?: string; contact?: BookingContact };
 export type ChatInput = TextInput | { kind: "ui"; action: UiAction };
 
+const AFFIRMATIVE_REPLY = /^(?:yes|yeah|yep|yup|sure|ok|okay|confirm|book it|go ahead|sounds good|that works|perfect|do it|please do)(?:(?: | *, *)(?:please|thanks|thank you|confirm it|book it|go ahead))*$/;
+const NEGATIVE_REPLY = /^(?:no|nope|no(?: | *, *)thanks|never mind|don't)$/;
+const MAX_PROPOSAL_REPLY_LENGTH = 120;
+
 function textProposalDecision(text: string): "confirm" | "dismiss" | undefined {
-  switch (text.trim().toLowerCase().replace(/[.!]+$/, "").trim().replaceAll("’", "'")) {
-    case "yes":
-    case "confirm":
-    case "book it":
-    case "sounds good":
-    case "go ahead":
-      return "confirm";
-    case "no":
-    case "never mind":
-    case "don't":
-      return "dismiss";
-    default:
-      return undefined;
-  }
+  const reply = text.trim().toLowerCase().replace(/[.!]+$/, "").trim().replaceAll("’", "'").replace(/[ \t]+/g, " ");
+  if (reply.length > MAX_PROPOSAL_REPLY_LENGTH) return undefined;
+  if (AFFIRMATIVE_REPLY.test(reply)) return "confirm";
+  if (NEGATIVE_REPLY.test(reply)) return "dismiss";
 }
 
 export function typedInput(text: string, activeProposalId?: string, contact?: BookingContact): TextInput {

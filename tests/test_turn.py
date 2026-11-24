@@ -68,8 +68,12 @@ class TurnTests(unittest.IsolatedAsyncioTestCase):
         card = next(event["proposal"] for event in result if event["type"] == "proposal")
         return card, result[-1]["stateToken"]
 
-    async def test_typed_confirmation_requires_an_exact_reply_and_pending_card(self):
-        for phrase in ("yes", " Confirm. ", "book it", "Sounds good!", "go ahead"):
+    async def test_typed_confirmation_accepts_short_affirmatives_and_polite_fillers(self):
+        for phrase in (
+            "yes", "Yes!", "yeah", "yep", "yup", "sure", "ok", "okay", " Confirm. ", "book it", "Sounds good!",
+            "go ahead", "that works", "perfect", "do it", "please do", "yes please", "confirm please",
+            "Yeah, thank you, confirm it, book it, go ahead!", "  sure,\tthanks, please.  ",
+        ):
             with self.subTest(phrase=phrase):
                 model = ScriptedModel()
                 turn_service = service(model)
@@ -84,7 +88,7 @@ class TurnTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(len(turn_service.calendar.list_bookings()["data"]), 1)
 
     async def test_typed_dismissal_retires_the_proposal_without_model_or_write(self):
-        for phrase in ("no", "never mind", "Don’t!"):
+        for phrase in ("no", "nope", "no thanks", "No, thanks!", "never mind", "Don’t!"):
             with self.subTest(phrase=phrase):
                 model = ScriptedModel()
                 turn_service = service(model)
@@ -134,8 +138,10 @@ class TurnTests(unittest.IsolatedAsyncioTestCase):
             (False, {**text("yes"), "proposalId": "P1"}),
             (True, text("yes")),
             (True, {**text("yes"), "proposalId": "P2"}),
-            (True, {**text("yes?"), "proposalId": "P1"}),
-            (True, {**text("yes, but pick another time"), "proposalId": "P1"}),
+            *[(True, {**text(phrase), "proposalId": "P1"}) for phrase in (
+                "yes?", "yes, thanks?", "yes, but pick another time", "go ahead instead", "yes at 3pm",
+                "yes, tomorrow", "ok 11/24", "sure Friday", "cancel that", "no thanks please", "yes" + " please" * 20,
+            )],
         )
         for pending, value in cases:
             with self.subTest(pending=pending, value=value):
@@ -149,6 +155,48 @@ class TurnTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(reply[-1]["metrics"]["path"], "model")
                 self.assertEqual(len(model.requests), 1)
                 self.assertEqual(turn_service.calendar.list_bookings()["data"], [])
+
+    async def test_model_reuses_an_identical_proposal_and_keeps_its_card_actionable(self):
+        model = ScriptedModel((ModelCompletion("duplicate", "requires_action", (
+            ToolCall("again", "propose_booking", {"slot_ref": "S2", "name": "Sam", "email": "", "notes": ""}),
+        )),))
+        turn_service = service(model)
+        self.addCleanup(turn_service.close_prefetch)
+        card, token = await self.open_booking_proposal(turn_service)
+        state = verify_state(token, SECRET, NOW)
+        slot = state.slots[card["slotRef"]]
+        self.assertEqual(add_slot(state, slot.model_copy(update={"fetched_at": NOW.timestamp() + 1})), "S2")
+
+        reply = await collect(turn_service, text("Could you show the confirmation again?"), sign_state(state, SECRET))
+
+        self.assertFalse(any(event["type"] == "proposal" for event in reply))
+        self.assertEqual([event["text"] for event in reply if event["type"] == "assistant_text"],
+                         ["Type yes or click Confirm to book it."])
+        after = turn_state(reply)
+        self.assertEqual(after.proposal, state.proposal)
+        self.assertEqual(after.counters.p, state.counters.p)
+        self.assertEqual(after.pending_call.proposal_id, card["id"])
+        self.assertEqual(turn_service.calendar.list_bookings()["data"], [])
+
+        confirmed = await collect(turn_service, {**text("yes please"), "proposalId": card["id"]}, reply[-1]["stateToken"])
+        self.assertEqual([event["kind"] for event in confirmed if event["type"] == "booking_result"], ["booked"])
+        self.assertEqual(turn_state(confirmed).pending_call.outcome.outcome, "confirmed")
+        self.assertEqual(len(model.requests), 1)
+
+    async def test_model_still_replaces_a_proposal_with_changed_details(self):
+        model = ScriptedModel((ModelCompletion("updated", "requires_action", (
+            ToolCall("change", "propose_booking", {"slot_ref": "S1", "name": "Sam", "email": "", "notes": "Bring a sketch"}),
+        )),))
+        turn_service = service(model)
+        self.addCleanup(turn_service.close_prefetch)
+        first, token = await self.open_booking_proposal(turn_service)
+
+        reply = await collect(turn_service, text("Please add a note: Bring a sketch."), token)
+
+        updated = next(event["proposal"] for event in reply if event["type"] == "proposal")
+        self.assertNotEqual(updated["id"], first["id"])
+        self.assertEqual(updated["notes"], "Bring a sketch")
+        self.assertEqual(turn_service.calendar.list_bookings()["data"], [])
 
     async def test_bypass_request_can_propose_but_cannot_confirm(self):
         model = ScriptedModel((ModelCompletion("proposed", "requires_action", (
