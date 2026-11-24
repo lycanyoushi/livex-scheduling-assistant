@@ -1,0 +1,24 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "services": {
+    "web": {
+      "root": ".",
+      "framework": "nextjs"
+    },
+    "calendar": {
+      "root": ".",
+      "framework": "flask",
+      "entrypoint": "wsgi:app",
+      "functions": {
+        "wsgi.py": {
+          "maxDuration": 120,
+          "excludeFiles": "{docs/**,tests/**,evals/results/**,.next/**,node_modules/**}"
+        }
+      }
+    }
+  },
+  "rewrites": [
+    { "source": "/api/(.*)", "destination": { "service": "calendar" } },
+    { "source": "/(.*)", "destination": { "service": "web" } }
+  ]
+}

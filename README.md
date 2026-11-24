@@ -1,6 +1,35 @@
 # LiveX Scheduling Assistant
 
-A Python scheduling chatbot backed by Cal.com and Gemini, with a Next.js web interface.
+A conversational Python assistant for booking, viewing, rescheduling, and cancelling meetings through Cal.com. It runs in a terminal and in a streaming Next.js chat. Every change shows a proposed time or booking and waits for confirmation.
+
+[Local web chat](http://localhost:3000) · [Local widget demo](http://localhost:3000/widget-demo) · [Deployment plan](docs/deploy-plan.md)
+
+The public demo link is pending deployment approval.
+
+![Local web chat showing a fictional booking and its management controls](docs/images/scheduling-demo.png)
+
+## Features
+
+- **Required** · An interactive Python terminal chat for all four Cal.com flows. Numbered choices pick real time slots, and `y` confirms a proposed change.
+- **Web bonus** · Streaming replies, clickable time options and booking cards, a time-zone picker, and an embeddable demo. The web chat adds system dark mode, local history, keyboard controls, and a diagnostics drawer at `/?debug=1`.
+- **Demo calendar** · `DEMO_MODE=fake` runs all four flows against a rolling in-memory calendar with a Gemini key and signing secret.
+
+## How it works
+
+```mermaid
+flowchart LR
+    A[Terminal or web chat] --> B[Python turn service]
+    B --> C[Parse dates, time zone and intent]
+    C --> D[Prefetch available times or bookings]
+    D --> E[Gemini streams text and requests tools]
+    E --> F[Validated reads or a proposal]
+    F --> A
+    A --> G[User confirms a signed proposal]
+    G --> H[Recheck and write to Cal.com]
+    H --> A
+```
+
+Python parses dates and prefetches relevant calendar data before the model call. Gemini references options such as `S1` and bookings such as `B1`. The state token signs their mappings to exact calendar records. Python owns every write, rechecks the chosen record or time on Confirm, and streams status, text, cards, and turn metrics. The terminal and web clients use the same turn service.
 
 ## Local development
 
@@ -12,11 +41,25 @@ python -m pip install -r requirements.txt
 pnpm install --frozen-lockfile
 ```
 
-Copy `.env.example` to `.env.local`. Set the Cal.com API key for an isolated test account, a Gemini API key from an unbilled project, and a signing secret generated with `python -c "import secrets; print(secrets.token_hex(32))"`. The test account needs availability and a visible 30-minute event type.
+Copy `.env.example` to `.env.local`. Create `GEMINI_API_KEY` in an unbilled Google AI Studio project. Generate `STATE_SIGNING_SECRET` with `python -c "import secrets; print(secrets.token_hex(32))"`. [Google AI Studio key setup](https://ai.google.dev/gemini-api/docs/api-key) · [Gemini free tier and data use](https://ai.google.dev/gemini-api/docs/pricing)
+
+For the demo calendar, set `DEMO_MODE=fake` and leave `CAL_API_KEY` empty. The app uses simulated weekday availability from the current date. The Gemini key is still required, and fake bookings reset with the backend process.
+
+For a real calendar, leave `DEMO_MODE` empty. On a Cal.com test account, set your time zone and availability, create a visible 30-minute event type, and assign the availability schedule to it. Generate an API key in **Settings → Developer → API Keys** and save it as `CAL_API_KEY`. Set `CAL_DEFAULT_EVENT_TYPE_SLUG` to the event's URL slug if the account has multiple event types. [Cal.com event setup](https://next.cal.com/blog/event-types-guide-calcom) · [Cal.com API key setup](https://next.cal.com/blog/where-is-my-api-key-and-what-can-it-do)
+
+| Setting | Purpose |
+| --- | --- |
+| `GEMINI_MODEL`, `GEMINI_THINKING_LEVEL` | Default to 3.5 Flash-Lite with minimal thinking. |
+| `GEMINI_FALLBACK_MODEL` | Defaults to 3.1 Flash-Lite. An explicit empty value disables backup calls. |
+| `CAL_EVENT_TYPE_SLUGS`, `CAL_DEFAULT_EVENT_TYPE_SLUG` | Optional event allowlist and default. |
+| `RATE_LIMIT_TURNS_PER_10MIN`, `DAILY_MODEL_CALL_CAP` | Per-IP throttle and process-local model-call budget. Set the budget below the project's AI Studio quota. |
+| `FLASK_ORIGIN` | Optional loopback API origin for Next.js development. |
+
+Run `pnpm check` to validate the environment. It reads Gemini model metadata and Cal.com's `/v2/me` in real mode, or Gemini metadata alone in fake mode. It prints setting names and failure classes without credential values.
 
 Run `pnpm dev:api` and `pnpm dev` in separate terminals, then open `http://localhost:3000`.
 
-Set `DAILY_MODEL_CALL_CAP` below the daily free-tier request limit shown for your AI Studio project. `RATE_LIMIT_TURNS_PER_10MIN` sets the per-IP chat limit. A stalled primary model can switch to the free-tier 3.1 Flash-Lite backup. The web app offers a direct Cal.com booking option when available.
+A stalled primary model can switch to the free-tier 3.1 Flash-Lite backup. When a public Cal.com booking link is available, the web app can open its direct booking form.
 
 For terminal chat, run `pnpm chat` or `python -m backend.cli` from the activated virtual environment. Type a displayed option number to pick a time and answer `y` or `n` at the confirmation prompt. Use `r` or `c` to move or cancel your latest confirmed booking. `/new` starts a fresh chat, `/tz America/Los_Angeles` changes the time zone, `/debug` shows the last turn's metrics, and `/quit` exits.
 
@@ -31,17 +74,22 @@ pnpm lint
 
 The evals run against a fixed clock and an isolated calendar fixture. Gemini calls use an unbilled AI Studio key. Cases 16, 18, 19, and 20 require three passes each. Other cases require two passes out of three.
 
-| Model | Completed case runs | Result | Safety runs |
-| --- | ---: | --- | ---: |
-| Gemini 3.5 Flash-Lite (`minimal`) | 69/69 | 23/23 cases qualified, 68/69 runs passed | 12/12 |
-| Gemini 3.8 Flash (`low`) | 3/23 | One pass, then two consecutive HTTP 503s | 0 attempted |
+| Model and sweep | Completed runs | Result | Safety runs | First text p50 / p90 | Text turn p50 / p90 |
+| --- | ---: | --- | ---: | ---: | ---: |
+| Gemini 3.5 Flash-Lite (`minimal`), first sweep | 69/69 | 19/23 cases qualified, 56/69 runs passed | 9/12 | 2.48 / 6.50 s | 4.32 / 9.40 s |
+| Gemini 3.5 Flash-Lite (`minimal`), repeat sweep | 69/69 | 23/23 cases qualified, 68/69 runs passed | 12/12 | 2.33 / 9.27 s | 3.54 / 13.86 s |
+| Gemini 3.1 Flash-Lite (`minimal`), single comparison | 23/23 | 21/23 cases passed | 4/4 | 2.22 / 3.40 s | 3.28 / 6.97 s |
 
-The default remains 3.5 Flash-Lite. In the final sweep, time to first model text was 2.33 s p50 and 9.27 s p90. Text turns took 3.54 s p50 and 13.86 s p90. The runner subtracts its pacing delays. [Full report and per-check results](docs/m7-eval-report.md)
+The booking-list, reference reuse, and weekday-exclusion fixes landed between the two sweeps. A separate held-out set used eight new phrasings once each on 3.5 Flash-Lite and passed 5/8. [Full report and per-check results](docs/m7-eval-report.md)
+
+The default remains 3.5 Flash-Lite. The 3.1 comparison used the updated stream deadlines and offer cap. The runner subtracts its pacing delays.
 
 ```sh
 pnpm eval --model gemini-3.5-flash-lite --output evals/results/local-run.json
 pnpm eval --report evals/results/local-run.json
 ```
+
+The Python mapping, state signing, model fallback, and hosting choices are recorded in the project notes. [Design decisions](docs/DECISIONS.md)
 
 ## Known limitations
 

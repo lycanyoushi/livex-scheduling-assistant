@@ -128,3 +128,7 @@ During the full baseline sweep, a repeated booking read created a second ref for
 Give the primary eight seconds to produce any stream event and keep the 20-second overall model limit. After text begins, raw activity resets an eight-second idle timer on either model. A timed-out partial reply keeps the last good interaction and shows its text with a cut-short notice. Limit slot pickers to the first four distinct refs in a reply across grouped and inline offers. Overflow times render as text.
 
 The fake calendar reuses the fixture's booking checks and mutations with weekdays from the live clock instead of a fixed eval schedule. It requires a Gemini key and a signing secret. Web chat and the widget have separate local histories, and reopening the widget preserves its chat. Debug events are browser-local and omit the terminal state token. [M8 verification](m8-checks.md)
+
+## M9 preparation
+
+Use the current Vercel `services` configuration with ordered rewrites for Flask's existing API paths and Next.js for all other routes. The WSGI entrypoint logs a process identifier and local app setup time so Preview can verify the `/api/warm` request reaches Flask and compare it with the next chat request. Both services keep their existing repository-root layout. [Deployment plan and local checks](deploy-plan.md)

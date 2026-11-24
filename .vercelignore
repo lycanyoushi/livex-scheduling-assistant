@@ -1,0 +1,8 @@
+PLAN.md
+.env*
+docs/
+tests/
+evals/results/
+evals/conversations.yaml
+evals/conversations.json
+evals/held_out.json
