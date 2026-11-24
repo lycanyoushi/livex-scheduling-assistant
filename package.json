@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "next dev",
     "dev:api": "node scripts/run-python.mjs -m backend.server",
+    "chat": "node scripts/run-python.mjs -m backend.cli",
     "build": "next build",
     "lint": "eslint .",
     "test": "vitest run && node scripts/run-python.mjs -m unittest discover -s tests",

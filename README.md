@@ -14,7 +14,11 @@ pnpm install --frozen-lockfile
 
 Copy `.env.example` to `.env.local`. Set the Cal.com API key for an isolated test account, a Gemini API key from an unbilled project, and a signing secret generated with `python -c "import secrets; print(secrets.token_hex(32))"`. The test account needs availability and a visible 30-minute event type.
 
-Run `pnpm dev:api` and `pnpm dev` in separate terminals, then open `http://localhost:3000`. Run the checks from the repository root.
+Run `pnpm dev:api` and `pnpm dev` in separate terminals, then open `http://localhost:3000`.
+
+For terminal chat, run `pnpm chat` or `python -m backend.cli` from the activated virtual environment. Type a displayed option number to pick a time and answer `y` or `n` at the confirmation prompt. Use `r` or `c` to move or cancel your latest confirmed booking. `/new` starts a fresh chat, `/tz America/Los_Angeles` changes the time zone, `/debug` shows the last turn's metrics, and `/quit` exits.
+
+Run the checks from the repository root.
 
 ```sh
 pnpm test
