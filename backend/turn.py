@@ -62,6 +62,7 @@ Reply in the user's language. Keep replies brief. Ask which meeting when a reque
 PROPOSE_TOOLS = frozenset({"propose_booking", "propose_cancel", "propose_reschedule"})
 REFS = re.compile(r"\[\[([SB][1-9]\d*)\]\]")
 BOOKING_MENTION = re.compile(r"\bB[1-9]\d{0,8}\b", re.IGNORECASE)
+PAST_BOOKINGS = re.compile(r"\b(?:past|previous|earlier|history|last (?:week|month|year)|pasad[oa]s?|anteriores?)\b", re.I)
 CONTEXT_TAG = re.compile(r"</?\s*turn_context\b[^>]*>", re.IGNORECASE)
 HISTORY_TOKEN_LIMIT = 6_000
 _NAME_WORD = r"[^\W\d_]+(?:[-'’][^\W\d_]+)*"
@@ -216,8 +217,10 @@ def _context(
     unavailable_bookings: tuple[str, ...] = (),
     retired_bookings: tuple[str, ...] = (),
     denied_change: bool = False,
+    listing_response: Literal["ask_email", "shown"] | None = None,
     displayed: tuple[str, ...] = (),
     checked_empty: bool = False,
+    restrict_slots: bool = False,
     rotated: bool = False,
 ) -> tuple[str, ModelContext]:
     local = now.astimezone(ZoneInfo(state.time_zone))
@@ -241,6 +244,10 @@ def _context(
         lines.append(f"{ref} is not one of this attendee's bookings.")
     if denied_change:
         lines.append("The requested change is denied. Reply with a short refusal.")
+    if listing_response == "ask_email":
+        lines.append("Ask for the attendee email in one short question before looking up bookings.")
+    if listing_response == "shown" and not prefetched_bookings:
+        lines.append("Tell the attendee they have no upcoming meetings and offer to help book one.")
     if prefetched_bookings:
         lines.append(f"Booking cards already on screen in this order: {', '.join(prefetched_bookings)}.")
     if not same_zone or previous.local_date != today:
@@ -264,6 +271,8 @@ def _context(
             lines.append(f"Nearest alternatives already on screen: {', '.join(displayed)}.")
     elif displayed:
         lines.append(f"Openings already on screen for this request: {', '.join(displayed)}.")
+    if restrict_slots:
+        lines.append("This list honors the excluded dates. Acknowledge only the openings on screen without adding times.")
     current_bookings = prefetched_bookings if prefetched_bookings is not None else tuple(owned)[-10:]
     current_slots = [ref for ref in state.slots if ref in prefetched_slots]
     if rotated:
@@ -280,9 +289,9 @@ def _context(
         else:
             targets = ", ".join(ref for ref in (proposal.booking_ref, proposal.slot_ref) if ref)
             lines.append(f"Open proposal {proposal.id}: {proposal.kind} {targets}. It awaits confirmation.")
-            if proposal.slot_ref in state.slots:
+            if proposal.slot_ref in state.slots and not restrict_slots:
                 current_slots.insert(0, proposal.slot_ref)
-    else:
+    elif not restrict_slots:
         current_slots.extend(reversed(state.slots))
     slot_order = list(dict.fromkeys(current_slots))
     for ref in slot_order[:16]:
@@ -473,6 +482,8 @@ class TurnService:
         plan = plan_prefetch(state, now, hints, text=text)
         if denied:
             plan = replace(plan, attendee_email=None, days=(), show_openings=False, reschedule=None)
+        if listing_only and PAST_BOOKINGS.search(text):
+            plan = replace(plan, attendee_email=None)
         yield {"type": "status", "text": plan.status()}
         prefetched = await self._prefetch.fetch(tools, plan)
         slots = prefetched.alternatives or prefetched.slots
@@ -490,6 +501,7 @@ class TurnService:
         checked_empty = plan.show_openings and prefetched.slots_checked and (
             bool(prefetched.alternatives) or not displayed
         )
+        restrict_slots = bool(plan.excluded_days and prefetched.slots_checked)
         metrics["prefetch"] = {
             "ms": prefetched.elapsed_ms, "slots": len(slot_refs),
             "bookings": len(booking_refs or {}), "timedOut": prefetched.timed_out,
@@ -516,17 +528,26 @@ class TurnService:
                 if hints.part_of_day != "any":
                     note += f", {hints.part_of_day}"
             yield {"type": "slot_chips", "refs": displayed, "note": note}
-        schemas = [] if checked_empty or denied else await asyncio.to_thread(tools.schemas, allow_lazy_catalog=bool(plan.days))
+        listing_response = None
+        if listing_only and plan.attendee_email is None and not state.user.email:
+            listing_response = "ask_email"
+        elif listing_only and booking_refs is not None and not hints.dates:
+            listing_response = "shown"
+        schemas = [] if checked_empty or denied or listing_response or restrict_slots else await asyncio.to_thread(
+            tools.schemas, allow_lazy_catalog=bool(plan.days),
+        )
         if listing_only:
             schemas = [schema for schema in schemas if schema["name"] not in PROPOSE_TOOLS]
         context, snapshot = _context(
-            state, now, hints, prefetched_slots=frozenset(slot_refs),
+            state, now, hints, prefetched_slots=frozenset(displayed if restrict_slots else slot_refs),
             prefetched_bookings=tuple(booking_refs) if booking_refs is not None else None,
             unavailable_bookings=unavailable_bookings,
             retired_bookings=retired_bookings,
             denied_change=denied,
+            listing_response=listing_response,
             displayed=tuple(displayed),
             checked_empty=checked_empty,
+            restrict_slots=restrict_slots,
             rotated=rotated,
         )
         steps = _initial_steps(state, context, text)
@@ -548,11 +569,12 @@ class TurnService:
                 metric["historyRotated"] = True
             metrics["modelCalls"].append(metric)
             completion = None
+            offered_schemas = [schema for schema in schemas if argument_errors[str(schema["name"])] < 2]
             try:
                 async with aclosing(provider.stream(
                     input_steps=steps, previous_interaction_id=previous_id,
                     system_instruction=SYSTEM_PROMPT,
-                    tools=[schema for schema in schemas if argument_errors[str(schema["name"])] < 2],
+                    tools=offered_schemas,
                 )) as stream:
                     async for chunk in stream:
                         if isinstance(chunk, ModelText) and chunk.text:
@@ -614,9 +636,11 @@ class TurnService:
                 return
 
             calls = completion.tool_calls
+            offered_names = {schema["name"] for schema in offered_schemas}
             outcomes = await asyncio.gather(*(
                 self._run_tool(tools, call, allow_propose=len(calls) == 1,
-                               argument_errors=argument_errors, metrics=metrics) for call in calls
+                               offered=call.name in offered_names, argument_errors=argument_errors,
+                               metrics=metrics) for call in calls
             ))
             steps = []
             for call, outcome in zip(calls, outcomes, strict=True):
@@ -674,12 +698,15 @@ class TurnService:
 
     @staticmethod
     async def _run_tool(
-        tools: CalendarTools, call: ToolCall, *, allow_propose: bool, argument_errors: Counter[str], metrics: TurnMetrics,
+        tools: CalendarTools, call: ToolCall, *, allow_propose: bool, offered: bool,
+        argument_errors: Counter[str], metrics: TurnMetrics,
     ) -> ToolOutcome:
         began, ok = perf_counter(), False
         try:
             if argument_errors[call.name] >= 2:
                 raise ToolRejected("This tool reached its argument correction limit. Reply without trying it again.")
+            if not offered:
+                raise ToolRejected("This tool is unavailable for this request. Reply from the state already provided.")
             if call.name in PROPOSE_TOOLS and not allow_propose:
                 raise ToolRejected("Call a propose tool alone, after collecting the necessary data.")
             outcome = await asyncio.to_thread(tools.execute, call.name, call.arguments)

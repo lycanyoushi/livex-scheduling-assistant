@@ -318,12 +318,39 @@ class PrefetchTests(unittest.IsolatedAsyncioTestCase):
                 return slots
 
         service = self.service(DenseCalendar())
-        events = await self.collect(service, "Book a time this week but not Monday")
+        events = await self.collect(service, "Book a time this week")
         refs = next(event["slots"] for event in events if event["type"] == "refs")
         self.assertEqual(len(refs), 16)
         self.assertEqual({view["startLocalIso"][:10] for view in refs.values()}, {
             "2026-11-23", "2026-11-24", "2026-11-25", "2026-11-26", "2026-11-27",
         })
+
+    async def test_case_seven_caps_the_visible_week_to_four_and_excludes_monday(self):
+        service = self.service(FakeCal())
+        earlier = await self.collect(service, "Book a meeting on November 30")
+        events = await self.collect(service, "sometime next week but not Monday", earlier[-1]["stateToken"])
+        self.assertEqual([event["type"] for event in events[:3]], ["status", "refs", "slot_chips"])
+        refs, chips = events[1]["slots"], events[2]["refs"]
+        self.assertEqual(set(refs), set(chips))
+        self.assertEqual([refs[ref]["startLocalIso"][:10] for ref in chips], [
+            "2026-12-01", "2026-12-02", "2026-12-03", "2026-12-04",
+        ])
+        previous_refs = next(event["slots"] for event in earlier if event["type"] == "refs")
+        for ref in previous_refs:
+            self.assertNotIn(f"slot {ref}:", self.model.contexts[-1])
+        self.assertEqual(self.model.tool_schemas[-1], [])
+        self.assertEqual(events[-1]["metrics"]["toolCalls"], [])
+        self.assertEqual(len(events[-1]["metrics"]["modelCalls"]), 1)
+
+    async def test_week_alternatives_do_not_offer_excluded_weekdays_from_cache(self):
+        service = self.service(FakeCal(fixture_overrides={"open_local_starts": [
+            "2026-11-23T14:30", "2026-11-24T14:00", "2026-11-30T09:00", "2026-11-30T10:00",
+        ]}))
+        events = await self.collect(service, "sometime next week but not Monday")
+        refs = next(event["slots"] for event in events if event["type"] == "refs")
+        chips = next(event for event in events if event["type"] == "slot_chips")
+        self.assertIn("Nearest", chips["note"])
+        self.assertEqual([refs[ref]["startLocalIso"][:16] for ref in chips["refs"]], ["2026-11-24T14:00"])
 
     async def test_prefetched_reschedule_slots_keep_their_owned_booking_binding(self):
         class RecordedCalendar(FakeCal):

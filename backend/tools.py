@@ -557,7 +557,7 @@ class CalendarTools:
         if requested and (not _valid_email(requested) or requested.casefold() != email.casefold()):
             raise ToolRejected("I can only look up bookings matching your attendee email.")
         entries, has_more = self.read_booking_entries(email, args.which)
-        refs = self.register_bookings(entries)
+        refs = self.register_bookings(entries, reuse_known=True)
         with self._state_lock:
             if not refs:
                 self.state.rescheduling_booking_ref = None

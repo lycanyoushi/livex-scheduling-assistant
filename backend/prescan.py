@@ -71,6 +71,19 @@ DATE_EXCLUSION = re.compile(
     r"\s+(?:(?:on|for|el)\s+)?",
     re.I,
 )
+_WEEK_REQUEST_PREFIX = re.compile(
+    r"(?:(?:please|(?:can|could|would|may) (?:i|we|you))\s+)?"
+    r"(?:(?:(?:book|schedule|reserve)(?:\s+(?:me|a (?:time|meeting|call)|an appointment))?"
+    r"|(?:show|find|check|offer)(?:\s+me)?\s+(?:some\s+)?(?:times|openings|availability)"
+    r"|(?:what|how)\s+about)(?:\s+(?:sometime|any\s*time|some\s+time|for|in))?"
+    r"|(?:sometime|any\s*time|some\s+time)(?:\s+in)?)?",
+)
+_WEEKDAY = rf"(?:{'|'.join(WEEKDAYS)})"
+_WEEK_EXCLUSION_SUFFIX = re.compile(
+    r"(?:(?:\s+in the)?\s+(?:morning|afternoon|evening))?[,\s]+(?:but\s+)?"
+    + DATE_EXCLUSION.pattern
+    + rf"(?P<weekdays>{_WEEKDAY}(?:(?:\s*,\s*(?:(?:and|or)\s+)?|\s+(?:and|or)\s+){_WEEKDAY})*)[\s.!?]*",
+)
 
 
 @dataclass(frozen=True)
@@ -86,6 +99,7 @@ class PrescanResult:
     part_of_day: PartOfDay
     intents: tuple[str, ...]
     availability_request: bool = False
+    excluded_days: frozenset[date] = frozenset()
 
 
 def _requested_time(match: re.Match[str] | None) -> time | None:
@@ -123,6 +137,10 @@ def _calendar_date(span: str, reference: datetime) -> date | None:
     return parsed.date() if parsed else None
 
 
+def _week_start(monday: date, week: str) -> date:
+    return monday + timedelta(days=7) if week.startswith("next") or "próxima" in week else monday
+
+
 def _dates(text: str, reference: datetime) -> tuple[DateHint, ...]:
     today = reference.date()
     monday = today - timedelta(days=today.weekday())
@@ -133,8 +151,7 @@ def _dates(text: str, reference: datetime) -> tuple[DateHint, ...]:
             at = _requested_time(LEADING_TIME.search(text[:match.start()]))
         day = None
         if match["week"]:
-            next_week = match["week"].startswith("next") or "próxima" in match["week"]
-            start = monday + timedelta(days=7) if next_week else monday
+            start = _week_start(monday, match["week"])
             results.extend(DateHint(start + timedelta(days=index))
                            for index in range(5) if start + timedelta(days=index) >= today)
         elif match["relative"]:
@@ -156,6 +173,23 @@ def _dates(text: str, reference: datetime) -> tuple[DateHint, ...]:
         if day is not None:
             results.append(DateHint(day, at))
     return tuple(dict.fromkeys(results))
+
+
+def _week_exclusions(text: str, today: date) -> tuple[tuple[DateHint, ...], frozenset[date]] | None:
+    week = DATES.search(text)
+    if not week or not week["week"] or not week["week"].startswith(("this", "next")):
+        return None
+    if not _WEEK_REQUEST_PREFIX.fullmatch(text[:week.start()].strip()):
+        return None
+    suffix = _WEEK_EXCLUSION_SUFFIX.fullmatch(text[week.end():])
+    if not suffix:
+        return None
+    start = _week_start(today - timedelta(days=today.weekday()), week["week"])
+    excluded = frozenset(
+        start + timedelta(days=WEEKDAYS[match["weekday"]]) for match in DATES.finditer(suffix["weekdays"])
+    )
+    days = (start + timedelta(days=index) for index in range(5))
+    return tuple(DateHint(day) for day in days if day >= today and day not in excluded), excluded
 
 
 def _availability_request(
@@ -189,14 +223,16 @@ def prescan(text: str, *, now: datetime, time_zone: str) -> PrescanResult:
     match = EMAIL.search(text)
     text_without_email = EMAIL.sub(" ", text.casefold())
     part: PartOfDay = next((name for name, pattern in PARTS.items() if pattern.search(text_without_email)), "any")
-    dates = _dates(text_without_email, reference)
+    constrained = _week_exclusions(text_without_email, reference.date())
+    dates, excluded = constrained if constrained is not None else (_dates(text_without_email, reference), frozenset())
     intents = tuple(name for name, pattern in INTENTS.items() if pattern.search(text_without_email))
     return PrescanResult(
         match.group().casefold() if match else None,
         dates,
         part,
         intents,
-        _availability_request(text_without_email, dates, part, intents),
+        constrained is not None or _availability_request(text_without_email, dates, part, intents),
+        excluded,
     )
 
 

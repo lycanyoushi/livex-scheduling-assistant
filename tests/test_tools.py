@@ -205,6 +205,15 @@ class CalendarToolsTests(unittest.TestCase):
         self.assertTrue(all(entry["attendees"] == ["sam@example.com"] for entry in result.events[0]["bookings"].values()))
         self.assertEqual(result.events[1], {"type": "booking_cards", "refs": list(result.events[0]["bookings"])})
 
+    def test_listing_reuses_the_same_ref_for_an_existing_booking(self):
+        calendar = FakeCal(fixture_overrides={"active_bookings": ["sam_intro"]})
+        tools = CalendarTools(calendar, self.state, NOW)
+        first = tools.execute("list_bookings", {"email": "", "which": "upcoming"})
+        second = tools.execute("list_bookings", {"email": "", "which": "upcoming"})
+        self.assertEqual(first.events[-1], {"type": "booking_cards", "refs": ["B1"]})
+        self.assertEqual(second.events[-1], first.events[-1])
+        self.assertEqual(len(self.state.bookings), 1)
+
     def test_empty_list_emits_an_empty_booking_map_and_resets_the_move_context(self):
         self.state.rescheduling_booking_ref = self.known_booking()
         tools = CalendarTools(FakeCal(), self.state, NOW)

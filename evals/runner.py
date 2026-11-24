@@ -244,7 +244,7 @@ class TracingModel:
         try:
             if simulated:
                 status = self.faults.pop(0)
-                raise ModelError("rate_limited" if status == 429 else "model_down", status)
+                raise ModelError("rate_limited" if status == 429 else "model_down", status, reason="fixture_fault")
             require(self.adapter is not None, "Unexpected model call in offline fixture.")
             async with aclosing(self.adapter.stream(**request)) as stream:
                 async for item in stream:

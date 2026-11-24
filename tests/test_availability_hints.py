@@ -94,10 +94,24 @@ class AvailabilityHintTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(len({stamp.date() for stamp in actual}), 3)
         self.assertTrue(all(8 <= stamp.hour < 12 for stamp in actual))
 
-    async def test_explicit_date_exclusions_preserve_model_context_without_automatic_offer(self):
+    async def test_relative_week_weekday_exclusions_filter_automatic_offers(self):
+        for phrase, excluded in (
+            ("Can you show me some times next week, but not Monday?", "2026-11-23"),
+            ("Can you show me some times next week except on Friday?", "2026-11-27"),
+        ):
+            with self.subTest(phrase=phrase):
+                plan = build_plan(phrase)
+                self.assertTrue(plan.show_openings)
+                self.assertEqual({day.isoformat() for day in plan.excluded_days}, {excluded})
+                result = await self.fetch(plan)
+                self.assertTrue(result.slots_checked)
+                self.assertEqual(len(starts(result)), 4)
+                self.assertNotIn(excluded, {stamp.date().isoformat() for stamp in starts(result)})
+
+    async def test_unsupported_exclusions_keep_model_context_without_automatic_offer(self):
         for phrase in (
-            "Can you show me some times next week, but not Monday?",
-            "Can you show me some times next week except on Friday?",
+            "Can you show me some times next week, but not November 23?",
+            "Can you show me some times next week except on Friday afternoon?",
         ):
             with self.subTest(phrase=phrase):
                 plan = build_plan(phrase)
@@ -121,6 +135,9 @@ class AvailabilityHintTests(unittest.IsolatedAsyncioTestCase):
         state = new_state(ZONE, NOW)
         state.rescheduling_booking_ref = "B1"
         self.assertFalse(build_plan("What about Friday morning?", state).show_openings)
+        constrained = build_plan("sometime next week but not Monday", state)
+        self.assertFalse(constrained.show_openings)
+        self.assertFalse(constrained.excluded_days)
 
     async def test_failed_or_late_reads_do_not_make_an_empty_scope_authoritative(self):
         plan = build_plan("What about Friday morning?")

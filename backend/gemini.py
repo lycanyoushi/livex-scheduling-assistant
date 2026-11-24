@@ -17,7 +17,7 @@ _TIMEOUT_SECONDS = 20.0
 _MAX_OUTPUT_TOKENS = 800
 _LOGGER = logging.getLogger(__name__)
 _REFUSAL_CODES = {"safety", "jailbreak", "prohibited_content", "blocklist"}
-_TERMINAL_STATUSES = {"cancelled", "failed", "incomplete", "in_progress", "queued"}
+_TERMINAL_STATUSES = {"cancelled", "failed", "in_progress", "queued", "requires_continuation"}
 _CONTINUABLE_INCOMPLETE_MODELS = {"gemini-3.5-flash-lite", "gemini-3.1-flash-lite"}
 _MISSING_INTERACTION_CODES = {
     "interaction_expired",

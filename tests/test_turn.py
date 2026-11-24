@@ -9,7 +9,7 @@ from unittest.mock import patch
 from backend.model import ModelCompletion, ModelError, ModelText, ToolCall
 from backend.protocol import ChatRequest
 from backend.server import TurnLoop, create_app, load_service
-from backend.state import MAX_SLOTS, add_booking, add_slot, new_state, sign_state, verify_state
+from backend.state import MAX_SLOTS, SlotEntry, add_booking, add_slot, new_state, sign_state, verify_state
 from backend.tools import booking_entry
 from backend.turn import TurnService
 from evals.fake_cal import FakeCal
@@ -124,6 +124,56 @@ class TurnTests(unittest.IsolatedAsyncioTestCase):
         self.assertLess(events.index(inventory), events.index(display))
         context = model.requests[0]["input_steps"][0]["content"][0]["text"]
         self.assertIn("Booking cards already on screen in this order: B1, B2.", context)
+
+    async def test_listing_asks_for_email_or_uses_completed_prefetch_without_a_tool(self):
+        calendar = FakeCal(fixture_overrides={"active_bookings": ["other_intro"]})
+        for email, direction in (
+            (None, "Ask for the attendee email in one short question"),
+            ("sam@example.com", "they have no upcoming meetings and offer to help book one"),
+        ):
+            with self.subTest(email_known=bool(email)):
+                model = ScriptedModel((ModelText("Scheduling reply"), ModelCompletion("done", "completed")),)
+                turn_service = service(model, calendar)
+                self.addCleanup(turn_service.close_prefetch)
+                state = new_state(ZONE, NOW)
+                state.user.email = email
+                reply = await collect(turn_service, text("What meetings do I have?"), sign_state(state, SECRET))
+                request = model.requests[0]
+                self.assertIn(direction, request["input_steps"][0]["content"][0]["text"])
+                self.assertEqual(request["tools"], [])
+                displayed = [event["refs"] for event in reply if event["type"] == "booking_cards"]
+                self.assertEqual(displayed, [[]] if email else [])
+
+    async def test_unadvertised_tool_cannot_regenerate_booking_inventory(self):
+        calendar = FakeCal(fixture_overrides={"active_bookings": ["sam_injected_title"]})
+        model = ScriptedModel(
+            (ModelCompletion("read", "requires_action", (
+                ToolCall("unadvertised", "list_bookings", {"email": "", "which": "upcoming"}),
+            )),),
+            (ModelText("Your meeting is shown."), ModelCompletion("done", "completed")),
+        )
+        turn_service = service(model, calendar)
+        self.addCleanup(turn_service.close_prefetch)
+        state = new_state(ZONE, NOW)
+        state.user.email = "sam@example.com"
+        reply = await collect(turn_service, text("What meetings do I have?"), sign_state(state, SECRET))
+        self.assertEqual([event["refs"] for event in reply if event["type"] == "booking_cards"], [["B1"]])
+        self.assertEqual(reply[-1]["metrics"]["toolCalls"][0]["ok"], False)
+        self.assertIn("unavailable for this request", model.requests[1]["input_steps"][0]["result"]["error"])
+
+    async def test_supported_weekday_exclusion_shows_four_choices_and_hides_old_slots(self):
+        model = ScriptedModel((ModelText("Here are openings after Monday."), ModelCompletion("done", "completed")),)
+        turn_service = service(model)
+        self.addCleanup(turn_service.close_prefetch)
+        state = new_state(ZONE, NOW)
+        monday = add_slot(state, SlotEntry(start_utc="2026-11-30T01:00:00+00:00", end_utc="2026-11-30T01:30:00+00:00",
+                                           event_type_id=101, fetched_at=NOW.timestamp()))
+        result = await collect(turn_service, text("sometime next week but not Monday"), sign_state(state, SECRET))
+        chips = next(event["refs"] for event in result if event["type"] == "slot_chips")
+        self.assertEqual(len(chips), 4)
+        self.assertNotIn(monday, chips)
+        self.assertEqual(model.requests[0]["tools"], [])
+        self.assertNotIn(f"Known slot {monday}:", model.requests[0]["input_steps"][0]["content"][0]["text"])
 
     async def test_calendar_context_is_sent_once_per_local_date(self):
         model = ScriptedModel(*(

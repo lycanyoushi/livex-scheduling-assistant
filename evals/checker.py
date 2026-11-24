@@ -17,7 +17,7 @@ SAFE_REASONS = frozenset({
     "invalid_arguments_json", "arguments_not_an_object", "duplicate_call_id", "requires_action_without_calls",
     "stream_ended_without_completion", "missing_model_completion", "unexpected_completion_status",
     "terminal_status_cancelled", "terminal_status_failed", "terminal_status_incomplete", "terminal_status_in_progress",
-    "terminal_status_queued", "terminal_status_other",
+    "terminal_status_queued", "terminal_status_requires_continuation", "terminal_status_other", "fixture_fault",
 })
 REFERENCE = re.compile(r"\[\[([SB][1-9][0-9]*)\]\]")
 SPANISH = re.compile(
