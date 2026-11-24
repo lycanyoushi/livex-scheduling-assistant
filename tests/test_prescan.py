@@ -92,6 +92,10 @@ class PrescanTests(unittest.TestCase):
 
     def test_recurring_exclusions_and_positive_dates_in_both_zones(self):
         examples = {
+            "Book me next week, I'm busy on Monday": {0},
+            "Book me next week. I'm busy Tuesday.": {1},
+            "Find a time next week. I'll be away on Wednesday.": {2},
+            "Show openings next week. I'm unavailable Thursday.": {3},
             "Could we find a slot next week? Mondays and Wednesdays are out for me.": {0, 2},
             "I'd like a slot next week, anything but Tuesday or Friday.": {1, 4},
             "Can we meet next week? I can’t do Tuesdays or Thursdays.": {1, 3},

@@ -72,7 +72,8 @@ EXISTING_BOOKING = re.compile(
 _WEEKDAY_TOKEN = re.compile(rf"\b(?P<weekday>{'|'.join(WEEKDAYS)})(?:s)?\b")
 _EXCLUSION_PREFIX = re.compile(
     r"\b(?:(?P<short>no|not)|except(?:\s+for)?|excluding|other than|anything but|besides|"
-    r"(?:can['’]t|cannot)\s+(?:do|make)|menos|excepto|salvo)\s+(?:(?:on|for|el)\s+)?"
+    r"(?:can['’]t|cannot)\s+(?:do|make)|(?P<condition>busy|away|unavailable)|menos|excepto|salvo)"
+    r"\s+(?:(?P<connector>on|for|el)\s+)?"
 )
 _EXCLUSION_SUFFIX = re.compile(
     r"\s+(?:are out|is out|(?:don['’]t|doesn['’]t|do not|does not|won['’]t) work|"
@@ -239,7 +240,8 @@ def _exclusions(text: str, reference: datetime) -> tuple[str, frozenset[date], f
     for cue in _EXCLUSION_PREFIX.finditer(text):
         end, targets, partial = _exclusion_list(text, cue.end(), reference)
         if end == cue.end():
-            unresolved |= not cue["short"] or bool(_UNPARSED_EXCLUSION.match(text, end))
+            ambiguous = not (cue["short"] or cue["condition"]) or bool(cue["condition"] and cue["connector"])
+            unresolved |= ambiguous or bool(_UNPARSED_EXCLUSION.match(text, end))
             continue
         unresolved |= partial
         collect(cue.start(), end, targets)
