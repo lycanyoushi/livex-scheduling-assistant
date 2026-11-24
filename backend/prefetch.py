@@ -8,7 +8,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 import re
 from threading import BoundedSemaphore
 from time import perf_counter
@@ -18,15 +18,14 @@ from zoneinfo import ZoneInfo
 from pydantic import ValidationError
 
 from backend.cal_client import CalError
-from backend.prescan import EMAIL, DateHint, PartOfDay, PrescanResult
+from backend.prescan import EMAIL, PART_HOURS, DateHint, PartOfDay, PrescanResult
 from backend.protocol import CalCallMetrics
 from backend.state import BookingEntry, SessionState, SlotEntry
 from backend.time import local_bounds, parse_instant
-from backend.tools import CalendarTools, ToolRejected
+from backend.tools import WARM_SLOT_DAYS, CalendarTools, ToolRejected, nearest_slots
 
 
 PREFETCH_BUDGET_SECONDS = 1.2
-WARM_DAYS = 14
 _MAX_HINT_DAYS = 7
 _MAX_DATED_SLOTS = 16
 _UNDATED_SLOTS = 6
@@ -40,7 +39,7 @@ def warm_slot_bounds(now: datetime, time_zone: str) -> tuple[datetime, datetime]
 
 def _warm_dates(now: datetime, zone: ZoneInfo) -> tuple[date, date]:
     today = parse_instant(now).astimezone(zone).date()
-    return today, today + timedelta(days=WARM_DAYS - 1)
+    return today, today + timedelta(days=WARM_SLOT_DAYS - 1)
 
 
 @dataclass(frozen=True)
@@ -136,12 +135,18 @@ def _spread_slots(day_slots: dict[date, list[SlotEntry]]) -> list[SlotEntry]:
     )
 
 
-def _prefetch_slots(tools: CalendarTools, plan: PrefetchPlan) -> list[SlotEntry]:
+@dataclass(frozen=True)
+class _SlotResults:
+    slots: list[SlotEntry] = field(default_factory=list)
+    alternatives: list[SlotEntry] = field(default_factory=list)
+
+
+def _prefetch_slots(tools: CalendarTools, plan: PrefetchPlan) -> _SlotResults:
     target = plan.reschedule
     if target is not None:
         event_id = target.event_type_id
         if not any(event["id"] == event_id for event in tools.event_types()):
-            return []
+            return _SlotResults()
     else:
         event_id = tools.default_event()["id"]
     zone = ZoneInfo(tools.time_zone)
@@ -155,18 +160,47 @@ def _prefetch_slots(tools: CalendarTools, plan: PrefetchPlan) -> list[SlotEntry]
     ranges.extend(_date_ranges(other_days))
     wanted_days = set(plan.days)
     day_slots: dict[date, list[SlotEntry]] = defaultdict(list)
+    warm_entries = None
+    offer_alternatives = plan.show_openings and target is None
+    hours = PART_HOURS.get(plan.part_of_day)
     for first, last in ranges:
+        is_warm_range = (first, last) == (first_warm_date, last_warm_date)
         entries = tools.read_slot_entries(
-            event_id, first, last, plan.part_of_day,
+            event_id, first, last, "any" if offer_alternatives and is_warm_range else plan.part_of_day,
             target.ref if target is not None else None,
             target.uid if target is not None else None,
         )
+        if offer_alternatives and is_warm_range:
+            warm_entries = entries
         for entry in entries:
-            local_day = parse_instant(entry.start_utc).astimezone(zone).date()
-            if local_day in wanted_days:
-                day_slots[local_day].append(entry)
+            local = parse_instant(entry.start_utc).astimezone(zone)
+            if local.date() in wanted_days and (hours is None or hours[0] <= local.hour < hours[1]):
+                day_slots[local.date()].append(entry)
+
+    if offer_alternatives:
+        requested_times: dict[date, set[time | None]] = defaultdict(set)
+        for hint in plan.times:
+            requested_times[hint.day].add(hint.at)
+        has_matching_slot = any(
+            not requested_times.get(day) or None in requested_times[day]
+            or any(parse_instant(entry.start_utc).astimezone(zone).time() in requested_times[day] for entry in entries)
+            for day, entries in day_slots.items()
+        )
+        if not has_matching_slot:
+            if warm_entries is None:
+                try:
+                    warm_entries = tools.read_slot_entries(
+                        event_id, first_warm_date, last_warm_date, "any", None, None,
+                    )
+                except (CalError, ToolRejected, ValidationError):
+                    warm_entries = []
+            anchors = tuple(hint for hint in plan.times if hint.day in wanted_days)
+            if not anchors:
+                anchors = tuple(DateHint(day) for day in plan.days)
+            return _SlotResults(alternatives=nearest_slots(warm_entries, anchors, plan.part_of_day, tools.time_zone))
+
     if plan.spread_slots:
-        return _spread_slots(day_slots)
+        return _SlotResults(slots=_spread_slots(day_slots))
 
     requested_local_times = {(hint.day, hint.at) for hint in plan.times if hint.at is not None}
     def matches_time(entry: SlotEntry) -> bool:
@@ -178,7 +212,7 @@ def _prefetch_slots(tools: CalendarTools, plan: PrefetchPlan) -> list[SlotEntry]
     remainder = sorted(
         (entry for entries in days for entry in entries[1:]), key=lambda entry: not matches_time(entry)
     )
-    return sorted([*initial, *remainder][:_MAX_DATED_SLOTS], key=lambda entry: entry.start_utc)
+    return _SlotResults(slots=sorted([*initial, *remainder][:_MAX_DATED_SLOTS], key=lambda entry: entry.start_utc))
 
 
 @dataclass(frozen=True)
@@ -189,9 +223,10 @@ class PrefetchResult:
     timed_out: bool = False
     cal_calls: list[CalCallMetrics] = field(default_factory=list)
     slots_checked: bool = False
+    alternatives: list[SlotEntry] = field(default_factory=list)
 
 
-_Entries = list[SlotEntry] | list[BookingEntry]
+_Entries = _SlotResults | list[BookingEntry]
 
 
 def _prefetch_bookings(tools: CalendarTools, email: str) -> list[BookingEntry]:
@@ -291,11 +326,13 @@ class Prefetcher:
                 if not future.done():
                     future.cancel()
 
+        availability = cast(_SlotResults | None, ready.get("slots"))
         return PrefetchResult(
-            slots=cast(list[SlotEntry], ready.get("slots") or []),
+            slots=availability.slots if availability is not None else [],
             bookings=cast(list[BookingEntry] | None, ready.get("bookings")),
             elapsed_ms=(perf_counter() - began) * 1000,
             timed_out=timed_out,
             cal_calls=calls,
-            slots_checked=ready.get("slots") is not None,
+            slots_checked=availability is not None,
+            alternatives=availability.alternatives if availability is not None else [],
         )

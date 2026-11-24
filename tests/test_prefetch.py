@@ -28,13 +28,18 @@ class ReplyFromContext:
     def __init__(self):
         self.contexts = []
         self.calls = 0
+        self.tool_schemas = []
 
     async def stream(self, **request):
         self.calls += 1
         context = request["input_steps"][-1]["content"][0]["text"]
         self.contexts.append(context)
+        self.tool_schemas.append(request["tools"])
         refs = PREFETCH_REF.findall(context)[:3]
-        text = "I can help with those times."
+        text = (
+            "The requested time is unavailable." if "No matching openings." in context
+            else "I can help with those times."
+        )
         if refs:
             text += " " + " ".join(f"[[{ref}]]" for ref in refs)
         yield ModelText(text)
@@ -104,6 +109,66 @@ class PrefetchTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(any(event["type"] == "slot_chips" for event in events))
         self.assertIn("Availability checked for this request. No matching openings.", self.model.contexts[0])
         self.assertTrue(events[-1]["metrics"]["prefetch"]["slotsChecked"])
+
+    async def test_closed_window_emits_same_part_then_same_day_alternatives_before_model(self):
+        calls = []
+
+        class RecordedCalendar(FakeCal):
+            def slots(self, event_type_id, start, end, time_zone="UTC", **kwargs):
+                calls.append((event_type_id, start, end, time_zone))
+                return super().slots(event_type_id, start, end, time_zone, **kwargs)
+
+        calendar = RecordedCalendar(fixture_overrides={"open_local_starts": [
+            "2026-11-25T14:00", "2026-11-26T09:00", "2026-11-26T11:00", "2026-11-27T14:00",
+        ]})
+        service = self.service(calendar)
+        stream = service.events(request("Can I grab thirty minutes Thursday afternoon?"))
+        self.assertEqual((await anext(stream))["type"], "status")
+        refs = await anext(stream)
+        chips = await anext(stream)
+        self.assertEqual((refs["type"], chips["type"]), ("refs", "slot_chips"))
+        self.assertEqual(chips["note"], "No openings Thu 26 Nov afternoon. Nearest:")
+        self.assertEqual(
+            [refs["slots"][ref]["startLocalIso"] for ref in chips["refs"]],
+            ["2026-11-27T14:00:00+08:00", "2026-11-25T14:00:00+08:00", "2026-11-26T11:00:00+08:00"],
+        )
+        self.assertEqual(self.model.calls, 0)
+        events = [event async for event in stream]
+        self.assertEqual(calls, [(9001, *warm_slot_bounds(NOW, ZONE), ZONE)])
+        self.assertEqual(self.model.calls, 1)
+        self.assertEqual(self.model.tool_schemas, [[]])
+        self.assertEqual(events[-1]["metrics"]["toolCalls"], [])
+        self.assertEqual(events[-1]["metrics"]["prefetch"]["shownSlots"], 3)
+        self.assertIn(f"Nearest alternatives already on screen: {', '.join(chips['refs'])}", self.model.contexts[0])
+        signed = verify_state(events[-1]["stateToken"], KEY, NOW)
+        self.assertEqual(set(signed.slots), set(chips["refs"]))
+
+    async def test_taken_exact_time_prefers_three_real_openings_on_nearby_days(self):
+        calendar = FakeCal(fixture_overrides={"active_bookings": ["sam_intro"]})
+        service = self.service(calendar)
+        events = await self.collect(service, "Book Thursday at 10am")
+        refs = next(event["slots"] for event in events if event["type"] == "refs")
+        chips = next(event for event in events if event["type"] == "slot_chips")
+        self.assertEqual(chips["note"], "No opening Thu 26 Nov at 10:00. Nearest:")
+        self.assertEqual(
+            [refs[ref]["startLocalIso"] for ref in chips["refs"]],
+            ["2026-11-26T09:00:00+08:00", "2026-11-26T11:00:00+08:00", "2026-11-27T10:30:00+08:00"],
+        )
+        self.assertEqual(self.model.calls, 1)
+        self.assertEqual(self.model.tool_schemas, [[]])
+        self.assertIn("No matching openings.", self.model.contexts[0])
+        self.assertFalse(any(event["type"] in {"proposal", "booking_result"} for event in events))
+
+    async def test_closed_sunday_matches_the_nearest_days_in_approved_case_four(self):
+        service = self.service(FakeCal())
+        events = await self.collect(service, "Book 3am Sunday")
+        refs = next(event["slots"] for event in events if event["type"] == "refs")
+        chips = next(event for event in events if event["type"] == "slot_chips")
+        self.assertEqual(
+            [refs[ref]["startLocalIso"] for ref in chips["refs"]],
+            [f"2026-11-30T{hour}:00:00+08:00" for hour in ("09", "10", "11")],
+        )
+        self.assertEqual(self.model.calls, 1)
 
     async def test_warm_and_prefetch_share_the_exact_cache_key(self):
         calendar = FakeCal()

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from threading import Lock
 from typing import Annotated, Literal, Protocol, TypeVar
 from urllib.parse import urlsplit
@@ -22,7 +22,7 @@ from backend.cal_client import (
     SlotBound,
     SlotRange,
 )
-from backend.prescan import EMAIL, PART_HOURS, PartOfDay
+from backend.prescan import EMAIL, PART_HOURS, DateHint, PartOfDay
 from backend.protocol import (
     BookingRef,
     BookingView,
@@ -47,6 +47,7 @@ _PROPOSE_TOOLS = {"propose_booking", "propose_cancel", "propose_reschedule"}
 _MAX_SLOT_CHOICES = 16
 _MAX_BOOKING_CHOICES = 10
 _STALE_SLOT_SECONDS = 120
+WARM_SLOT_DAYS = 14
 _Reason = Annotated[str, StringConstraints(max_length=2_000)]
 
 
@@ -213,6 +214,39 @@ def slot_view(entry: SlotEntry, time_zone: str) -> SlotView:
     day, hours = slot_labels(entry.start_utc, entry.end_utc, time_zone)
     local_start = parse_instant(entry.start_utc).astimezone(ZoneInfo(time_zone))
     return {"dayLabel": day, "timeLabel": hours, "startLocalIso": local_start.isoformat()}
+
+
+def nearest_slots(
+    entries: Iterable[SlotEntry], hints: Sequence[DateHint], part: PartOfDay, time_zone: str,
+) -> list[SlotEntry]:
+    """Prefer the requested part of day, then other times on the requested day."""
+    if not hints:
+        return []
+    zone = ZoneInfo(time_zone)
+
+    def distance(local: datetime, hint: DateHint) -> tuple[int, int, bool, timedelta]:
+        hours = PART_HOURS.get(part)
+        if hours is None and hint.at is not None:
+            hours = next((bounds for bounds in PART_HOURS.values() if bounds[0] <= hint.at.hour < bounds[1]), None)
+        same_part = hours is None or hours[0] <= local.hour < hours[1]
+        days = (local.date() - hint.day).days
+        tier = 0 if same_part else 1 if days == 0 else 2
+        wall_time = local.replace(tzinfo=None)
+        if hint.at is not None:
+            offset = abs(wall_time - datetime.combine(local.date(), hint.at))
+        elif hours is not None:
+            start, end = (datetime.combine(local.date(), time(hour)) for hour in hours)
+            offset = max(start - wall_time, wall_time - end, timedelta())
+        else:
+            offset = timedelta()
+        return tier, abs(days), days < 0, offset
+
+    def rank(entry: SlotEntry):
+        instant = parse_instant(entry.start_utc)
+        local = instant.astimezone(zone)
+        return min(distance(local, hint) for hint in hints), instant
+
+    return sorted(entries, key=rank)[:3]
 
 
 def proposal_view(
@@ -579,9 +613,14 @@ class CalendarTools:
             return slot
 
         instant = parse_instant(slot.start_utc)
-        day = instant.astimezone(self._zone).date()
+        local = instant.astimezone(self._zone)
+        day = local.date()
+        today = self.now.astimezone(self._zone).date()
+        last_warm_day = today + timedelta(days=WARM_SLOT_DAYS - 1)
+        within_warm_window = today <= day <= last_warm_day
         options = self.read_slot_entries(
-            slot.event_type_id, day, day, "any", booking_ref,
+            slot.event_type_id, today if within_warm_window else day, last_warm_day if within_warm_window else day,
+            "any", booking_ref,
             booking.uid if booking is not None else None, fresh=True,
         )
         original_end = parse_instant(slot.end_utc)
@@ -592,9 +631,15 @@ class CalendarTools:
                 slot.fetched_at = self.now.timestamp()
             return slot
 
-        nearest = sorted(
-            options, key=lambda item: abs((parse_instant(item.start_utc) - instant).total_seconds())
-        )[:3]
+        if not within_warm_window:
+            options = self.read_slot_entries(
+                slot.event_type_id, today, last_warm_day, "any", booking_ref,
+                booking.uid if booking is not None else None,
+            )
+        nearest = nearest_slots(
+            (entry for entry in options if parse_instant(entry.start_utc) != instant),
+            (DateHint(day, local.time()),), "any", self.time_zone,
+        )
         refs = self.register_slots(nearest)
         event: RefsEvent = {"type": "refs", "slots": refs}
         raise ToolRejected("That time is no longer available.", nearest=list(refs), events=[event] if refs else [])

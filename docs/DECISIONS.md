@@ -100,3 +100,7 @@ Show up to four matching new-booking openings from prefetch before the model res
 Retain the interaction ID while sending the 14-day calendar only when the model first receives it or the local date or time zone changes. Track slot and booking details already sent so unchanged details stay in the stored history. Reuse identical prefetched slot refs where they remain in signed state.
 
 The size probe measured a 2.49 s median first-text difference between the shortest and longest stored parents. Start a new stored interaction before a text turn when the last successful model call used more than 6,000 input tokens. Use a recap of the known name, email presence, the session attendee's active bookings in app state, and any open proposal. The next successful turn drops the old pending provider call and preserves the signed proposal. [Stored-history probe](gemini-notes.md#m5b-stored-history-size-probe)
+
+## Closed-window alternatives
+
+A completed new-booking lookup that misses the requested window or exact start shows up to three real alternatives from the 14-day availability window. The ranking prefers the same part of day on nearby dates, then other times on the requested day. Stale proposals use the same ranking on freshly checked availability. The alternative chips precede a single tool-free explanation on the normal response path.

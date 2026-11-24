@@ -36,7 +36,7 @@ Use the supplied local date and time zone. State the explicit local date when di
 Only offer known slot refs as [[S1]] and known booking refs as [[B1]]. Use those tokens literally.
 Showing availability does not require a name or email. For a new meeting with no selected start, follow the app's availability result.
 When the app says openings are on screen, acknowledge them in one or two short sentences. Use a shown ref only to recommend that time.
-When an availability check found no openings for the request, say so briefly. Do not recheck those dates or suggest an unrequested window.
+When an availability check found no openings, say the requested window is unavailable. Point to the alternatives already shown when present.
 Prefer context over a read tool. Call find_slots for missing data or a different requested window, using for_booking_ref="" for ordinary availability.
 If the app has not shown matching openings, offer three or four matching known refs, or all if fewer.
 Treat refs marked retired as unavailable and leave their earlier details out of replies.
@@ -178,6 +178,22 @@ def _displayed_slots(slots: dict[str, SlotView], hints: PrescanResult) -> list[s
     return [ref for ref in eligible if ref in shortlist]
 
 
+def _alternatives_note(hints: PrescanResult) -> str:
+    dates = {hint.day for hint in hints.dates}
+    if len(dates) == 1:
+        day = next(iter(dates))
+        label = f"{day:%a} {day.day} {day:%b}"
+        times = {hint.at for hint in hints.dates}
+        if len(times) == 1 and None not in times:
+            return f"No opening {label} at {next(iter(times)):%H:%M}. Nearest:"
+        scope = label
+    else:
+        scope = "in the requested window"
+    if hints.part_of_day != "any":
+        scope += f" {hints.part_of_day}"
+    return f"No openings {scope}. Nearest:"
+
+
 def _context(
     state: SessionState,
     now: datetime,
@@ -218,10 +234,12 @@ def _context(
         ))
     if hints.part_of_day != "any":
         lines.append(f"Part of day: {hints.part_of_day}")
-    if displayed:
-        lines.append(f"Openings already on screen for this request: {', '.join(displayed)}.")
-    elif checked_empty:
+    if checked_empty:
         lines.append("Availability checked for this request. No matching openings.")
+        if displayed:
+            lines.append(f"Nearest alternatives already on screen: {', '.join(displayed)}.")
+    elif displayed:
+        lines.append(f"Openings already on screen for this request: {', '.join(displayed)}.")
     current_bookings = prefetched_bookings if prefetched_bookings is not None else tuple(owned)[-10:]
     current_slots = [ref for ref in state.slots if ref in prefetched_slots]
     if rotated:
@@ -392,7 +410,8 @@ class TurnService:
         plan = plan_prefetch(state, now, hints, text=text)
         yield {"type": "status", "text": plan.status()}
         prefetched = await self._prefetch.fetch(tools, plan)
-        slot_refs = tools.register_slots(prefetched.slots, reuse_known=plan.show_openings)
+        slots = prefetched.alternatives or prefetched.slots
+        slot_refs = tools.register_slots(slots, reuse_known=plan.show_openings)
         booking_refs = (
             tools.register_bookings(
                 prefetched.bookings, reuse_known=True,
@@ -400,7 +419,12 @@ class TurnService:
             )
             if prefetched.bookings is not None else None
         )
-        displayed = _displayed_slots(slot_refs, hints) if plan.show_openings else []
+        displayed = list(slot_refs) if prefetched.alternatives else (
+            _displayed_slots(slot_refs, hints) if plan.show_openings else []
+        )
+        checked_empty = plan.show_openings and prefetched.slots_checked and (
+            bool(prefetched.alternatives) or not displayed
+        )
         metrics["prefetch"] = {
             "ms": prefetched.elapsed_ms, "slots": len(slot_refs),
             "bookings": len(booking_refs or {}), "timedOut": prefetched.timed_out,
@@ -415,18 +439,20 @@ class TurnService:
                 event["bookings"] = booking_refs
             yield event
         if displayed:
-            days = {slot_refs[ref]["dayLabel"] for ref in displayed}
-            note = f"Openings on {next(iter(days))}" if len(days) == 1 else "Openings across the requested dates"
-            if hints.part_of_day != "any":
-                note += f", {hints.part_of_day}"
+            if checked_empty:
+                note = _alternatives_note(hints)
+            else:
+                days = {slot_refs[ref]["dayLabel"] for ref in displayed}
+                note = f"Openings on {next(iter(days))}" if len(days) == 1 else "Openings across the requested dates"
+                if hints.part_of_day != "any":
+                    note += f", {hints.part_of_day}"
             yield {"type": "slot_chips", "refs": displayed, "note": note}
-        schemas = await asyncio.to_thread(tools.schemas, allow_lazy_catalog=bool(plan.days))
+        schemas = [] if checked_empty else await asyncio.to_thread(tools.schemas, allow_lazy_catalog=bool(plan.days))
         context, snapshot = _context(
             state, now, hints, prefetched_slots=frozenset(slot_refs),
             prefetched_bookings=tuple(booking_refs) if booking_refs is not None else None,
             displayed=tuple(displayed),
-            checked_empty=(plan.show_openings and prefetched.slots_checked and not slot_refs
-                           and not any(hint.at is not None for hint in hints.dates)),
+            checked_empty=checked_empty,
             rotated=rotated,
         )
         steps = _initial_steps(state, context, text)

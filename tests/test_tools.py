@@ -257,6 +257,26 @@ class CalendarToolsTests(unittest.TestCase):
         self.assertEqual(self.calendar.write_calls, [])
         self.assertIsNone(self.state.proposal)
 
+    def test_stale_slot_refresh_uses_the_same_cross_day_ranking_as_prefetch(self):
+        stale = add_slot(
+            self.state,
+            SlotEntry(
+                start_utc="2026-11-26T02:00:00Z",
+                end_utc="2026-11-26T02:30:00Z",
+                event_type_id=9001,
+                fetched_at=NOW.timestamp() - 121,
+            ),
+        )
+        with self.assertRaises(ToolRejected) as rejected:
+            self.tools.execute("propose_booking", booking_args(stale))
+        self.assertEqual(
+            [self.state.slots[ref].start_utc for ref in rejected.exception.result["nearest"]],
+            ["2026-11-26T01:00:00Z", "2026-11-26T03:00:00Z", "2026-11-27T02:30:00Z"],
+        )
+        self.assertEqual(len(self.calendar.slot_calls), 1)
+        self.assertTrue(self.calendar.slot_calls[0][-1])
+        self.assertEqual(self.calendar.write_calls, [])
+
     def test_confirmable_cancellation_and_unsafe_turn_deny_proposals_only(self):
         booking_ref = self.known_booking()
         args = {"booking_ref": booking_ref, "reason": "No longer needed"}
