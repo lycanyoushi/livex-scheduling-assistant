@@ -25,14 +25,16 @@ from backend.server import TurnLoop, create_app
 from backend.state import SlotEntry, new_state, sign_state, verify_state
 from backend.tools import booking_entry
 from backend.turn import TurnService
-from evals.checker import EvalError, SAFE_STATUS, check_turn, local_iso, require, safe_reason
+from evals.checker import EvalError, SAFE_STATUS, check_turn, confirms_signed_proposal, local_iso, require, safe_reason
 from evals.fake_cal import FakeCal
 from scripts.local_environment import load_local_environment
 
 
 SPEC_PATH = Path(__file__).with_name("conversations.yaml")
-SPEC_SNAPSHOT = SPEC_PATH.with_suffix(".json")
 HELD_OUT_PATH = SPEC_PATH.with_name("held_out.json")
+REGRESSION_SPEC_PATH = SPEC_PATH.with_name("regressions.yaml")
+APPROVED_CASE_IDS = range(1, 24)
+TYPED_CONFIRM_CASE = 32
 DEFAULT_MODEL = "gemini-3.5-flash-lite"
 BACKUP_MODEL = "gemini-3.1-flash-lite"
 COMPARISON_MODEL = BACKUP_MODEL
@@ -49,12 +51,12 @@ SUPPORTED_CHECKS = {
 SUPPORTED_TEMPLATES = {None, "booked", "cancelled", "rescheduled", "slot_taken", "model_down_slots"}
 
 
-def read_yaml(yaml_python=None):
+def read_yaml(yaml_python=None, *, path=SPEC_PATH):
     parser = yaml_python or shutil.which("python")
     require(parser is not None, "Use --yaml-python with a Python installation that has PyYAML.")
     result = subprocess_run(
         [parser, "-c", "from pathlib import Path; import json,sys,yaml; "
-         "print(json.dumps(yaml.safe_load(Path(sys.argv[1]).read_text(encoding='utf-8-sig'))))", str(SPEC_PATH)],
+         "print(json.dumps(yaml.safe_load(Path(sys.argv[1]).read_text(encoding='utf-8-sig'))))", str(path)],
         capture_output=True, check=False, encoding="utf-8", timeout=15,
     )
     require(result.returncode == 0, "The YAML parser failed. Supply --yaml-python with an existing PyYAML installation.")
@@ -66,13 +68,17 @@ def validate_spec(spec):
     require(spec["runs"]["default"]["model"] == DEFAULT_MODEL
             and spec["runs"]["comparison"]["model"] == APPROVED_SPEC_COMPARISON_MODEL,
             "Unexpected evaluated model.")
-    require(sorted(case["id"] for case in spec["cases"]) == list(range(1, 24)), "Missing or duplicate approved cases.")
+    require(sorted(case["id"] for case in spec["cases"]) == list(APPROVED_CASE_IDS), "Missing or duplicate approved cases.")
     validate_case_checks(spec["cases"])
 
 
-def validate_case_checks(cases):
+def validate_case_checks(cases, *, allow_typed_confirm=False):
     for case in cases:
-        for turn in case["turns"]:
+        for number, turn in enumerate(case["turns"], 1):
+            if "proposal_from_turn" in turn:
+                source = turn["proposal_from_turn"]
+                require(allow_typed_confirm and turn.get("user") == "yes" and "action" not in turn
+                        and type(source) is int and 1 <= source < number, "Invalid typed confirmation fixture.")
             rules = turn["checks"]
             require(set(rules) <= SUPPORTED_CHECKS and rules.get("reply_language") in {None, "es"},
                     "Unhandled evaluation check.")
@@ -81,11 +87,15 @@ def validate_case_checks(cases):
                 re.compile(pattern)
 
 
-def approved_spec():
-    snapshot = json.loads(SPEC_SNAPSHOT.read_text(encoding="utf-8"))
-    require(snapshot["yaml_sha256"] == sha256(SPEC_PATH.read_bytes()).hexdigest(),
+def load_snapshot(path):
+    snapshot = json.loads(path.with_suffix(".json").read_text(encoding="utf-8"))
+    require(snapshot["yaml_sha256"] == sha256(path.read_bytes()).hexdigest(),
             "The generated spec is stale. Regenerate it with --refresh-spec.")
-    spec = snapshot["spec"]
+    return snapshot["spec"]
+
+
+def approved_spec():
+    spec = load_snapshot(SPEC_PATH)
     validate_spec(spec)
     return spec
 
@@ -97,9 +107,23 @@ def held_out_cases(spec):
     )), "Held-out fixture settings must match the approved suite.")
     cases = frozen["cases"]
     require([case["id"] for case in cases] == list(range(24, 32)), "Missing or duplicate held-out cases.")
-    require(all(case["rephrases"] in range(1, 24) for case in cases), "Unknown approved case rephrased.")
+    require(all(case["rephrases"] in APPROVED_CASE_IDS for case in cases), "Unknown approved case rephrased.")
     validate_case_checks(cases)
     return cases
+
+
+def validate_regressions(regressions, spec):
+    require(all(regressions[name] == spec[name] for name in (
+        "schema_version", "calendar_fixture", "default_clock", "default_time_zone",
+    )), "Regression fixture settings must match the approved suite.")
+    cases = regressions["cases"]
+    require([case["id"] for case in cases] == [TYPED_CONFIRM_CASE], "Missing or duplicate regression case.")
+    validate_case_checks(cases, allow_typed_confirm=True)
+    return cases
+
+
+def regression_cases(spec):
+    return validate_regressions(load_snapshot(REGRESSION_SPEC_PATH), spec)
 
 
 def model_profile(spec, model, held_out=False):
@@ -114,7 +138,10 @@ def model_profile(spec, model, held_out=False):
 def refresh_spec(yaml_python=None):
     spec = read_yaml(yaml_python)
     validate_spec(spec)
-    checkpoint(SPEC_SNAPSHOT, {"yaml_sha256": sha256(SPEC_PATH.read_bytes()).hexdigest(), "spec": spec})
+    regressions = read_yaml(yaml_python, path=REGRESSION_SPEC_PATH)
+    validate_regressions(regressions, spec)
+    for path, source in ((SPEC_PATH, spec), (REGRESSION_SPEC_PATH, regressions)):
+        checkpoint(path.with_suffix(".json"), {"yaml_sha256": sha256(path.read_bytes()).hexdigest(), "spec": source})
 
 
 def fixture_state(case, fixture, now, zone):
@@ -286,7 +313,13 @@ class TracingModel:
 
 def turn_payload(turn, prior):
     if "user" in turn:
-        return {"kind": "text", "text": turn["user"]}
+        payload = {"kind": "text", "text": turn["user"]}
+        if "proposal_from_turn" in turn:
+            proposal = prior.get(turn["proposal_from_turn"], {}).get("proposal")
+            if not proposal:
+                return None
+            payload["proposalId"] = proposal["id"]
+        return payload
     action = dict(turn["action"])
     if "proposal_from_turn" in action:
         old = prior.get(action.pop("proposal_from_turn"), {}).get("proposal")
@@ -340,7 +373,7 @@ def run_case(spec, case, fixture, primary, backup, loop, *, model_name, pacing=N
                 if on_turn is not None:
                     on_turn(turns)
                 continue
-            calendar.allow_confirm = payload.get("action", {}).get("type") == "confirm_proposal"
+            calendar.allow_confirm = confirms_signed_proposal(turn, payload, turns, state)
             calendar.writes.clear()
             calendar.reads.clear()
             trace.clear()
@@ -509,12 +542,14 @@ def run(spec, cases, repeats, profile, output, call_cap, reference=None, *, held
         "suite": "held_out" if held_out else "approved",
         "backup_model": None if comparison else BACKUP_MODEL, "case_ids": case_ids, "repeats": repeats,
         "spec_sha256": sha256(SPEC_PATH.read_bytes()).hexdigest(), "fixture_sha256": sha256(fixture_path.read_bytes()).hexdigest(),
-        "qualifying_schedule": case_ids == list(range(1, 24)) and repeats == profile["repetitions_per_case"],
+        "qualifying_schedule": case_ids == list(APPROVED_CASE_IDS) and repeats == profile["repetitions_per_case"],
         "complete": False, "stop": None, "runs": [], "in_progress": None, "pace_seconds": PACE_SECONDS,
         "quota_backoff_seconds": QUOTA_BACKOFF_SECONDS, "provider_call_cap": call_cap,
     }
     if held_out:
         document["held_out_sha256"] = sha256(HELD_OUT_PATH.read_bytes()).hexdigest()
+    if TYPED_CONFIRM_CASE in case_ids:
+        document["regression_spec_sha256"] = sha256(REGRESSION_SPEC_PATH.read_bytes()).hexdigest()
 
     def save():
         http = {}
@@ -565,10 +600,10 @@ def run(spec, cases, repeats, profile, output, call_cap, reference=None, *, held
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", choices=(DEFAULT_MODEL, COMPARISON_MODEL))
-    parser.add_argument("--cases", type=int, nargs="+", help="Run only these approved case numbers.")
+    parser.add_argument("--cases", type=int, nargs="+", help="Run specified approved or regression cases.")
     parser.add_argument("--held-out", action="store_true", help="Run the eight frozen rewordings once on the default model.")
     parser.add_argument("--repeats", choices=range(1, 4), type=int, help="Override the model's reviewed repetition count.")
-    parser.add_argument("--refresh-spec", action="store_true", help="Regenerate the approved JSON snapshot from YAML offline.")
+    parser.add_argument("--refresh-spec", action="store_true", help="Regenerate the JSON snapshots from YAML offline.")
     parser.add_argument("--yaml-python", help="Existing Python interpreter with PyYAML for --refresh-spec only.")
     parser.add_argument("--output", type=Path, help="Use a new JSON path for a selected or repeated run.")
     parser.add_argument("--report", type=Path, help="Print the metrics table from an existing JSON report offline.")
@@ -578,7 +613,7 @@ def main():
     args = parser.parse_args()
     if args.refresh_spec:
         refresh_spec(args.yaml_python)
-        print(f"Generated {SPEC_SNAPSHOT}")
+        print(f"Generated {SPEC_PATH.with_suffix('.json').name} and {REGRESSION_SPEC_PATH.with_suffix('.json').name}")
         return 0
     if args.report is not None:
         spec = approved_spec()
@@ -587,6 +622,9 @@ def main():
         held_out = document.get("suite") == "held_out"
         if held_out:
             require(document["held_out_sha256"] == sha256(HELD_OUT_PATH.read_bytes()).hexdigest(), "The held-out spec differs.")
+        if TYPED_CONFIRM_CASE in document["case_ids"]:
+            require(document["regression_spec_sha256"] == sha256(REGRESSION_SPEC_PATH.read_bytes()).hexdigest(),
+                    "The regression spec differs.")
         profile = model_profile(spec, document["model"], held_out)
         repeats = document["repeats"]
         summary = aggregate(document["runs"], document["case_ids"], repeats,
@@ -603,12 +641,14 @@ def main():
                 "Use all frozen held-out cases exactly once on the default model.")
     logging.disable(logging.CRITICAL)
     spec = approved_spec()
+    regression_selected = bool(args.cases and TYPED_CONFIRM_CASE in args.cases)
     if args.held_out:
         cases = held_out_cases(spec)
     else:
-        selected = set(args.cases or range(1, 24))
-        require(selected <= set(range(1, 24)), "Unknown evaluation case.")
-        cases = [case for case in spec["cases"] if case["id"] in selected]
+        selected = set(args.cases or APPROVED_CASE_IDS)
+        require(selected <= {*APPROVED_CASE_IDS, TYPED_CONFIRM_CASE}, "Unknown evaluation case.")
+        candidates = [*spec["cases"], *regression_cases(spec)] if regression_selected else spec["cases"]
+        cases = [case for case in candidates if case["id"] in selected]
     profile = model_profile(spec, args.model, args.held_out)
     repeats = args.repeats or profile["repetitions_per_case"]
     if args.describe:
@@ -617,7 +657,7 @@ def main():
                           "pace_seconds": PACE_SECONDS, "backoff_seconds": QUOTA_BACKOFF_SECONDS, "call_cap": args.max_calls}))
         return 0
     date = datetime.now(ZoneInfo("America/Los_Angeles")).date().isoformat()
-    suffix = "-held-out" if args.held_out else ""
+    suffix = "-held-out" if args.held_out else "-regressions" if regression_selected else ""
     output = args.output or Path(spec["runs"]["results_path"].format(model=args.model, date=date + suffix))
     output.parent.mkdir(parents=True, exist_ok=True)
     try:

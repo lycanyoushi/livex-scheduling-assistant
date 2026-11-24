@@ -6,7 +6,49 @@ export type UiAction =
   | { type: "request_cancel"; bookingRef: string }
   | { type: "request_reschedule"; bookingRef: string };
 
-export type ChatInput = { kind: "text"; text: string } | { kind: "ui"; action: UiAction };
+type BookingContact = { name: string; email: string; notes?: string };
+type TextInput = { kind: "text"; text: string; proposalId?: string; contact?: BookingContact };
+export type ChatInput = TextInput | { kind: "ui"; action: UiAction };
+
+function textProposalDecision(text: string): "confirm" | "dismiss" | undefined {
+  switch (text.trim().toLowerCase().replace(/[.!]+$/, "").trim().replaceAll("’", "'")) {
+    case "yes":
+    case "confirm":
+    case "book it":
+    case "sounds good":
+    case "go ahead":
+      return "confirm";
+    case "no":
+    case "never mind":
+    case "don't":
+      return "dismiss";
+    default:
+      return undefined;
+  }
+}
+
+export function typedInput(text: string, activeProposalId?: string, contact?: BookingContact): TextInput {
+  const decision = textProposalDecision(text);
+  if (activeProposalId && decision) return { kind: "text", text, proposalId: activeProposalId,
+    ...(decision === "confirm" && contact ? { contact } : {}),
+  };
+  return { kind: "text", text };
+}
+
+export function bookingContact(fields: FormData): BookingContact {
+  return {
+    name: String(fields.get("name") ?? "").trim(),
+    email: String(fields.get("email") ?? "").trim(),
+    notes: String(fields.get("notes") ?? "").trim(),
+  };
+}
+
+export function proposalDecision(input: ChatInput): "confirm" | "dismiss" | undefined {
+  if (input.kind === "text") return input.proposalId ? textProposalDecision(input.text) : undefined;
+  if (input.action.type === "confirm_proposal") return "confirm";
+  if (input.action.type === "dismiss_proposal") return "dismiss";
+  return undefined;
+}
 
 export type SlotView = { dayLabel: string; timeLabel: string; startLocalIso: string };
 export type BookingView = {
@@ -44,7 +86,7 @@ export type BookingResult = {
 type TurnEnd = {
   type: "turn_end";
   stateToken: string;
-  metrics: { outcome: "ok" | "failed"; fallback?: "backup_model" | "code_only" };
+  metrics: { outcome: "ok" | "failed"; path?: "ui_action" | "model"; fallback?: "backup_model" | "code_only" };
 };
 
 export type ServerEvent =
@@ -59,10 +101,14 @@ export type ServerEvent =
 
 export type TurnControls = "all" | "alternatives" | "none";
 
+export function clearsProposalOnSuccess(input: ChatInput, path: TurnEnd["metrics"]["path"]): boolean {
+  return input.kind === "ui" || (path === "ui_action" && proposalDecision(input) === "dismiss");
+}
+
 export function controlsForTurn(input: ChatInput, metrics: TurnEnd["metrics"], errorCode?: string): TurnControls {
   if (metrics.outcome === "ok" || metrics.fallback === "code_only") return "all";
-  if (input.kind === "ui" && errorCode === "slot_taken" &&
-      (input.action.type === "confirm_proposal" || input.action.type === "pick_slot")) {
+  if (errorCode === "slot_taken" && (proposalDecision(input) === "confirm" ||
+      (input.kind === "ui" && input.action.type === "pick_slot"))) {
     return "alternatives";
   }
   return "none";
@@ -78,7 +124,7 @@ export function canRetryTurn(
 ): boolean {
   if (evidence.kind === "terminal") return evidence.retryable;
   if (evidence.kind === "quota") return true;
-  return input.kind === "text" || input.action.type !== "confirm_proposal";
+  return proposalDecision(input) !== "confirm";
 }
 
 export type ReferencePart = { text: string } | { ref: string };

@@ -2,7 +2,7 @@
 
 ## Stream and offer limits
 
-The primary has an eight-second deadline for its first raw stream event. Both models use an eight-second idle deadline once visible text starts and retain the 20-second overall limit. A pre-text failure can go to the backup under the existing continuation rules. A stalled reply after text closes the stream, displays the partial reply with `(reply cut short)`, and keeps the previous completed interaction. Tests cover cancellation, continued raw-event activity, and state preservation. The held-out run exercised the first-event backup live. [Held-out evidence](m7-eval-report.md#held-out-rewordings)
+The primary has an eight-second deadline for its first raw stream event. Both models use an eight-second idle deadline once visible text starts and retain the 20-second overall limit. A pre-text failure can go to the backup under the existing continuation rules. A stalled reply after text closes the stream, displays the partial reply with `(reply cut short)`, and keeps the previous completed interaction. Tests cover cancellation, continued raw-event activity, and state preservation. The held-out run exercised the first-event backup live. [Held-out evidence](../m7-eval-report.md#held-out-rewordings)
 
 Python limits each reply to four distinct selectable slot refs across groups and inline markers. Extra times render as date and time text in both clients. Tests cover interleaved and fragmented markers and verify that proposals still use signed refs.
 
@@ -23,7 +23,7 @@ The Vitest suite passed all 16 tests across three files. The Python suite passed
 
 ## Review follow-up
 
-Weekday exclusions now apply in the request's local time zone to prefetched chips, `find_slots` results and alternatives, and previously issued slot refs used in a reply or proposal. The app skips early slot offers if it cannot resolve an exclusion. The two booking-list rewordings also reach the one-call path. These changes followed the frozen 5/8 held-out run. [Held-out evidence](m7-eval-report.md#held-out-rewordings)
+Weekday exclusions now apply in the request's local time zone to prefetched chips, `find_slots` results and alternatives, and previously issued slot refs used in a reply or proposal. The app skips early slot offers if it cannot resolve an exclusion. The two booking-list rewordings also reach the one-call path. These changes followed the frozen 5/8 held-out run. [Held-out evidence](../m7-eval-report.md#held-out-rewordings)
 
 The model receives a four-time offer limit and uses reference markers for exact time labels. The terminal keeps the number for a selectable time and elides its adjacent duplicate label. A booking already shown in an explicit list can appear inline by ref, with its full details printed once in the list. For standalone bookings, the terminal removes an immediately repeated time range and keeps the title and date. Repeated ranges at overflow refs are also elided.
 

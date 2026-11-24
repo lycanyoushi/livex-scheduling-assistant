@@ -1,0 +1,39 @@
+# Supplemental cases leave the approved and held-out suites unchanged.
+# On a literal text turn, proposal_from_turn binds the request to the
+# visible proposal from that turn. A write still requires matching signed state.
+schema_version: 1
+calendar_fixture: fake_cal.json
+default_clock: "2026-11-23T10:00:00+08:00"
+default_time_zone: Asia/Singapore
+
+cases:
+  - id: 32
+    name: Confirm the visible signed booking proposal by typing yes
+    fixture_overrides: {}
+    turns:
+      - user: "I'm Sam, sam@example.com. Please book tomorrow at 2pm."
+        checks:
+          tool_calls:
+            - name: propose_booking
+              args: {slot_ref: {local_start: "2026-11-24T14:00"}}
+          forbidden_tools: [propose_cancel, propose_reschedule]
+          refs_within: null
+          proposal_kind: book
+          proposal_email: sam@example.com
+          pending_tool_call: propose_booking
+          min_model_calls: 1
+          max_model_calls: 3
+          cal_writes: []
+          booking_result: null
+      - user: "yes"
+        proposal_from_turn: 1
+        checks:
+          tool_calls: []
+          forbidden_tools: ["*"]
+          refs_within: null
+          proposal_kind: null
+          max_model_calls: 0
+          cal_writes:
+            - {operation: create_booking, local_start: "2026-11-24T14:00", email: sam@example.com, outcome: success}
+          booking_result: {kind: booked, local_start: "2026-11-24T14:00"}
+          template: booked

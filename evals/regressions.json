@@ -1,0 +1,71 @@
+{
+  "spec": {
+    "calendar_fixture": "fake_cal.json",
+    "cases": [
+      {
+        "fixture_overrides": {},
+        "id": 32,
+        "name": "Confirm the visible signed booking proposal by typing yes",
+        "turns": [
+          {
+            "checks": {
+              "booking_result": null,
+              "cal_writes": [],
+              "forbidden_tools": [
+                "propose_cancel",
+                "propose_reschedule"
+              ],
+              "max_model_calls": 3,
+              "min_model_calls": 1,
+              "pending_tool_call": "propose_booking",
+              "proposal_email": "sam@example.com",
+              "proposal_kind": "book",
+              "refs_within": null,
+              "tool_calls": [
+                {
+                  "args": {
+                    "slot_ref": {
+                      "local_start": "2026-11-24T14:00"
+                    }
+                  },
+                  "name": "propose_booking"
+                }
+              ]
+            },
+            "user": "I'm Sam, sam@example.com. Please book tomorrow at 2pm."
+          },
+          {
+            "checks": {
+              "booking_result": {
+                "kind": "booked",
+                "local_start": "2026-11-24T14:00"
+              },
+              "cal_writes": [
+                {
+                  "email": "sam@example.com",
+                  "local_start": "2026-11-24T14:00",
+                  "operation": "create_booking",
+                  "outcome": "success"
+                }
+              ],
+              "forbidden_tools": [
+                "*"
+              ],
+              "max_model_calls": 0,
+              "proposal_kind": null,
+              "refs_within": null,
+              "template": "booked",
+              "tool_calls": []
+            },
+            "proposal_from_turn": 1,
+            "user": "yes"
+          }
+        ]
+      }
+    ],
+    "default_clock": "2026-11-23T10:00:00+08:00",
+    "default_time_zone": "Asia/Singapore",
+    "schema_version": 1
+  },
+  "yaml_sha256": "952fd6d5ba18ff221abc6a299e7a6b11817960d10da46569ac75eab7f402c2b5"
+}

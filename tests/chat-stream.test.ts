@@ -1,7 +1,7 @@
 import { expect, it } from "vitest";
 
 import { calendarFile, googleCalendarLink, safeMeetingLink } from "../app/calendar-export";
-import { type BookingView, type ChatInput, type ServerEvent, canRetryTurn, controlsForTurn, listedBookingRefs, nextSlotDate, readChatStream, splitReferenceText, unverifiedWrite, withoutRetiredBookings } from "../app/chat-protocol";
+import { type BookingView, type ChatInput, type ProposalView, type ServerEvent, bookingContact, canRetryTurn, clearsProposalOnSuccess, controlsForTurn, listedBookingRefs, nextSlotDate, proposalDecision, readChatStream, splitReferenceText, typedInput, unverifiedWrite, withoutRetiredBookings } from "../app/chat-protocol";
 
 const encoder = new TextEncoder();
 
@@ -95,6 +95,20 @@ it("permits only terminal alternatives after a slot-taken UI action", () => {
   expect(controlsForTurn({ kind: "ui", action: { type: "confirm_proposal", proposalId: "P1" } }, failed, "cal_down")).toBe("none");
 });
 
+it("sends recognized replies as text with only the active proposal ID attached", () => {
+  expect(JSON.stringify(typedInput("yes", "P1"))).toBe('{"kind":"text","text":"yes","proposalId":"P1"}');
+  expect(JSON.stringify(typedInput("yes"))).toBe('{"kind":"text","text":"yes"}');
+  for (const text of [" YES!. ", "CONFIRM", "Book it.", "Sounds good", "Go ahead!"]) {
+    expect(proposalDecision(typedInput(text, "P1"))).toBe("confirm");
+  }
+  for (const text of ["No.", " Never mind! ", "Don’t!"]) {
+    expect(proposalDecision(typedInput(text, "P1"))).toBe("dismiss");
+  }
+  for (const text of ["yes?", "confirm it", "sounds good, but Friday", "go ahead please", "don't book it"]) {
+    expect(typedInput(text, "P1")).toEqual({ kind: "text", text });
+  }
+});
+
 it("keeps authoritative code-only fallback controls usable on a failed model turn", () => {
   const input: ChatInput = { kind: "text", text: "Find an opening tomorrow" };
   expect(controlsForTurn(input, { outcome: "failed", fallback: "code_only" }, "model_down")).toBe("all");
@@ -112,6 +126,56 @@ it("retries verified rejections and never replays an interrupted confirmation", 
   expect(unverifiedWrite("write_unverified")).toBe(true);
   expect(unverifiedWrite("reschedule_partial")).toBe(true);
   expect(unverifiedWrite("write_not_applied")).toBe(false);
+});
+
+it("gives a typed confirmation the same transport and taken-slot safety as the button", () => {
+  const confirm = typedInput("yes!", "P1");
+  const dismiss = typedInput("never mind", "P1");
+  const failed = { outcome: "failed", path: "ui_action" } as const;
+  expect(canRetryTurn(confirm, { kind: "transport" })).toBe(false);
+  expect(canRetryTurn(confirm, { kind: "quota" })).toBe(true);
+  expect(canRetryTurn(confirm, { kind: "terminal", retryable: false })).toBe(false);
+  expect(canRetryTurn(dismiss, { kind: "transport" })).toBe(true);
+  expect(canRetryTurn(typedInput("yes"), { kind: "transport" })).toBe(true);
+  expect(controlsForTurn(confirm, failed, "slot_taken")).toBe("alternatives");
+  expect(controlsForTurn(dismiss, failed, "slot_taken")).toBe("none");
+  expect(controlsForTurn(confirm, failed, "write_unverified")).toBe("none");
+});
+
+it("sends the current booking form edits with a typed yes", () => {
+  const changedFields = new FormData();
+  changedFields.set("name", "  Edited name  ");
+  changedFields.set("email", "edited@example.com");
+  changedFields.set("notes", " Updated note ");
+  const contact = bookingContact(changedFields);
+  expect(JSON.parse(JSON.stringify(typedInput("yes", "P1", contact)))).toEqual({
+    kind: "text", text: "yes", proposalId: "P1",
+    contact: { name: "Edited name", email: "edited@example.com", notes: "Updated note" },
+  });
+  expect(typedInput("no", "P1", contact)).toEqual({ kind: "text", text: "no", proposalId: "P1" });
+  expect(typedInput("yes", undefined, contact)).toEqual({ kind: "text", text: "yes" });
+});
+
+it("keeps the original card active when typed yes asks for cleared, missing or invalid contact", async () => {
+  const proposal: ProposalView = { id: "P1", kind: "book", title: "Meeting", whenLabel: "Monday",
+    timeZone: "UTC", durationMinutes: 30, name: "Earlier name", email: "previous@example.com" };
+  const cleared = new FormData();
+  cleared.set("name", "  ");
+  cleared.set("email", "new@example.com");
+  const sent = typedInput("yes", proposal.id, bookingContact(cleared));
+  expect(sent.contact).toEqual({ name: "", email: "new@example.com", notes: "" });
+  const response = new Response([
+    JSON.stringify({ type: "assistant_text", text: "Enter a name in the booking card." }),
+    JSON.stringify({ type: "turn_end", stateToken: "fixture.signature", metrics: { path: "ui_action", outcome: "ok" } }),
+    "",
+  ].join("\n"));
+  const terminal = await readChatStream(response.body!, () => {});
+  expect(clearsProposalOnSuccess(sent, terminal.metrics.path)).toBe(false);
+  expect(clearsProposalOnSuccess(typedInput("yes", proposal.id), terminal.metrics.path)).toBe(false);
+  const invalid = typedInput("yes", proposal.id, { name: "Edited name", email: "not-an-email" });
+  expect(clearsProposalOnSuccess(invalid, terminal.metrics.path)).toBe(false);
+  expect(clearsProposalOnSuccess(typedInput("no", proposal.id), terminal.metrics.path)).toBe(true);
+  expect(clearsProposalOnSuccess(typedInput("yes?", proposal.id), "model")).toBe(false);
 });
 
 it("starts the next availability window after the final local date", () => {

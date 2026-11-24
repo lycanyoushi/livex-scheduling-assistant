@@ -38,3 +38,19 @@ it("ignores malformed history and never revives a confirmation whose active reco
   expect(loadHistory(store, "page")?.activeProposal).toBeNull();
   expect(loadHistory(store, "page")?.turns[0].proposal).toEqual(proposal);
 });
+
+it("only restores a proposal from a live card in the current signed chat", () => {
+  const store = storage();
+  const proposal = { id: "P1", kind: "cancel" as const, title: "Fixture meeting", whenLabel: "Mon 30 Nov",
+    timeZone: "Asia/Singapore", durationMinutes: 30, bookingRef: "B1" };
+  const turns = [{ ...history.turns[0], proposal }];
+  const pending = { ...history, turns, activeProposal: { turnId: 1, value: proposal } };
+  saveHistory(store, "page", pending);
+  expect(loadHistory(store, "page")?.activeProposal).toEqual(pending.activeProposal);
+
+  for (const stale of [{ ...pending, stateToken: null }, { ...pending, session: 2 },
+    { ...pending, turns: [{ ...turns[0], controls: "none" as const }] }]) {
+    saveHistory(store, "page", stale);
+    expect(loadHistory(store, "page")?.activeProposal).toBeNull();
+  }
+});

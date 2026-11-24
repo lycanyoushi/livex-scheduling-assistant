@@ -27,9 +27,9 @@ Each confirmation sent one mutation before reconciliation. The tests covered all
 
 ## Case 23 and live smoke
 
-Case 23 passed with the fixture's primary 429 and backup 503. Four Thursday-afternoon options remained selectable. Selecting the first option produced a booking proposal with zero model calls and zero writes. [Case fixture](../evals/conversations.yaml) · [Recovery tests](../tests/test_recovery.py)
+Case 23 passed with the fixture's primary 429 and backup 503. Four Thursday-afternoon options remained selectable. Selecting the first option produced a booking proposal with zero model calls and zero writes. [Case fixture](../../evals/conversations.yaml) · [Recovery tests](../../tests/test_recovery.py)
 
-The live backup smoke made one 3.1 Flash-Lite call after the forced primary 503. The call completed in 4,992 ms. Both directions are verified for stored tool continuations with the default pair. [Gemini checks](gemini-notes.md#m6-live-backup-checks)
+The live backup smoke made one 3.1 Flash-Lite call after the forced primary 503. The call completed in 4,992 ms. Both directions are verified for stored tool continuations with the default pair. [Gemini checks](../gemini-notes.md#m6-live-backup-checks)
 
 Chrome opened the Cal.com modal through the local Next.js and Flask app, verified the ordinary HTTPS link and the iframe created by the official SDK, and closed the dialog with Escape. A browser run with intercepted responses separately verified Retry after HTTP 429, Retry after a verified unchanged confirmation, retirement after an uncertain write, and selection of a signed code-only option. No live calendar bookings were created, cancelled, or moved during M6 verification.
 

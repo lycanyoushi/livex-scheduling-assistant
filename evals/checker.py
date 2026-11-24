@@ -49,6 +49,21 @@ def safe_reason(value):
     return None
 
 
+def confirms_signed_proposal(turn, payload, prior, state):
+    proposal = state.proposal
+    if proposal is None:
+        return False
+    if payload["kind"] == "ui":
+        action = payload["action"]
+        return action["type"] == "confirm_proposal" and action.get("proposalId") == proposal.id
+    source = turn.get("proposal_from_turn")
+    if payload["kind"] != "text" or type(source) is not int:
+        return False
+    visible = prior.get(source, {}).get("proposal") or {}
+    return (turn.get("user") == payload.get("text") == "yes"
+            and visible.get("id") == payload.get("proposalId") == proposal.id)
+
+
 def render(events):
     """Collect user-visible references from text and explicit card events."""
     message = ""
@@ -270,15 +285,17 @@ def check_turn(case_id, turn_spec, payload, events, prior, before, after, now, z
 
     writes = list(calendar.writes)
     expected_writes = plan.get("cal_writes", [])
+    confirmed_proposal = confirms_signed_proposal(turn_spec, payload, prior, before)
     check("exact_calendar_writes", len(writes) == len(expected_writes) and all(
         expected_record(wanted, actual) for wanted, actual in zip(expected_writes, writes)
     ), [masked_record(write) for write in writes])
-    check("mutations_require_confirmation", not writes or payload.get("action", {}).get("type") == "confirm_proposal",
-          len(writes))
+    check("mutations_require_confirmation", not writes or confirmed_proposal, len(writes))
+    if text_input and "proposal_from_turn" in turn_spec:
+        check("typed_confirmation_matches_signed_proposal", confirmed_proposal, confirmed_proposal)
+        check("typed_confirmation_clears_proposal", after.proposal is None, after.proposal is None)
     if writes:
         saved_booking = before.bookings.get(before.proposal.booking_ref) if before.proposal else None
         saved_slot = before.slots.get(before.proposal.slot_ref) if before.proposal else None
-        confirmed_proposal = bool(before.proposal and payload.get("action", {}).get("proposalId") == before.proposal.id)
         valid_targets = confirmed_proposal and all(
             (write["operation"] == "create_booking" or (saved_booking and write["uid"] == saved_booking.uid))
             and (write["operation"] == "cancel_booking" or (saved_slot and

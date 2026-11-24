@@ -7,11 +7,15 @@ import {
   type ProposalView,
   type ReferenceViews,
   type UiAction,
+  bookingContact,
   canRetryTurn,
+  clearsProposalOnSuccess,
   controlsForTurn,
   listedBookingRefs,
+  proposalDecision,
   readChatStream,
   splitReferenceText,
+  typedInput,
   unverifiedWrite,
   withoutRetiredBookings,
 } from "./chat-protocol";
@@ -64,6 +68,7 @@ export default function ChatWorkspace({ embedded = false }: { embedded?: boolean
   const savedViews = useRef(EMPTY_VIEWS);
   const nextTurnId = useRef(1);
   const request = useRef<AbortController | null>(null);
+  const activeBookingForm = useRef<HTMLFormElement>(null);
   const transcript = useRef<HTMLElement>(null);
   const followsTranscript = useRef(true);
   const sending = activeKind !== null;
@@ -132,9 +137,19 @@ export default function ChatWorkspace({ embedded = false }: { embedded?: boolean
     if (log && followsTranscript.current) log.scrollTop = log.scrollHeight;
   }, [turns, status]);
 
-  async function sendTurn(input: ChatInput, retryId?: number) {
+  async function sendTurn(requestedInput: ChatInput, retryId?: number) {
     if (request.current || !ready) return;
 
+    const candidate = activeProposal?.value;
+    const input = requestedInput.kind === "text"
+      ? typedInput(requestedInput.text, token.current && requestedInput.proposalId === candidate?.id
+        ? requestedInput.proposalId : undefined)
+      : requestedInput;
+    const decision = proposalDecision(input);
+    const form = candidate?.kind === "book" ? activeBookingForm.current : null;
+    const wireInput = input.kind === "text" && decision === "confirm" && form
+      ? typedInput(input.text, input.proposalId, bookingContact(new FormData(form)))
+      : input;
     const controller = new AbortController();
     request.current = controller;
     followsTranscript.current = true;
@@ -146,7 +161,7 @@ export default function ChatWorkspace({ embedded = false }: { embedded?: boolean
     setTurns((previous) => retryId === undefined
       ? [...previous, record]
       : previous.map((turn) => turn.id === id ? record : turn));
-    setActiveKind(input.kind);
+    setActiveKind(decision ? "ui" : input.kind);
     setStatus("Sending…");
 
     function updateTurn(update: (turn: TurnRecord) => TurnRecord) {
@@ -161,8 +176,8 @@ export default function ChatWorkspace({ embedded = false }: { embedded?: boolean
     let rejectedBeforeConfirm = false;
     const recoveryRefs = new Set<string>();
     const retiredBookings = new Set<string>();
-    const confirmsProposal = input.kind === "ui" && input.action.type === "confirm_proposal";
-    const originalBookingRef = confirmsProposal ? activeProposal?.value.bookingRef : undefined;
+    const confirmsProposal = decision === "confirm";
+    const originalBookingRef = confirmsProposal ? candidate?.bookingRef : undefined;
     const debugEvents: object[] = [];
     let omittedEvents = 0;
     if (confirmsProposal) {
@@ -176,7 +191,6 @@ export default function ChatWorkspace({ embedded = false }: { embedded?: boolean
 
     function clearUnverifiedConfirmation() {
       setActiveProposal(null);
-      const candidate = activeProposal?.value;
       const views = { slots: { ...savedViews.current.slots }, bookings: { ...savedViews.current.bookings } };
       if (candidate?.slotRef) delete views.slots[candidate.slotRef];
       if (candidate?.bookingRef) delete views.bookings[candidate.bookingRef];
@@ -192,7 +206,7 @@ export default function ChatWorkspace({ embedded = false }: { embedded?: boolean
         body: JSON.stringify({
           stateToken: token.current,
           timeZone,
-          input,
+          input: wireInput,
         }),
       });
       if (response.status === 429) {
@@ -318,7 +332,7 @@ export default function ChatWorkspace({ embedded = false }: { embedded?: boolean
         setActiveProposal(null);
       } else if (controls === "all") {
         if (committedProposal) setActiveProposal({ turnId: id, value: committedProposal });
-        else if (input.kind === "ui") setActiveProposal(null);
+        else if (clearsProposalOnSuccess(wireInput, terminal.metrics.path)) setActiveProposal(null);
       }
       updateTurn((turn) => ({ ...turn, controls, proposal: committedProposal }));
 
@@ -334,7 +348,7 @@ export default function ChatWorkspace({ embedded = false }: { embedded?: boolean
       } else if (terminal.metrics.outcome === "failed" && terminal.metrics.fallback !== "code_only") {
         updateTurn((turn) => ({
           ...turn,
-          error: { message: "The request could not be completed.", retryable: input.kind === "text" },
+          error: { message: "The request could not be completed.", retryable: input.kind === "text" && !confirmsProposal },
         }));
       }
     } catch {
@@ -371,7 +385,7 @@ export default function ChatWorkspace({ embedded = false }: { embedded?: boolean
     const text = draft.trim();
     if (!text || request.current || !ready) return;
     setDraft("");
-    void sendTurn({ kind: "text", text });
+    void sendTurn(typedInput(text, token.current ? activeProposal?.value.id : undefined));
   }
 
   function newChat() {
@@ -434,6 +448,8 @@ export default function ChatWorkspace({ embedded = false }: { embedded?: boolean
             {turns.map((turn) => {
               const isLatest = turn.id === turns.at(-1)?.id;
               const sameSession = turn.session === session;
+              const isActiveProposal = sameSession && activeProposal?.turnId === turn.id &&
+                activeProposal.value.id === turn.proposal?.id;
               const live = sameSession && !sending;
               const currentBookings = sameSession ? currentViews.bookings : EMPTY_VIEWS.bookings;
               const parts = splitReferenceText(turn.text, sending && isLatest);
@@ -533,8 +549,9 @@ export default function ChatWorkspace({ embedded = false }: { embedded?: boolean
                     <ConfirmCard
                       key={turn.proposal.id}
                       proposal={turn.proposal}
-                      active={sameSession && activeProposal?.turnId === turn.id}
+                      active={isActiveProposal}
                       submitting={sending}
+                      formRef={isActiveProposal && turn.proposal.kind === "book" ? activeBookingForm : undefined}
                       onAction={takeAction}
                     />
                   )}

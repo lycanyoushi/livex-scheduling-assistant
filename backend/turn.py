@@ -26,13 +26,13 @@ from backend.model import ModelClient, ModelCompletion, ModelError, ModelStreamS
 from backend.prefetch import PREFETCH_BUDGET_SECONDS, Prefetcher, plan_prefetch
 from backend.prescan import EMAIL, PrescanResult, prescan
 from backend.protocol import (
-    CalCallMetrics, ChatRequest, ErrorEvent, ModelCallMetrics, RefsEvent, ServerEvent, SlotView, TextInput, TurnMetrics,
-    UiAction,
+    CalCallMetrics, ChatRequest, ConfirmProposal, DismissProposal, ErrorEvent, ModelCallMetrics, RefsEvent, ServerEvent,
+    SlotView, TextInput, TurnMetrics, UiAction,
 )
 from backend.slot_offers import SlotOfferLimit
 from backend.state import (
-    MAX_NOTES, BookingEntry, ModelContext, NoActionYetOutcome, PendingCall, SessionState, StateError, new_state, sign_state,
-    verify_state,
+    MAX_NOTES, BookingEntry, ModelContext, NoActionYetOutcome, PendingCall, Proposal, SessionState, StateError, new_state,
+    sign_state, verify_state,
 )
 from backend.time import parse_instant, slot_labels, utc_now
 from backend.tools import CalendarTools, InvalidToolArguments, ToolOutcome, ToolRejected
@@ -60,9 +60,12 @@ For a specific agreed slot, propose_booking. Set email="" to use the session ema
 Use an empty name or notes if unknown.
 For cancellation or moving a selected meeting, use the corresponding propose tool.
 A proposal only asks for confirmation. Never claim a write happened without a confirmed app result.
+For a new booking at a specific available time, if the user asks to skip confirmation, call propose_booking anyway so the app displays the confirmation card. A reminder alone is not enough.
 Use a propose tool alone as the final step and give a short explanation before it.
 Reply in the user's language. Keep replies brief. Ask which meeting when a request is ambiguous."""
 PROPOSE_TOOLS = frozenset({"propose_booking", "propose_cancel", "propose_reschedule"})
+CONFIRM_REPLIES = frozenset({"yes", "confirm", "book it", "sounds good", "go ahead"})
+DISMISS_REPLIES = frozenset({"no", "never mind", "don't"})
 REFS = re.compile(r"\[\[([SB][1-9]\d*)\]\]")
 BOOKING_MENTION = re.compile(r"\bB[1-9]\d{0,8}\b", re.IGNORECASE)
 PAST_BOOKINGS = re.compile(r"\b(?:past|previous|earlier|history|last (?:week|month|year)|pasad[oa]s?|anteriores?)\b", re.I)
@@ -113,6 +116,19 @@ class TurnError(Exception):
         super().__init__(message or ERRORS.get(code, DEFAULT_ERROR))
         self.code = code
         self.retryable = retryable
+
+
+def _typed_proposal_action(reply: TextInput, proposal: Proposal | None) -> ConfirmProposal | DismissProposal | None:
+    # Bind an exact reply to the card the browser showed, using only the signed proposal as the target.
+    if proposal is None or reply.proposal_id != proposal.id:
+        return None
+    phrase = reply.text.strip().lower().replace("’", "'").rstrip(".!").rstrip()
+    if phrase in CONFIRM_REPLIES:
+        contact = reply.contact.model_dump(exclude_none=True) if proposal.kind == "book" and reply.contact else {}
+        return ConfirmProposal(type="confirm_proposal", proposalId=proposal.id, **contact)
+    if phrase in DISMISS_REPLIES:
+        return DismissProposal(type="dismiss_proposal", proposalId=proposal.id)
+    return None
 
 
 def _redact_contact(value: str) -> str:
@@ -449,10 +465,15 @@ class TurnService:
             state.time_zone = request.time_zone
             previous = deepcopy(state)
             if isinstance(request.input, TextInput):
-                if state.counters.turns >= 40:
-                    raise TurnError("session_limit", "Start a new chat to continue.", retryable=False)
-                hints = prescan(request.input.text, now=now, time_zone=request.time_zone)
-                source = self._text_events(state, now, request.input.text, hints, metrics)
+                action = _typed_proposal_action(request.input, state.proposal)
+                if action is not None:
+                    metrics["path"] = "ui_action"
+                    source = self._action_events(state, now, action, metrics, ask_for_contact=True)
+                else:
+                    if state.counters.turns >= 40:
+                        raise TurnError("session_limit", "Start a new chat to continue.", retryable=False)
+                    hints = prescan(request.input.text, now=now, time_zone=request.time_zone)
+                    source = self._text_events(state, now, request.input.text, hints, metrics)
             else:
                 source = self._action_events(state, now, request.input.action, metrics)
             async with aclosing(source) as events:
@@ -770,7 +791,21 @@ class TurnService:
 
     async def _action_events(
         self, state: SessionState, now: datetime, action: UiAction, metrics: TurnMetrics,
+        *, ask_for_contact: bool = False,
     ) -> AsyncIterator[ServerEvent]:
+        proposal = state.proposal
+        if ask_for_contact and isinstance(action, ConfirmProposal) and proposal and proposal.kind == "book":
+            name = proposal.name if action.name is None else action.name
+            email = proposal.email if action.email is None else action.email
+            missing = []
+            if not (name or "").strip():
+                missing.append("name")
+            if not EMAIL.fullmatch((email or "").strip()):
+                missing.append("email address")
+            if missing:
+                fields = " and ".join(missing)
+                yield {"type": "assistant_text", "text": f"Please enter your {fields} on the proposal card, then confirm."}
+                return
         status = {
             "confirm_proposal": "Confirming the change…",
             "more_slots": "Checking for more times…",

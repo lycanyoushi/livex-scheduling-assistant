@@ -8,9 +8,23 @@ A conversational Python assistant for booking, viewing, rescheduling, and cancel
 
 ![Local web chat showing a fictional booking and its management controls](docs/images/scheduling-demo.png)
 
+## Requirements
+
+The LiveX brief requires an interactive Python chatbot that books, views, cancels, and reschedules meetings through the Cal.com REST API. Run it with `python -m backend.cli`. The Next.js web chat is the bonus interface and runs the same Python conversation and calendar actions. [Confirmed assignment brief](docs/DECISIONS.md#assignment-requirements)
+
+| Flow | How to try it | Cal.com REST API |
+| --- | --- | --- |
+| Book | Ask for availability, select a time, provide your name and email, then confirm. | `GET /v2/slots`, `POST /v2/bookings` |
+| List | Ask for upcoming meetings and give the attendee email if prompted. | `GET /v2/bookings` with the `attendeeEmail` filter |
+| Reschedule | Choose a booked meeting, pick a different time, then confirm. | `GET /v2/bookings/{uid}`, `GET /v2/slots`, `POST /v2/bookings/{uid}/reschedule` |
+| Cancel | Choose a booked meeting and confirm the cancellation. | `GET /v2/bookings/{uid}`, `POST /v2/bookings/{uid}/cancel` |
+
+The client uses `GET /v2/me` and `GET /v2/event-types` to find the host and eligible events. The single-booking read also helps verify changes when a write times out. [Cal.com API verification](docs/calcom-notes.md)
+
+At the Python terminal's confirmation prompt, type `y`. On the web, type `yes` in chat or click **Confirm** on the active proposal. Both use the name and email shown on the booking card. Fill in any missing details before confirming.
+
 ## Features
 
-- **Required** · An interactive Python terminal chat for all four Cal.com flows. Numbered choices pick real time slots, and `y` confirms a proposed change.
 - **Web bonus** · Streaming replies, clickable time options and booking cards, a time-zone picker, and an embeddable demo. The web chat adds system dark mode, local history, keyboard controls, and a diagnostics drawer at `/?debug=1`.
 - **Demo calendar** · `DEMO_MODE=fake` runs all four flows against a rolling in-memory calendar with a Gemini key and signing secret.
 
@@ -29,7 +43,18 @@ flowchart LR
     H --> A
 ```
 
-Python parses dates and prefetches relevant calendar data before the model call. Gemini references options such as `S1` and bookings such as `B1`. The state token signs their mappings to exact calendar records. Python owns every write, rechecks the chosen record or time on Confirm, and streams status, text, cards, and turn metrics. The terminal and web clients use the same turn service.
+Python parses dates and prefetches relevant calendar data before the model call. Gemini references options such as `S1` and bookings such as `B1`. The state token signs their mappings to exact calendar records. Python owns every write, rechecks the chosen record or time when you confirm, and streams status, text, cards, and turn metrics. The terminal and web clients use the same turn service.
+
+## Code tour
+
+| File | Responsibility |
+| --- | --- |
+| [backend/cli.py](backend/cli.py) | Runs the required Python terminal chat and accepts numbered choices and typed confirmations. |
+| [backend/turn.py](backend/turn.py) | Orchestrates a turn, prefetches calendar data, and handles Gemini streaming and tool calls. |
+| [backend/actions.py](backend/actions.py) | Rechecks signed proposals and executes confirmed booking, move, and cancellation actions. |
+| [backend/cal_client.py](backend/cal_client.py) | Calls the Cal.com REST endpoints with per-endpoint versions and parses responses. |
+| [backend/server.py](backend/server.py) | Serves the Flask warm-up and streaming chat endpoints. |
+| [app/chat-workspace.tsx](app/chat-workspace.tsx) | Renders streamed messages, time choices, booking cards, and confirmation controls in the browser. |
 
 ## Local development
 
@@ -89,7 +114,7 @@ pnpm eval --model gemini-3.5-flash-lite --output evals/results/local-run.json
 pnpm eval --report evals/results/local-run.json
 ```
 
-The Python mapping, state signing, model fallback, and hosting choices are recorded in the project notes. [Design decisions](docs/DECISIONS.md)
+The Python mapping, state signing, model fallback, and hosting choices are recorded in the project notes. [Design decisions](docs/DECISIONS.md) · [Milestone dev logs](docs/dev-log)
 
 ## Known limitations
 
@@ -97,6 +122,6 @@ The Python mapping, state signing, model fallback, and hosting choices are recor
 - Anyone who knows an attendee's email can look up or cancel that attendee's bookings in the demo.
 - A production version would verify the attendee's email with a one-time code before showing or changing bookings.
 - Per-IP limits, the daily model-call budget, and duplicate-confirm protection are held in each process's memory. They reset when the process restarts and are independent across instances.
-- Stop ends the stream in the browser, but the server may finish the current Gemini call. Calendar changes still require Confirm.
+- Stop ends the stream in the browser, but the server may finish the current Gemini call. Calendar changes require explicit confirmation.
 - When Cal.com times out on a confirmed change, the app checks the booking records and reports what it can verify. If the records are inconclusive, check the calendar before submitting another change.
 - Google can use free-tier Gemini prompts and responses to improve its products. Use fictional contact details in conversation and keep deliverable test aliases in the local Cal.com probe settings.

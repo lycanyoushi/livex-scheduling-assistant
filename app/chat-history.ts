@@ -61,7 +61,8 @@ export function loadHistory(storage: BrowserStorage, key: string): ChatHistory |
       (turn.input?.kind === "text" || turn.input?.kind === "ui") && typeof turn.text === "string" &&
       Array.isArray(turn.groups) && Array.isArray(turn.results) && turn.views?.slots && turn.views.bookings);
     const activeProposal = entry.activeProposal;
-    const retainedProposal = turns.find((turn) => turn.id === activeProposal?.turnId)?.proposal;
+    const retainedProposal = entry.stateToken && turns.find((turn) => turn.id === activeProposal?.turnId &&
+      turn.session === entry.session && turn.controls === "all")?.proposal;
     return { ...entry, turns, activeProposal: activeProposal && retainedProposal && retainedProposal.id === activeProposal.value?.id
       ? { turnId: activeProposal.turnId, value: retainedProposal } : null };
   } catch {

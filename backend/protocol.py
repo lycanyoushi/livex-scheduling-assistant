@@ -55,6 +55,10 @@ class _WireModel(BaseModel):
     )
 
 
+def _omit_missing(value: object) -> bool:
+    return value is None
+
+
 class PickSlot(_WireModel):
     type: Literal["pick_slot"]
     slot_ref: SlotRef
@@ -72,12 +76,10 @@ class MoreSlots(_WireModel):
         return value
 
 
-class ConfirmProposal(_WireModel):
-    type: Literal["confirm_proposal"]
-    proposal_id: ProposalId
-    name: ContactName | None = None
-    email: ContactEmail | None = None
-    notes: ContactNotes | None = None
+class _ConfirmationContact(_WireModel):
+    name: ContactName | None = Field(default=None, exclude_if=_omit_missing)
+    email: ContactEmail | None = Field(default=None, exclude_if=_omit_missing)
+    notes: ContactNotes | None = Field(default=None, exclude_if=_omit_missing)
 
     @field_validator("name", "email", "notes", mode="before")
     @classmethod
@@ -85,6 +87,11 @@ class ConfirmProposal(_WireModel):
         if value is None:
             raise ValueError("Omit optional contact fields without a value.")
         return value
+
+
+class ConfirmProposal(_ConfirmationContact):
+    type: Literal["confirm_proposal"]
+    proposal_id: ProposalId
 
 
 class DismissProposal(_WireModel):
@@ -111,6 +118,8 @@ UiAction = Annotated[
 class TextInput(_WireModel):
     kind: Literal["text"]
     text: Annotated[str, StringConstraints(min_length=1, max_length=MAX_MESSAGE_LENGTH)]
+    proposal_id: ProposalId | None = Field(default=None, exclude_if=_omit_missing)
+    contact: _ConfirmationContact | None = Field(default=None, exclude_if=_omit_missing)
 
     @field_validator("text")
     @classmethod

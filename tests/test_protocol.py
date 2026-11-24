@@ -33,6 +33,13 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(request.input.text, "Tomorrow morning")
         self.assertEqual(request.model_dump(by_alias=True), original)
 
+    def test_typed_confirmation_round_trips_the_bound_card_and_contact(self):
+        original = chat_request({"kind": "text", "text": "yes", "proposalId": "P1",
+                                 "contact": {"name": "Sam", "email": ""}})
+        request = ChatRequest.model_validate(original)
+        self.assertEqual(request.input.proposal_id, "P1")
+        self.assertEqual(request.model_dump(by_alias=True), original)
+
     def test_every_supported_ui_action(self):
         actions = [
             {"type": "pick_slot", "slotRef": "S9"},

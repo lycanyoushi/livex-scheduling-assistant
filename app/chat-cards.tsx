@@ -1,4 +1,4 @@
-import { type FormEvent, type KeyboardEvent, useEffect, useRef } from "react";
+import { type FormEvent, type KeyboardEvent, type Ref, useEffect, useRef } from "react";
 
 import { calendarFile, googleCalendarLink, safeMeetingLink } from "./calendar-export";
 import {
@@ -9,6 +9,7 @@ import {
   type ReferenceViews,
   type SlotView,
   type UiAction,
+  bookingContact,
   nextSlotDate,
 } from "./chat-protocol";
 
@@ -31,27 +32,23 @@ const PROPOSAL_LABELS: Record<ProposalView["kind"], string> = {
 type SendAction = (action: UiAction) => void;
 type IsAvailable = (ref: string) => boolean;
 
-export function ConfirmCard({ proposal, active, submitting, onAction }: {
+export function ConfirmCard({ proposal, active, submitting, formRef, onAction }: {
   proposal: ProposalView;
   active: boolean;
   submitting: boolean;
+  formRef?: Ref<HTMLFormElement>;
   onAction: SendAction;
 }) {
   function confirm(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!active || submitting) return;
-    const action: UiAction = { type: "confirm_proposal", proposalId: proposal.id };
-    if (proposal.kind === "book") {
-      const fields = new FormData(event.currentTarget);
-      action.name = String(fields.get("name") ?? "").trim();
-      action.email = String(fields.get("email") ?? "").trim();
-      action.notes = String(fields.get("notes") ?? "").trim();
-    }
-    onAction(action);
+    const contact = proposal.kind === "book" ? bookingContact(new FormData(event.currentTarget)) : undefined;
+    onAction({ type: "confirm_proposal", proposalId: proposal.id, ...contact });
   }
 
   return (
     <form
+      ref={formRef}
       onSubmit={confirm}
       className={`rounded-xl border border-border bg-card p-5 shadow-xs ${active ? "" : "opacity-60"}`}
       aria-label={PROPOSAL_LABELS[proposal.kind]}

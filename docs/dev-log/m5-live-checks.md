@@ -15,7 +15,7 @@ The M3 row uses the 11 successful chat turns in [M3 live checks](m3-live-checks.
 | First status through Next.js | — | 20.163 / 34.240 | p50 ≤ 300 |
 | First text through Next.js | — | 7,460.718 / 15,860.545 | — |
 
-The M5 run made 15 model calls across ten turns, with 5 single-call turns against the 70% target. The slowest first model text was 11,337.812 ms and the slowest turn was 20,888.274 ms. The median server time outside the measured model calls was 4.0 ms, with a maximum of 614.5 ms. Successful-call input tokens grew from 1,511 to 10,241 in the stored session. The wait on Gemini's request path dominated the measured turn times. Request latency combines network and provider time. A tier-specific latency floor remains unmeasured. [Controlled latency probe](gemini-notes.md#m5-latency-probe-on-november-22-2026)
+The M5 run made 15 model calls across ten turns, with 5 single-call turns against the 70% target. The slowest first model text was 11,337.812 ms and the slowest turn was 20,888.274 ms. The median server time outside the measured model calls was 4.0 ms, with a maximum of 614.5 ms. Successful-call input tokens grew from 1,511 to 10,241 in the stored session. The wait on Gemini's request path dominated the measured turn times. Request latency combines network and provider time. A tier-specific latency floor remains unmeasured. [Controlled latency probe](../gemini-notes.md#m5-latency-probe-on-november-22-2026)
 
 ## Eval case 2
 

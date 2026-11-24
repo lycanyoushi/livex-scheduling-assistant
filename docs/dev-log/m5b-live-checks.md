@@ -1,6 +1,6 @@
 # M5b repeatable latency checks
 
-The benchmark used the same [committed driver](../scripts/live_chat.py), ten fictional prompts in one session, live Gemini 3.5 Flash-Lite with minimal thinking, and local Next.js rewrites to Flask. The baseline backend was M5 (`7b4d792`). Driver commit `6086512` contains that backend and the benchmark entry point. The driver serves a read-only FakeCal fixture fixed at Sunday, November 22, 2026, 21:00 in Asia/Singapore. Thursday afternoon is closed in every run. No Cal.com writes are possible in the benchmark.
+The benchmark used the same [committed driver](../../scripts/live_chat.py), ten fictional prompts in one session, live Gemini 3.5 Flash-Lite with minimal thinking, and local Next.js rewrites to Flask. The baseline backend was M5 (`7b4d792`). Driver commit `6086512` contains that backend and the benchmark entry point. The driver serves a read-only FakeCal fixture fixed at Sunday, November 22, 2026, 21:00 in Asia/Singapore. Thursday afternoon is closed in every run. No Cal.com writes are possible in the benchmark.
 
 The driver records the prompt, prescan and prefetch results, sanitized tool names and arguments, and per-call input, output, and cached tokens. The [complete traces](m5b-live-traces.jsonl) include both post-change runs. First useful content is the first visible chips or text through Next.js. The timing summary uses successful turns and interpolated p90, with model first text measured within calls that produced it.
 
@@ -32,7 +32,7 @@ The early groups stay above the model reply in the browser. The controls become 
 
 With the approved open-Thursday eval fixture, live case 2 offered four dated chips at 12:00, 13:30, 14:30, and 15:00 on November 26 in Asia/Singapore. Flask emitted the group immediately after refs, at 6.425 ms, before first model text at 2,563.166 ms. The turn finished in 3,435.665 ms with one model call, zero tool calls, and zero unknown refs.
 
-The final ten-turn run remained below the 6,000-token rotation threshold. In a separate live check, a signed fixture reported 6,001 tokens on its prior call. The next turn started a fresh interaction, recalled the fictional name from the recap, and used 1,386 input tokens in one model call. The unit test covers dropping an old pending provider call, retaining the open proposal and its slot at ref capacity, and restoring old state after a failed rotation. [Controlled stored-history probe](gemini-notes.md#m5b-stored-history-size-probe)
+The final ten-turn run remained below the 6,000-token rotation threshold. In a separate live check, a signed fixture reported 6,001 tokens on its prior call. The next turn started a fresh interaction, recalled the fictional name from the recap, and used 1,386 input tokens in one model call. The unit test covers dropping an old pending provider call, retaining the open proposal and its slot at ref capacity, and restoring old state after a failed rotation. [Controlled stored-history probe](../gemini-notes.md#m5b-stored-history-size-probe)
 
 ## Reproduce
 

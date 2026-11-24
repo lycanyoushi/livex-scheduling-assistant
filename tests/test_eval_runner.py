@@ -2,15 +2,17 @@
 
 import json
 from pathlib import Path
+import re
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest import IsolatedAsyncioTestCase, TestCase
 from unittest.mock import AsyncMock, patch
 
 from backend.model import ModelCompletion, ModelError, ModelText, ToolCall
-from evals.checker import EvalError, render, safe_reason
+from evals.checker import EvalError, confirms_signed_proposal, render, safe_reason
 from evals.runner import (
     COMPARISON_MODEL, DEFAULT_MODEL, SPEC_PATH, Pacing, aggregate, approved_spec, case_report, checkpoint,
-    held_out_cases, model_profile, run_case,
+    held_out_cases, model_profile, regression_cases, run_case, turn_payload,
 )
 
 
@@ -27,6 +29,23 @@ class CancellationScenario:
             yield ModelCompletion("second-turn", "requires_action", (
                 ToolCall("cancel-target", "propose_cancel", {"booking_ref": "B2", "reason": ""}),
             ))
+
+
+class BookingScenario:
+    def __init__(self):
+        self.calls = 0
+
+    async def stream(self, *, input_steps, **_):
+        self.calls += 1
+        if self.calls > 1:
+            raise AssertionError("A bound typed confirmation must use zero model calls.")
+        context = input_steps[-1]["content"][0]["text"]
+        slot = re.search(r"^Prefetched slot (S[1-9][0-9]*): [^\n]*14:00", context, re.MULTILINE)
+        if slot is None:
+            raise AssertionError("The fixture's exact 14:00 start was missing.")
+        yield ModelCompletion("booking-turn", "requires_action", (
+            ToolCall("booking-target", "propose_booking", {"slot_ref": slot[1], "name": "Sam", "email": "", "notes": ""}),
+        ))
 
 
 class EvalRunnerTests(TestCase):
@@ -74,6 +93,37 @@ class EvalRunnerTests(TestCase):
                     errors = result["turns"][0]["provider_errors"]
                     self.assertEqual([item["http_status"] for item in errors], [429, 503])
                     self.assertTrue(all(item["simulated"] for item in errors))
+
+    def test_typed_confirmation_is_a_literal_text_request_with_a_matching_signed_proposal(self):
+        turn = regression_cases(self.spec)[0]["turns"][1]
+        prior = {1: {"proposal": {"id": "P1"}}}
+        state = SimpleNamespace(proposal=SimpleNamespace(id="P1"))
+        literal = turn_payload(turn, prior)
+        self.assertEqual(literal, {"kind": "text", "text": "yes", "proposalId": "P1"})
+        self.assertTrue(confirms_signed_proposal(turn, literal, prior, state))
+        self.assertFalse(confirms_signed_proposal({"user": "yes"}, literal, prior, state))
+        self.assertFalse(confirms_signed_proposal(turn, {"kind": "text", "text": "yes"}, prior, state))
+        self.assertFalse(confirms_signed_proposal(turn, {**literal, "text": "yes if it's tomorrow"}, prior, state))
+        self.assertFalse(confirms_signed_proposal(turn, {**literal, "proposalId": "P2"}, prior, state))
+        self.assertFalse(confirms_signed_proposal(turn, literal, prior, SimpleNamespace(proposal=None)))
+        self.assertIsNone(turn_payload(turn, {}))
+
+    def test_case_32_types_yes_through_flask_without_a_second_model_call(self):
+        case, = regression_cases(self.spec)
+        model = BookingScenario()
+        result = case_report(case, 1, run_case(self.spec, case, self.fixture, model, None, None,
+                                              model_name=DEFAULT_MODEL))
+        self.assertEqual(result["status"], "pass", result["turns"])
+        self.assertEqual(model.calls, 1)
+        proposed, confirmed = result["turns"]
+        self.assertEqual(confirmed["kind"], "text")
+        self.assertEqual(confirmed["model_calls"], 0)
+        before = {row["check"]: row["observed"] for row in proposed["checks"]}
+        after = {row["check"]: row["observed"] for row in confirmed["checks"]}
+        self.assertEqual(before["exact_calendar_writes"], [])
+        self.assertEqual([write["operation"] for write in after["exact_calendar_writes"]], ["create_booking"])
+        self.assertTrue(after["typed_confirmation_matches_signed_proposal"])
+        self.assertTrue(after["typed_confirmation_clears_proposal"])
 
     def test_thresholds_and_wording_failures_stay_distinct(self):
         statuses = ["pass", "wording_only_failure", "pass"]

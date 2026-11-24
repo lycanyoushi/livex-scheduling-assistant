@@ -43,4 +43,4 @@ Two Production Flask startups logged **2.04 s** and **2.16 s** of setup. The cyc
 
 ## Recording outline
 
-Show a text request, early slots, and explicit Confirm. Verify the synthetic booking in Cal.com. List it, move it to a different time, and cancel it. Show the taken-slot alternatives and one diagnostics view with zero model calls on a UI action. Finish with a numbered choice in the Python terminal and the mobile widget. Aim for two to three minutes.
+Show a text request and the first available times. Pick a time, fill in the contact fields, and type `yes` in chat to confirm the booking. Verify it in Cal.com and list it in chat. Choose a different time and click **Confirm** to move the meeting. Cancel the replacement and verify that no fixture bookings remain. Show the taken-slot alternatives and a diagnostics view with zero model calls on a confirmation. Finish with a numbered choice in the Python terminal and the mobile widget. Aim for two to three minutes.

@@ -92,7 +92,7 @@ The reverse continuation probe used the unbilled key, stored interactions, minim
 | 3.5 Flash-Lite | Continue with `[function_result]` | Marker returned | 211 / 16 |
 | 3.5 Flash-Lite | Continue with `[function_result, user_input]` | Marker returned | 234 / 18 |
 
-In a separate application smoke test, a forced primary HTTP 503 returned before text. The real 3.1 Flash-Lite backup completed in 4,992 ms and streamed a response. The turn recorded `outcome=ok`, `fallback=backup_model`, and roles `primary`, `backup`, with zero calendar writes against FakeCal. [Recovery checks](m6-recovery-checks.md)
+In a separate application smoke test, a forced primary HTTP 503 returned before text. The real 3.1 Flash-Lite backup completed in 4,992 ms and streamed a response. The turn recorded `outcome=ok`, `fallback=backup_model`, and roles `primary`, `backup`, with zero calendar writes against FakeCal. [Recovery checks](dev-log/m6-recovery-checks.md)
 
 ## M7 review output-cap probe
 
