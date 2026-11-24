@@ -145,6 +145,25 @@ class TerminalIntegrationTests(unittest.TestCase):
 
 
 class TerminalEventTests(unittest.IsolatedAsyncioTestCase):
+    async def test_plain_times_do_not_receive_numbers_and_previous_choices_stay_available(self):
+        overflow = {"dayLabel": "Fri 27 Nov", "timeLabel": "09:00", "startLocalIso": "2026-11-27T09:00:00+08:00"}
+        service = TurnFixture([
+            {"type": "refs", "slots": {"S2": SLOT, "S6": overflow}},
+            {"type": "slot_chips", "refs": ["S2"], "plainRefs": ["S6"]},
+            terminal(),
+        ])
+        output = StringIO()
+        chat = TerminalChat(service, ZONE, read=lambda _: "", output=output)
+        chat.slots = {"S1": SLOT}
+        chat.choices = {1: "S1"}
+        chat.next_choice = 2
+
+        await chat.send({"kind": "text", "text": "Show more slots"})
+
+        self.assertEqual(chat.choices, {1: "S1", 2: "S2"})
+        self.assertIn("Fri 27 Nov 09:00", output.getvalue().splitlines())
+        self.assertIn("S6", chat.slots)
+
     async def test_booking_refs_support_inline_text_and_explicit_cards_control_list_output(self):
         booking = {"title": "Inventory appointment", "whenLabel": "Thu 26 Nov, 13:30–14:00", "status": "accepted"}
         offered = {**booking, "title": "Listed appointment"}

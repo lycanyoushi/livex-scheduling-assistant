@@ -9,7 +9,8 @@ from unittest.mock import AsyncMock, patch
 from backend.model import ModelCompletion, ModelError, ModelText, ToolCall
 from evals.checker import EvalError, render, safe_reason
 from evals.runner import (
-    COMPARISON_MODEL, DEFAULT_MODEL, SPEC_PATH, Pacing, aggregate, approved_spec, case_report, checkpoint, run_case,
+    COMPARISON_MODEL, DEFAULT_MODEL, SPEC_PATH, Pacing, aggregate, approved_spec, case_report, checkpoint,
+    held_out_cases, model_profile, run_case,
 )
 
 
@@ -106,7 +107,24 @@ class EvalRunnerTests(TestCase):
     def test_provider_reason_is_allowlisted(self):
         self.assertEqual(safe_reason("stream_ended_without_completion"), "stream_ended_without_completion")
         self.assertEqual(safe_reason("provider_http_503"), "provider_http_503")
+        self.assertEqual(safe_reason("first_event_timeout"), "first_event_timeout")
+        self.assertEqual(safe_reason("stream_idle_timeout"), "stream_idle_timeout")
         self.assertIsNone(safe_reason("provider quoted private@example.com"))
+
+    def test_frozen_cases_use_distinct_prompts_and_one_default_repetition(self):
+        cases = held_out_cases(self.spec)
+        existing = {turn["user"] for case in self.spec["cases"] for turn in case["turns"] if "user" in turn}
+        prompts = {turn["user"] for case in cases for turn in case["turns"] if "user" in turn}
+        self.assertEqual([case["id"] for case in cases], list(range(24, 32)))
+        self.assertEqual(len(prompts), 8)
+        self.assertFalse(prompts & existing)
+        self.assertEqual(model_profile(self.spec, DEFAULT_MODEL, held_out=True)["repetitions_per_case"], 1)
+
+    def test_new_comparison_uses_flash_lite_minimal_once(self):
+        profile = model_profile(self.spec, COMPARISON_MODEL)
+        self.assertEqual(profile["model"], "gemini-3.1-flash-lite")
+        self.assertEqual(profile["thinking_level"], "minimal")
+        self.assertEqual(profile["repetitions_per_case"], 1)
 
 
 class PacingTests(IsolatedAsyncioTestCase):
@@ -125,8 +143,9 @@ class PacingTests(IsolatedAsyncioTestCase):
         self.assertEqual(pace.stop, "repeated_provider_quota")
         self.assertEqual(pace.http_errors[DEFAULT_MODEL, 429], 2)
 
-    async def test_comparison_stops_after_consecutive_early_provider_failures(self):
-        pace = Pacing(10, comparison=True)
-        pace.outcome(COMPARISON_MODEL, ModelError("model_down", 503), saw_text=False)
-        pace.outcome(COMPARISON_MODEL, ModelError("timeout"), saw_text=False)
-        self.assertEqual(pace.stop, "comparison_unavailable")
+    async def test_comparison_tracks_availability_without_stopping_other_cases(self):
+        pace = Pacing(10)
+        pace.outcome(COMPARISON_MODEL, ModelError("model_down", 503))
+        pace.outcome(COMPARISON_MODEL, ModelError("timeout"))
+        self.assertIsNone(pace.stop)
+        self.assertEqual(pace.http_errors[COMPARISON_MODEL, 503], 1)

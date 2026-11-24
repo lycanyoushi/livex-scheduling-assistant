@@ -335,6 +335,7 @@ class CalClient:
         *,
         query: Mapping[str, str | int | None] | None = None,
         payload: JsonObject | None = None,
+        retry_read: bool = True,
     ) -> _Response:
         headers = {
             "Authorization": f"Bearer {self._api_key}",
@@ -351,7 +352,7 @@ class CalClient:
         url = f"{self._base_url}{path}" + (f"?{suffix}" if suffix else "")
         request = Request(url, method=method, data=data, headers=headers)
 
-        retry_read = method == "GET"
+        retry_read = method == "GET" and retry_read
         for attempt in range(2 if retry_read else 1):
             can_retry = retry_read and attempt == 0
             began = self._clock()
@@ -405,9 +406,10 @@ class CalClient:
                 self._slots_generation += 1
                 self._cache = {key: value for key, value in self._cache.items() if key[0] != "slots"}
 
-    def me(self) -> Profile:
+    def me(self, *, retry: bool = True) -> Profile:
         return self._cached(
-            ("me",), PROFILE_TTL, lambda: self._request("GET", "/v2/me").parse(_parse_profile), path="/v2/me",
+            ("me",), PROFILE_TTL,
+            lambda: self._request("GET", "/v2/me", retry_read=retry).parse(_parse_profile), path="/v2/me",
         )
 
     def event_types(self, username: str) -> list[EventType]:

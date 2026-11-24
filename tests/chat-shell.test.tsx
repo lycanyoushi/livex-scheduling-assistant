@@ -21,9 +21,11 @@ it("renders the chat with an enabled, labeled composer and an empty draft", () =
 it("renders grouped date-labeled chips and greys out unavailable references", () => {
   const html = renderToStaticMarkup(createElement(SlotChips, {
     refs: ["S1", "S2"],
+    plainRefs: ["S3"],
     slots: {
       S1: { dayLabel: "Thu 26 Nov", timeLabel: "2:30 pm", startLocalIso: "2026-11-26T14:30:00Z" },
       S2: { dayLabel: "Fri 27 Nov", timeLabel: "9:00 am", startLocalIso: "2026-11-27T09:00:00Z" },
+      S3: { dayLabel: "Sat 28 Nov", timeLabel: "11:00 am", startLocalIso: "2026-11-28T11:00:00Z" },
     },
     available: (ref) => ref === "S1",
     allowMore: true,
@@ -33,6 +35,9 @@ it("renders grouped date-labeled chips and greys out unavailable references", ()
   expect(html).toContain('aria-label="Thu 26 Nov at 2:30 pm"');
   expect(html).not.toMatch(/aria-label="Thu 26 Nov at 2:30 pm"[^>]*disabled/);
   expect(html).toMatch(/aria-label="Fri 27 Nov at 9:00 am"[^>]*disabled=""/);
+  expect(html).toContain("Sat 28 Nov");
+  expect(html).toContain(">11:00 am</span>");
+  expect(html).not.toContain('aria-label="Sat 28 Nov at 11:00 am"');
   expect(html).toContain("More times");
 });
 

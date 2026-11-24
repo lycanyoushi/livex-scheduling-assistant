@@ -32,9 +32,11 @@ from scripts.local_environment import load_local_environment
 
 SPEC_PATH = Path(__file__).with_name("conversations.yaml")
 SPEC_SNAPSHOT = SPEC_PATH.with_suffix(".json")
+HELD_OUT_PATH = SPEC_PATH.with_name("held_out.json")
 DEFAULT_MODEL = "gemini-3.5-flash-lite"
-COMPARISON_MODEL = "gemini-3.8-flash"
 BACKUP_MODEL = "gemini-3.1-flash-lite"
+COMPARISON_MODEL = BACKUP_MODEL
+APPROVED_SPEC_COMPARISON_MODEL = "gemini-3.8-flash"
 PACE_SECONDS = 10
 QUOTA_BACKOFF_SECONDS = 65
 DEFAULT_CALL_CAP = 180
@@ -61,10 +63,15 @@ def read_yaml(yaml_python=None):
 
 def validate_spec(spec):
     require(spec["schema_version"] == 1 and spec["calendar_fixture"] == "fake_cal.json", "Unexpected evaluation schema.")
-    require(spec["runs"]["default"]["model"] == DEFAULT_MODEL and spec["runs"]["comparison"]["model"] == COMPARISON_MODEL,
+    require(spec["runs"]["default"]["model"] == DEFAULT_MODEL
+            and spec["runs"]["comparison"]["model"] == APPROVED_SPEC_COMPARISON_MODEL,
             "Unexpected evaluated model.")
     require(sorted(case["id"] for case in spec["cases"]) == list(range(1, 24)), "Missing or duplicate approved cases.")
-    for case in spec["cases"]:
+    validate_case_checks(spec["cases"])
+
+
+def validate_case_checks(cases):
+    for case in cases:
         for turn in case["turns"]:
             rules = turn["checks"]
             require(set(rules) <= SUPPORTED_CHECKS and rules.get("reply_language") in {None, "es"},
@@ -81,6 +88,27 @@ def approved_spec():
     spec = snapshot["spec"]
     validate_spec(spec)
     return spec
+
+
+def held_out_cases(spec):
+    frozen = json.loads(HELD_OUT_PATH.read_text(encoding="utf-8"))
+    require(all(frozen[name] == spec[name] for name in (
+        "schema_version", "calendar_fixture", "default_clock", "default_time_zone",
+    )), "Held-out fixture settings must match the approved suite.")
+    cases = frozen["cases"]
+    require([case["id"] for case in cases] == list(range(24, 32)), "Missing or duplicate held-out cases.")
+    require(all(case["rephrases"] in range(1, 24) for case in cases), "Unknown approved case rephrased.")
+    validate_case_checks(cases)
+    return cases
+
+
+def model_profile(spec, model, held_out=False):
+    if model == DEFAULT_MODEL:
+        profile = spec["runs"]["default"]
+        if held_out:
+            return {**profile, "repetitions_per_case": 1, "minimum_passing_repetitions": 1}
+        return profile
+    return {**spec["runs"]["comparison"], "model": COMPARISON_MODEL, "thinking_level": "minimal"}
 
 
 def refresh_spec(yaml_python=None):
@@ -181,13 +209,11 @@ class Trace:
 
 
 class Pacing:
-    def __init__(self, cap, comparison=False):
+    def __init__(self, cap):
         self.cap = cap
-        self.comparison = comparison
         self.provider_calls = Counter()
         self.http_errors = Counter()
         self.quota_streak = Counter()
-        self.early_comparison_outages = 0
         self.next_start = 0.0
         self.stop = None
 
@@ -203,7 +229,7 @@ class Pacing:
         self.provider_calls[model] += 1
         return (started - began) * 1000
 
-    def outcome(self, model, error=None, *, saw_text=False):
+    def outcome(self, model, error=None):
         if error is not None and error.http_status is not None:
             self.http_errors[model, error.http_status] += 1
         if error is not None and (error.http_status == 429 or error.code == "rate_limited"):
@@ -213,13 +239,6 @@ class Pacing:
                 self.stop = "repeated_provider_quota"
         else:
             self.quota_streak[model] = 0
-        if self.comparison and model == COMPARISON_MODEL:
-            outage = error is not None and not saw_text and error.code in {"timeout", "model_down"} and (
-                error.http_status is None or error.http_status >= 500
-            )
-            self.early_comparison_outages = self.early_comparison_outages + 1 if outage else 0
-            if self.early_comparison_outages >= 2:
-                self.stop = "comparison_unavailable"
 
 
 class TracingModel:
@@ -258,7 +277,7 @@ class TracingModel:
                                                "http_status": error.http_status, "simulated": simulated,
                                                "before_text": not saw_text, "reason": safe_reason(error.reason)})
             if self.pacing is not None and not simulated:
-                self.pacing.outcome(self.name, error, saw_text=saw_text)
+                self.pacing.outcome(self.name, error)
             raise
         else:
             if self.pacing is not None and not simulated:
@@ -339,7 +358,8 @@ def run_case(spec, case, fixture, primary, backup, loop, *, model_name, pacing=N
             require(events and events[-1]["type"] == "turn_end", "Missing terminal eval event.")
             token = events[-1]["stateToken"]
             after = verify_state(token, secret, now)
-            checked = check_turn(case["id"], turn, payload, events, turns, state, after, now, zone, calendar, trace)
+            checked = check_turn(case.get("rephrases", case["id"]), turn, payload, events, turns,
+                                 state, after, now, zone, calendar, trace)
             turns[number] = {**checked, "first_feedback_ms": first_feedback}
             if on_turn is not None:
                 on_turn(turns)
@@ -460,13 +480,15 @@ def compare(document, reference):
             "gate_passed": all((candidate_complete, baseline_complete, same_spec, no_503, more))}
 
 
-def run(spec, cases, repeats, profile, output, call_cap, reference=None):
+def run(spec, cases, repeats, profile, output, call_cap, reference=None, *, held_out=False):
     model_name = profile["model"]
     key = load_local_environment().get("GEMINI_API_KEY")
     require(bool(key), "Set an unbilled Gemini project key in .env.local.")
     comparison = model_name == COMPARISON_MODEL
     primary = GeminiClient(key, model=model_name, thinking_level=profile["thinking_level"], persistent=True)
-    backup = None if comparison else GeminiClient(key, model=BACKUP_MODEL, thinking_level="minimal", persistent=True)
+    backup = None if comparison else GeminiClient(
+        key, model=BACKUP_MODEL, thinking_level="minimal", persistent=True, first_event_timeout=None,
+    )
 
     async def close():
         try:
@@ -476,7 +498,7 @@ def run(spec, cases, repeats, profile, output, call_cap, reference=None):
                 await backup.aclose()
 
     loop = TurnLoop(close)
-    pacing = Pacing(call_cap, comparison)
+    pacing = Pacing(call_cap)
     case_ids = [case["id"] for case in cases]
     mandatory = set(spec["runs"]["default"]["must_pass_every_repetition"])
     minimum = min(repeats, profile["minimum_passing_repetitions"])
@@ -484,12 +506,15 @@ def run(spec, cases, repeats, profile, output, call_cap, reference=None):
     fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
     document = {
         "schema_version": 1, "model": model_name, "thinking": profile["thinking_level"],
+        "suite": "held_out" if held_out else "approved",
         "backup_model": None if comparison else BACKUP_MODEL, "case_ids": case_ids, "repeats": repeats,
         "spec_sha256": sha256(SPEC_PATH.read_bytes()).hexdigest(), "fixture_sha256": sha256(fixture_path.read_bytes()).hexdigest(),
         "qualifying_schedule": case_ids == list(range(1, 24)) and repeats == profile["repetitions_per_case"],
         "complete": False, "stop": None, "runs": [], "in_progress": None, "pace_seconds": PACE_SECONDS,
         "quota_backoff_seconds": QUOTA_BACKOFF_SECONDS, "provider_call_cap": call_cap,
     }
+    if held_out:
+        document["held_out_sha256"] = sha256(HELD_OUT_PATH.read_bytes()).hexdigest()
 
     def save():
         http = {}
@@ -541,12 +566,13 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", choices=(DEFAULT_MODEL, COMPARISON_MODEL))
     parser.add_argument("--cases", type=int, nargs="+", help="Run only these approved case numbers.")
+    parser.add_argument("--held-out", action="store_true", help="Run the eight frozen rewordings once on the default model.")
     parser.add_argument("--repeats", choices=range(1, 4), type=int, help="Override the model's reviewed repetition count.")
     parser.add_argument("--refresh-spec", action="store_true", help="Regenerate the approved JSON snapshot from YAML offline.")
     parser.add_argument("--yaml-python", help="Existing Python interpreter with PyYAML for --refresh-spec only.")
     parser.add_argument("--output", type=Path, help="Use a new JSON path for a selected or repeated run.")
     parser.add_argument("--report", type=Path, help="Print the metrics table from an existing JSON report offline.")
-    parser.add_argument("--against", type=Path, help="Compare a 3.8 result with the complete default-model JSON.")
+    parser.add_argument("--against", type=Path, help="Compare a 3.1 Flash-Lite result with the complete default-model JSON.")
     parser.add_argument("--max-calls", type=int, default=DEFAULT_CALL_CAP, help="Conservative provider call cap for this run.")
     parser.add_argument("--describe", action="store_true", help="Validate and show the selection offline.")
     args = parser.parse_args()
@@ -558,7 +584,10 @@ def main():
         spec = approved_spec()
         document = json.loads(args.report.read_text(encoding="utf-8"))
         require(document["spec_sha256"] == sha256(SPEC_PATH.read_bytes()).hexdigest(), "The report uses a different spec.")
-        profile = spec["runs"]["default" if document["model"] == DEFAULT_MODEL else "comparison"]
+        held_out = document.get("suite") == "held_out"
+        if held_out:
+            require(document["held_out_sha256"] == sha256(HELD_OUT_PATH.read_bytes()).hexdigest(), "The held-out spec differs.")
+        profile = model_profile(spec, document["model"], held_out)
         repeats = document["repeats"]
         summary = aggregate(document["runs"], document["case_ids"], repeats,
                             min(repeats, profile["minimum_passing_repetitions"]),
@@ -569,25 +598,33 @@ def main():
     require(args.yaml_python is None, "--yaml-python is only used with --refresh-spec.")
     require(1 <= args.max_calls <= DEFAULT_CALL_CAP, "Invalid provider call cap.")
     require(args.against is None or args.model == COMPARISON_MODEL, "--against requires the comparison model.")
+    if args.held_out:
+        require(args.model == DEFAULT_MODEL and args.cases is None and args.repeats in {None, 1},
+                "Use all frozen held-out cases exactly once on the default model.")
     logging.disable(logging.CRITICAL)
     spec = approved_spec()
-    selected = set(args.cases or range(1, 24))
-    require(selected <= set(range(1, 24)), "Unknown evaluation case.")
-    cases = [case for case in spec["cases"] if case["id"] in selected]
-    profile = spec["runs"]["default" if args.model == DEFAULT_MODEL else "comparison"]
+    if args.held_out:
+        cases = held_out_cases(spec)
+    else:
+        selected = set(args.cases or range(1, 24))
+        require(selected <= set(range(1, 24)), "Unknown evaluation case.")
+        cases = [case for case in spec["cases"] if case["id"] in selected]
+    profile = model_profile(spec, args.model, args.held_out)
     repeats = args.repeats or profile["repetitions_per_case"]
     if args.describe:
-        print(json.dumps({"model": args.model, "cases": [case["id"] for case in cases], "repeats": repeats,
+        print(json.dumps({"model": args.model, "thinking": profile["thinking_level"],
+                          "cases": [case["id"] for case in cases], "repeats": repeats,
                           "pace_seconds": PACE_SECONDS, "backoff_seconds": QUOTA_BACKOFF_SECONDS, "call_cap": args.max_calls}))
         return 0
     date = datetime.now(ZoneInfo("America/Los_Angeles")).date().isoformat()
-    output = args.output or Path(spec["runs"]["results_path"].format(model=args.model, date=date))
+    suffix = "-held-out" if args.held_out else ""
+    output = args.output or Path(spec["runs"]["results_path"].format(model=args.model, date=date + suffix))
     output.parent.mkdir(parents=True, exist_ok=True)
     try:
         output.touch(exist_ok=False)
     except FileExistsError as error:
         raise EvalError("The report already exists. Select a new --output path.") from error
-    return run(spec, cases, repeats, profile, output, args.max_calls, args.against)
+    return run(spec, cases, repeats, profile, output, args.max_calls, args.against, held_out=args.held_out)
 
 
 if __name__ == "__main__":

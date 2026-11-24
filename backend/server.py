@@ -17,6 +17,7 @@ from flask import Flask, Response, jsonify, request, stream_with_context
 from pydantic import TypeAdapter, ValidationError
 
 from backend.cal_client import CalClient, CalError
+from backend.demo_calendar import DemoCalendar
 from backend.gemini import GeminiClient
 from backend.limits import RateLimits
 from backend.prefetch import warm_slot_bounds
@@ -198,8 +199,14 @@ def _read_limit(settings: dict[str, str], name: str, default: int) -> int:
 
 def load_service(*, persistent_model: bool = False) -> TurnService:
     settings = {**(load_local_environment() if ENV_FILE.is_file() else {}), **os.environ}
-    required = ("GEMINI_API_KEY", "CAL_API_KEY", "STATE_SIGNING_SECRET")
-    missing = [name for name in required if not settings.get(name)]
+    mode = settings.get("DEMO_MODE", "").strip()
+    if mode not in {"", "fake"}:
+        raise ValueError("DEMO_MODE must be empty or fake.")
+    demo_mode = mode == "fake"
+    required = ("GEMINI_API_KEY", "STATE_SIGNING_SECRET") if demo_mode else (
+        "GEMINI_API_KEY", "CAL_API_KEY", "STATE_SIGNING_SECRET",
+    )
+    missing = [name for name in required if not settings.get(name, "").strip()]
     if missing:
         raise ValueError("Set these environment variables: " + ", ".join(missing) + ".")
     secret = settings["STATE_SIGNING_SECRET"]
@@ -212,7 +219,10 @@ def load_service(*, persistent_model: bool = False) -> TurnService:
     if backup_name and backup_name != model_name:
         backup = GeminiClient(settings["GEMINI_API_KEY"], model=backup_name,
                               thinking_level="low" if backup_name == "gemini-3.8-flash" else "minimal",
-                              persistent=persistent_model)
+                              persistent=persistent_model, first_event_timeout=None)
+    calendar = DemoCalendar() if demo_mode else CalClient(
+        settings["CAL_API_KEY"], settings.get("CAL_API_BASE_URL") or "https://api.cal.com", observer=observe_cal,
+    )
     warm_prescan()
     return TurnService(
         model=GeminiClient(settings["GEMINI_API_KEY"], model=model_name, thinking_level=thinking, persistent=persistent_model),
@@ -220,11 +230,10 @@ def load_service(*, persistent_model: bool = False) -> TurnService:
         backup_continuations={model_name, backup_name} == {"gemini-3.5-flash-lite", "gemini-3.1-flash-lite"},
         rate_limits=RateLimits(_read_limit(settings, "RATE_LIMIT_TURNS_PER_10MIN", 30),
                                _read_limit(settings, "DAILY_MODEL_CALL_CAP", 500)),
-        calendar=CalClient(settings["CAL_API_KEY"], settings.get("CAL_API_BASE_URL") or "https://api.cal.com",
-                           observer=observe_cal),
+        calendar=calendar,
         secret=secret,
-        allowed_slugs=tuple(slug.strip() for slug in settings.get("CAL_EVENT_TYPE_SLUGS", "").split(",") if slug.strip()),
-        default_slug=settings.get("CAL_DEFAULT_EVENT_TYPE_SLUG") or None,
+        allowed_slugs=() if demo_mode else tuple(slug.strip() for slug in settings.get("CAL_EVENT_TYPE_SLUGS", "").split(",") if slug.strip()),
+        default_slug=None if demo_mode else (settings.get("CAL_DEFAULT_EVENT_TYPE_SLUG") or None),
     )
 
 
@@ -276,6 +285,7 @@ def create_app(service: TurnService | None = None, *, turn_loop: TurnLoop | None
         except CalError as error:
             app.logger.info("Calendar slot warm-up failed: %s", error.code)
 
+        mode_metadata = {"demoMode": True} if isinstance(calendar, DemoCalendar) else {}
         response = jsonify(
             hostName=_public_text(profile.get("name") or "") or _public_text(profile["username"]),
             avatarUrl=_public_url(profile.get("avatarUrl")),
@@ -286,6 +296,7 @@ def create_app(service: TurnService | None = None, *, turn_loop: TurnLoop | None
                 "lengthInMinutes": event["lengthInMinutes"],
             } for event in event_types],
             bookingUrl=_public_url(default.get("bookingUrl")),
+            **mode_metadata,
         )
         response.headers["Cache-Control"] = "no-store"
         return response

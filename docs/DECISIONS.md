@@ -122,3 +122,9 @@ Warm requests share the configured per-IP quota and window with chat but have th
 M7 checks explicit card offers in observed order. Tool traces count named attempts separately from calls whose arguments resolve to the required fixture booking or slot. The approved YAML remains the source of truth. The runner reads a generated JSON snapshot checked against the YAML hash so `pnpm eval` uses the existing project dependencies.
 
 During the full baseline sweep, a repeated booking read created a second ref for the same calendar record. Reuse existing booking refs by calendar UID, and omit tools when an upcoming list is already displayed or when an email is needed first. An empty list asks the model to offer help booking. Repeated relative-week over-offers were addressed by prefetching up to four choices that honor a supported weekday exclusion. The requested weekday stays excluded from nearby alternatives. Other exclusion phrasing still goes through the model.
+
+## M8 stream and demo changes
+
+Give the primary eight seconds to produce any stream event and keep the 20-second overall model limit. After text begins, raw activity resets an eight-second idle timer on either model. A timed-out partial reply keeps the last good interaction and shows its text with a cut-short notice. Limit slot pickers to the first four distinct refs in a reply across grouped and inline offers. Overflow times render as text.
+
+The fake calendar reuses the fixture's booking checks and mutations with weekdays from the live clock instead of a fixed eval schedule. It requires a Gemini key and a signing secret. Web chat and the widget have separate local histories, and reopening the widget preserves its chat. Debug events are browser-local and omit the terminal state token. [M8 verification](m8-checks.md)

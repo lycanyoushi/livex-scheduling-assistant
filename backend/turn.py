@@ -29,6 +29,7 @@ from backend.protocol import (
     CalCallMetrics, ChatRequest, ErrorEvent, ModelCallMetrics, RefsEvent, ServerEvent, SlotView, TextInput, TurnMetrics,
     UiAction,
 )
+from backend.slot_offers import SlotOfferLimit
 from backend.state import (
     MAX_NOTES, BookingEntry, ModelContext, NoActionYetOutcome, PendingCall, SessionState, StateError, new_state, sign_state,
     verify_state,
@@ -407,6 +408,15 @@ class TurnService:
     ) -> AsyncIterator[ServerEvent]:
         state = new_state(request.time_zone, now)
         previous = state
+
+        def earlier_slot_label(ref: str) -> str | None:
+            slot = state.slots.get(ref)
+            if slot is None:
+                return None
+            day, times = slot_labels(slot.start_utc, slot.end_utc, state.time_zone)
+            return f"{day} at {times}"
+
+        offer_limit = SlotOfferLimit(earlier_slot_label)
         try:
             if request.state_token:
                 try:
@@ -423,7 +433,8 @@ class TurnService:
                 source = self._action_events(state, now, request.input.action, metrics)
             async with aclosing(source) as events:
                 async for event in events:
-                    yield event
+                    for display_event in offer_limit.apply(event):
+                        yield display_event
         except (TurnError, CalError, ModelError) as error:
             code = error.code
             if isinstance(error, CalError) and code not in {"slot_taken", "rate_limited"}:
@@ -437,7 +448,11 @@ class TurnService:
             }
             if code in _BOOKER_ERRORS or (code == "rate_limited" and isinstance(error, ModelError)):
                 event["fallback"] = "booker"
+            for display_event in offer_limit.finish():
+                yield display_event
             yield event
+        for display_event in offer_limit.finish():
+            yield display_event
         metrics["totalMs"] = (perf_counter() - began) * 1000
         LOGGER.info("chat_turn %s", json.dumps(metrics, separators=(",", ":")))
         yield {"type": "turn_end", "stateToken": sign_state(state, self.secret), "metrics": metrics}
@@ -594,8 +609,10 @@ class TurnService:
                     raise ModelError("model_down", reason="incomplete_without_text")
             except ModelError as error:
                 metric["status"] = error.code
-                if error.code == "model_down":
-                    metric["reason"] = error.reason or "provider_model_down"
+                if error.reason:
+                    metric["reason"] = error.reason
+                elif error.code == "model_down":
+                    metric["reason"] = "provider_model_down"
                 if error.http_status is not None:
                     metric["httpStatus"] = error.http_status
                 if error.code == "interaction_expired" and role == "primary":
@@ -617,6 +634,8 @@ class TurnService:
             metric.update(status=completion.status, inputTokens=completion.input_tokens,
                           outputTokens=completion.output_tokens, cachedTokens=completion.cached_tokens,
                           thoughtTokens=completion.thought_tokens)
+            if completion.reason:
+                metric["reason"] = completion.reason
             if completion.status == "incomplete":
                 if completion.can_continue and completion.interaction_id and not completion.tool_calls:
                     state.last_model_input_tokens = completion.input_tokens

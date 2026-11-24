@@ -27,6 +27,7 @@ class ModelCompletion:
     cached_tokens: int = 0
     thought_tokens: int = 0
     can_continue: bool = True
+    reason: str | None = None
 
 
 @dataclass

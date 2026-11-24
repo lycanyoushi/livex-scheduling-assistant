@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from copy import deepcopy
 from datetime import date, datetime, time, timedelta, timezone
 from itertools import count
@@ -147,6 +147,12 @@ class FakeCal:
                 return True
         return any(start < occupied + self._duration and end > occupied for occupied in self._occupied)
 
+    def _scheduled_starts(self, begin: datetime, until: datetime) -> Iterable[datetime]:
+        return (start for start in self._starts_in_order if begin <= start < until)
+
+    def _is_scheduled_start(self, start: datetime) -> bool:
+        return start in self._starts
+
     def slots(
         self,
         event_type_id: int,
@@ -164,8 +170,8 @@ class FakeCal:
         now = _as_utc(self._clock())
         days: dict[str, list[SlotRange]] = {}
         with self._lock:
-            for instant in self._starts_in_order:
-                if instant <= now or not begin <= instant < until:
+            for instant in self._scheduled_starts(begin, until):
+                if instant <= now:
                     continue
                 if self._slot_blocked(instant, booking_uid_to_reschedule):
                     continue
@@ -242,7 +248,7 @@ class FakeCal:
             return deepcopy(self._booking(uid))
 
     def _require_free(self, start: datetime, now: datetime, uid_to_ignore: str | None = None) -> None:
-        if start <= now or start not in self._starts:
+        if start <= now or not self._is_scheduled_start(start):
             raise CalError("invalid", "That time is outside the fixture availability.", status=400)
         if self._slot_blocked(start, uid_to_ignore):
             raise CalError("slot_taken", "That time is no longer available.", status=409)

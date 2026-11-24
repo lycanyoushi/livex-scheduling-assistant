@@ -40,6 +40,7 @@ class StubStream:
         self.block = block
         self.waiting = asyncio.Event()
         self.closed = False
+        self.read_cancelled = False
 
     async def __aenter__(self):
         return self
@@ -52,7 +53,11 @@ class StubStream:
             yield event
         if self.block:
             self.waiting.set()
-            await asyncio.Future()
+            try:
+                await asyncio.Future()
+            except asyncio.CancelledError:
+                self.read_cancelled = True
+                raise
 
 
 class StubAsyncClient:
@@ -254,6 +259,106 @@ class GeminiClientTests(IsolatedAsyncioTestCase):
                     await anext(self.stream())
                 self.assertEqual(raised.exception.code, expected)
                 self.assertIsNone(raised.exception.http_status)
+
+    async def test_first_event_deadline_cancels_a_stalled_open(self):
+        entered, cancelled = asyncio.Event(), asyncio.Event()
+
+        async def waiting_create(**_request):
+            entered.set()
+            try:
+                await asyncio.Future()
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+
+        self.sdk.interactions.create.side_effect = waiting_create
+        self.client = GeminiClient("test-key", first_event_timeout=0.02)
+        with self.assertRaises(ModelError) as raised:
+            await anext(self.stream())
+        self.assertEqual((raised.exception.code, raised.exception.reason), ("timeout", "first_event_timeout"))
+        self.assertTrue(entered.is_set())
+        self.assertTrue(cancelled.is_set())
+        self.assertTrue(self.sdk.closed)
+
+    async def test_primary_cancels_the_first_raw_event_read_and_closes_stream(self):
+        self.client = GeminiClient("test-key", first_event_timeout=0.02)
+        stream = StubStream(block=True)
+        self.sdk.interactions.create.return_value = stream
+        with self.assertRaises(ModelError) as raised:
+            await anext(self.stream())
+        self.assertEqual((raised.exception.code, raised.exception.reason), ("timeout", "first_event_timeout"))
+        self.assertTrue(stream.read_cancelled)
+        self.assertTrue(stream.closed)
+        self.assertTrue(self.sdk.closed)
+
+    async def test_nontext_first_event_and_backup_can_wait_beyond_primary_start_deadline(self):
+        class DelayedCompletion(StubStream):
+            def __init__(self, earlier):
+                super().__init__()
+                self.earlier = earlier
+
+            async def __aiter__(self):
+                if self.earlier:
+                    yield self.earlier
+                await asyncio.sleep(0.05)
+                yield completed()
+
+        for leading_event, fast_start in (
+            (SimpleNamespace(event_type="interaction.created"), 0.025),
+            (step_start(0, "thought"), 0.025),
+            (None, None),
+        ):
+            with self.subTest(leading_event=getattr(leading_event, "event_type", None)):
+                self.client = GeminiClient("test-key", first_event_timeout=fast_start)
+                stream = DelayedCompletion(leading_event)
+                self.sdk.interactions.create.return_value = stream
+                self.assertEqual([event async for event in self.stream()], [ModelCompletion("new-interaction", "completed")])
+                self.assertTrue(stream.closed)
+
+    async def test_raw_activity_renews_idle_deadline_and_idle_exposes_only_partial_text(self):
+        class DeadlineClock:
+            now = 0.0
+            expire_next = False
+
+            def time(self):
+                return self.now
+
+            def timeout_at(self, _deadline):
+                # Keep virtual time independent of the scheduler, but genuinely cancel the last read.
+                return asyncio.timeout_at(asyncio.get_running_loop().time() if self.expire_next else None)
+
+        class ThoughtActivity(StubStream):
+            async def __aiter__(self):
+                yield step_start(1, "model_output")
+                yield step_delta(1, "text", text="First")
+                clock.now = 5.0
+                yield step_stop(1)
+                clock.now = 10.0
+                yield step_start(2, "function_call", id="uncommitted", name="propose_booking", arguments={})
+                clock.expire_next = True
+                yield step_stop(2)
+                self.waiting.set()
+                try:
+                    await asyncio.Future()
+                except asyncio.CancelledError:
+                    self.read_cancelled = True
+                    raise
+
+        for fast_start in (8.0, None):
+            with self.subTest(fast_start=fast_start):
+                clock = DeadlineClock()
+                adapter_asyncio = SimpleNamespace(get_running_loop=lambda: clock, timeout_at=clock.timeout_at)
+                self.client = GeminiClient("test-key", first_event_timeout=fast_start)
+                stream = ThoughtActivity()
+                self.sdk.interactions.create.return_value = stream
+                with patch("backend.gemini.asyncio", adapter_asyncio):
+                    self.assertEqual([event async for event in self.stream("prior")], [
+                        ModelText("First"),
+                        ModelCompletion("", "incomplete", can_continue=False, reason="stream_idle_timeout"),
+                    ])
+                self.assertTrue(stream.waiting.is_set())
+                self.assertTrue(stream.read_cancelled)
+                self.assertTrue(stream.closed)
 
     async def test_deadline_covers_the_remaining_stream_after_a_text_chunk(self):
         stream = StubStream((step_start(0, "model_output"), step_delta(0, "text", text="First")), block=True)

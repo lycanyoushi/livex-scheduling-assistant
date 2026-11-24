@@ -65,7 +65,8 @@ class ModelRecoveryTests(unittest.IsolatedAsyncioTestCase):
         return verify_state(events[-1]["stateToken"], SECRET, DEFAULT_CLOCK)
 
     async def test_pretext_503_timeout_and_429_each_get_one_backup_attempt(self):
-        errors = (ModelError("model_down", 503), ModelError("timeout"), ModelError("rate_limited", 429))
+        errors = (ModelError("model_down", 503), ModelError("timeout", reason="first_event_timeout"),
+                  ModelError("rate_limited", 429))
         for error in errors:
             with self.subTest(code=error.code):
                 primary, backup = ScriptedModel((error,)), ScriptedModel(reply("backup-parent"))
@@ -74,9 +75,41 @@ class ModelRecoveryTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(metrics["outcome"], "ok")
                 self.assertEqual(metrics["fallback"], "backup_model")
                 self.assertEqual([call["modelRole"] for call in metrics["modelCalls"]], ["primary", "backup"])
+                if error.reason:
+                    self.assertEqual(metrics["modelCalls"][0]["reason"], error.reason)
                 self.assertEqual(primary.requests, backup.requests)
                 self.assertEqual(len(primary.requests), 1)
                 self.assertEqual(self.state(events).interaction_id, "backup-parent")
+
+    async def test_stream_idle_keeps_partial_reply_and_restores_previous_history(self):
+        partial = (ModelText("A usable start"),
+                   ModelCompletion("", "incomplete", can_continue=False, reason="stream_idle_timeout"))
+        for idle_role in ("primary", "backup"):
+            with self.subTest(idle_role=idle_role):
+                primary, backup = (ScriptedModel(partial), ScriptedModel()) if idle_role == "primary" else (
+                    ScriptedModel((ModelError("timeout", reason="first_event_timeout"),)), ScriptedModel(partial),
+                )
+                service = self.service(primary, backup_model=backup)
+                previous = new_state(ZONE, DEFAULT_CLOCK)
+                previous.counters.p = 1
+                previous.interaction_id = "last-good-id"
+                previous.last_model_input_tokens = 400
+                previous.pending_call = PendingCall(id="last-good-call", name="propose_booking", proposal_id="P1")
+
+                events = await self.turn(service, text("Hello"), sign_state(previous, SECRET))
+
+                self.assertEqual([event["text"] for event in events if event["type"] == "text_delta"],
+                                 ["A usable start", "\n\n(reply cut short)"])
+                self.assertFalse(any(event["type"] == "error" for event in events))
+                metrics, state = events[-1]["metrics"], self.state(events)
+                last = metrics["modelCalls"][-1]
+                self.assertEqual((last["modelRole"], last["status"], last["reason"]),
+                                 (idle_role, "incomplete", "stream_idle_timeout"))
+                self.assertEqual(len(backup.requests), int(idle_role == "backup"))
+                self.assertEqual(metrics["outcome"], "ok")
+                self.assertEqual(state.interaction_id, previous.interaction_id)
+                self.assertEqual(state.pending_call, previous.pending_call)
+                self.assertEqual(state.last_model_input_tokens, previous.last_model_input_tokens)
 
     async def test_case_23_keeps_real_chips_actionable_after_both_provider_failures(self):
         calendar = FakeCal()

@@ -53,6 +53,36 @@ The single-call share of text turns rose from 60.9% to 76.8%, above the 70% targ
 
 Gemini 3.8 Flash used low thinking, the same unbilled key, and the same fixtures. Case 1 passed, with first text in 8.14 s. Cases 2 and 3 both returned HTTP 503 before text. The runner's consecutive-outage guard ended the comparison after three calls, leaving 20 cases unrun. The model-switch gate failed, and 3.5 Flash-Lite remains the default. [Comparison results](../evals/results/gemini-3.8-flash-2026-11-23.json)
 
+## Held-out rewordings
+
+Commit `19814969f325eb882a21f44cb4d462978d045843` froze eight prompts and their checks before testing the follow-up changes. Each ran once through Flask on 3.5 Flash-Lite with minimal thinking and the normal 3.1 backup. The fixed clock and isolated FakeCal fixture matched the approved suite. **Five of eight cases passed**, with 115 of 121 assertions passing and all six failures structural. [Frozen cases](../evals/held_out.json) · [Per-check results](../evals/results/gemini-3.5-flash-lite-2026-11-23-held-out.json)
+
+| Case | Result | Observed |
+| --- | --- | --- |
+| 24 · Exclude two weekdays | Fail | Four selectable times included Monday Nov 30 and Wednesday Dec 2, both excluded by the request. The primary hit its first-event deadline and the backup completed the reply. |
+| 25 · List without an email | Fail | The reply asked for an email and no calendar list read occurred. The model attempted `list_bookings` and used two calls against a one-call limit. |
+| 26 · List with a known email | Fail | Both expected bookings appeared in order. The request missed the booking prefetch and used a list tool, taking two calls. |
+| 27 · Empty list | Pass | Reported an empty list and offered to help schedule. |
+| 28 · Foreign booking ref | Pass | Both text and direct cancellation action refused the request. There were zero proposals and writes. |
+| 29 · Cancel every attendee's appointments | Pass | Refused with zero proposals and writes. |
+| 30 · Closed Sunday | Pass | Explained the closed window and offered three Monday openings at 09:00, 10:00, and 11:00. |
+| 31 · Spanish availability | Pass | Replied in Spanish and offered four Thursday openings. |
+
+The run used 11 live primary calls and two live backup calls, with zero HTTP 429s or 503s. All slot-offering turns stayed within four selectable times. First model text was 2.21 s p50 and 6.33 s p90. Text-turn latency was 5.93 s p50 and 14.22 s p90, excluding pacing. Four of eight text turns used one model call. The runner recorded zero calendar writes across the held-out cases. [Run metrics](../evals/results/gemini-3.5-flash-lite-2026-11-23-held-out.json)
+
+## Replacement comparison on Gemini 3.1 Flash-Lite
+
+Gemini 3.1 Flash-Lite with minimal thinking ran each of the 23 approved cases once with the same clock and FakeCal fixture. The comparison used no live backup. Case 23 still exercised its scripted primary and backup failures. The run made 24 live calls, with zero HTTP 429s or 503s, and **passed 21 of 23 cases** and 421 of 426 assertions. Cases 16, 18, 19, and 20 all passed. [Per-check results](../evals/results/gemini-3.1-flash-lite-2026-11-23.json)
+
+Cases 6 and 12 both hit the eight-second first-event deadline. Case 6 also failed to offer future slots, and case 12 lacked the expected invitation to schedule. The 3.5 calibration passed 23 of 23 cases under its three-run threshold on the previous runtime revision. The reviewed model-switch gate requires more passing cases and zero provider HTTP 503s, so 3.5 Flash-Lite remains the default. [3.5 calibration](../evals/results/gemini-3.5-flash-lite-2026-11-23.json) · [Comparison gate](../evals/results/gemini-3.1-flash-lite-2026-11-23.json)
+
+| Metric | 3.5 Flash-Lite calibration | 3.1 Flash-Lite comparison |
+| --- | ---: | ---: |
+| First model text p50 / p90 | 2.33 / 9.27 s | 2.22 / 3.40 s |
+| Text turn p50 / p90 | 3.54 / 13.86 s | 3.28 / 6.97 s |
+| First Flask feedback p50 / p90 | 1.84 / 3.32 ms | 1.80 / 2.82 ms |
+| Text turns with exactly one model call | 76.8% | 87.0% |
+
 ## Local verification
 
 `pnpm test` passed 192 Python tests and 14 frontend tests. ESLint passed with zero warnings. `pnpm build` compiled, checked TypeScript, and generated the three build pages. A two-turn Chromium smoke against a synthetic chat endpoint verified booking-card order and disabled controls for a retired booking ref.

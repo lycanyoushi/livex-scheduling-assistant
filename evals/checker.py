@@ -18,6 +18,7 @@ SAFE_REASONS = frozenset({
     "stream_ended_without_completion", "missing_model_completion", "unexpected_completion_status",
     "terminal_status_cancelled", "terminal_status_failed", "terminal_status_incomplete", "terminal_status_in_progress",
     "terminal_status_queued", "terminal_status_requires_continuation", "terminal_status_other", "fixture_fault",
+    "first_event_timeout", "stream_idle_timeout",
 })
 REFERENCE = re.compile(r"\[\[([SB][1-9][0-9]*)\]\]")
 SPANISH = re.compile(
@@ -341,6 +342,7 @@ def check_turn(case_id, turn_spec, payload, events, prior, before, after, now, z
         "model_calls": n_model,
         "models": [{**{key: value for key, value in row.items() if key in {
                         "ttftMs", "totalMs", "inputTokens", "outputTokens", "cachedTokens", "thoughtTokens", "status", "modelRole",
+                        "httpStatus",
                     }}, "reason": safe_reason(row.get("reason"))} for row in metrics["modelCalls"]],
         "provider_errors": list(model.provider_errors),
         "model_pace_wait_ms": [round(item["pace_wait_ms"], 2) for item in model.inputs],

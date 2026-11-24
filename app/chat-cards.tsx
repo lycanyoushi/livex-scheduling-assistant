@@ -212,8 +212,9 @@ function MoreTimes({ slots, available, onAction }: { slots: SlotView[]; availabl
   );
 }
 
-export function SlotChips({ refs, slots, note, available, allowMore, onAction }: {
+export function SlotChips({ refs, plainRefs = [], slots, note, available, allowMore, onAction }: {
   refs: string[];
+  plainRefs?: string[];
   slots: ReferenceViews["slots"];
   note?: string;
   available: IsAvailable;
@@ -222,7 +223,8 @@ export function SlotChips({ refs, slots, note, available, allowMore, onAction }:
 }) {
   const days = new Map<string, { refId: string; slot: SlotView }[]>();
   const visible: SlotView[] = [];
-  for (const refId of new Set(refs)) {
+  const choices = new Set(refs);
+  for (const refId of new Set([...refs, ...plainRefs])) {
     const slot = slots[refId];
     if (!slot) continue;
     visible.push(slot);
@@ -238,13 +240,13 @@ export function SlotChips({ refs, slots, note, available, allowMore, onAction }:
         <div key={day}>
           <p className="mb-1 text-sm font-medium text-muted-foreground">{day}</p>
           <div className="flex flex-wrap gap-2">
-            {entries.map(({ refId, slot }) => (
-              <TimeChip key={refId} refId={refId} slot={slot} available={available(refId)} onAction={onAction} />
-            ))}
+            {entries.map(({ refId, slot }) => choices.has(refId)
+              ? <TimeChip key={refId} refId={refId} slot={slot} available={available(refId)} onAction={onAction} />
+              : <span key={refId} className="inline-flex items-center">{slot.timeLabel}</span>)}
           </div>
         </div>
       ))}
-      {allowMore && visible.length > 0 && (
+      {allowMore && refs.some((ref) => slots[ref]) && (
         <div><MoreTimes slots={visible} available={refs.some(available)} onAction={onAction} /></div>
       )}
     </div>

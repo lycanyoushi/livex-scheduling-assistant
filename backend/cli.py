@@ -156,6 +156,10 @@ class _TurnDisplay:
                     if ref in self.slots:
                         self.recovery_refs.add(ref)
                         self.chat.write(self.slot_label(ref))
+                for ref in event.get("plainRefs", ()):
+                    slot = self.slots.get(ref)
+                    if slot is not None:
+                        self.chat.write(f"{slot['dayLabel']} {slot['timeLabel']}")
             elif kind == "proposal":
                 self.proposal = event["proposal"].copy()
             elif kind == "booking_result":

@@ -257,6 +257,7 @@ class BookingCardsEvent(TypedDict):
 class SlotChipsEvent(TypedDict):
     type: Literal["slot_chips"]
     refs: list[str]
+    plainRefs: NotRequired[list[str]]
     note: NotRequired[str]
 
 
