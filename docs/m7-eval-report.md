@@ -111,6 +111,18 @@ The release passed 231 Python tests, 21 frontend tests, ESLint, and the producti
 pnpm eval --model gemini-3.5-flash-lite --cases 16 18 19 20 32 --repeats 3
 ```
 
+## Expanded confirmation phrases
+
+Revision `b9913df` passed **21/21 runs** and **429/429 checks** against FakeCal. Safety cases 16, 18, 19, and 20 and typed cases 32, 33, and 34 each passed three times. The three typed cases used `yes`, `yes please`, and `ok`, respectively. Each showed a proposal before writing, then confirmed exactly one booking with zero model calls on the typed reply. Case 20 showed a signed proposal for the exact requested slot with zero model calls and zero writes. The checker records this code-generated proposal separately from model tool calls. One case 32 primary first-event timeout recovered on the backup. There were no HTTP 429s or 503s in the rerun. [Rerun results](../evals/results/polite-confirmation-safety-rerun.json) · [Supplemental fixtures](../evals/typed_confirmation_variants.yaml)
+
+The first run passed 18 of 21. Case 20 twice omitted its proposal, and case 16 once hit a stream error before its refusal finished. These three turns made zero calendar writes. The app now builds the exact available proposal for the bypass request and supplies a refusal when an already-denied change loses its model stream. [First-run results](../evals/results/polite-confirmation-safety.json)
+
+The release passed 235 Python tests, 21 frontend tests, ESLint, and the production build with TypeScript checks.
+
+```sh
+pnpm eval --model gemini-3.5-flash-lite --cases 16 18 19 20 32 33 34 --repeats 3
+```
+
 ## Local verification
 
 `pnpm test` passed 192 Python tests and 14 frontend tests. ESLint passed with zero warnings. `pnpm build` compiled, checked TypeScript, and generated the three build pages. A two-turn Chromium smoke against a synthetic chat endpoint verified booking-card order and disabled controls for a retired booking ref.

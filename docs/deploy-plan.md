@@ -47,6 +47,12 @@ Vercel deployed revision `da941d0` to the same public URL and isolated Cal.com t
 
 Fresh Cal.com reads verified that the app listed the exact active booking, rescheduling cancelled the original and activated a replacement at a different time, and cancelling retired the replacement. Both test aliases had zero active upcoming bookings after the cycle. [Typed confirmation evaluation](m7-eval-report.md#typed-confirmation-regression)
 
+### Expanded confirmation phrases release
+
+Vercel deployed revision `b9913df` to Production. The verifier entered the approved test details on the signed booking card and typed `yes please` in Chromium. The proposal made zero writes. The typed reply made exactly one create with zero Gemini calls. An independent Cal.com read found the booking at the selected time. Confirm then cancelled it, and Cal.com verified zero active upcoming bookings for both test aliases. [Safety and typed reply rerun](m7-eval-report.md#expanded-confirmation-phrases)
+
+The Cal.com account reported zero connected calendars and no booking destination. Vercel Production has `DAILY_MODEL_CALL_CAP=30` per process per day. The Google AI Studio project's current daily quota is visible in the signed-in dashboard. [Cal.com calendar API](https://cal.com/docs/api-reference/v2/calendars/get-all-calendars) · [AI Studio rate limits](https://aistudio.google.com/rate-limit)
+
 ## Recording outline
 
 Show a text request and the first available times. Pick a time, fill in the contact fields, and type `yes please` in chat to confirm the booking. Say “I can confirm by typing or by clicking.” Verify the booking in Cal.com and list it in chat. Choose a different time and click **Confirm** to move the meeting. Cancel the replacement and verify that no fixture bookings remain. Show the taken-slot alternatives and a diagnostics view with zero model calls on a confirmation. Finish with a numbered choice in the Python terminal and the mobile widget. Aim for two to three minutes.
