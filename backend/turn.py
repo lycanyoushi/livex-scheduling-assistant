@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import Counter
 from collections.abc import AsyncIterator, Callable
 from contextlib import aclosing
 from contextvars import ContextVar
@@ -13,20 +14,26 @@ import json
 import logging
 import re
 from time import perf_counter
+from typing import Literal
 from zoneinfo import ZoneInfo
 
 from backend.actions import ActionError, CalendarActions
 from backend.cal_client import CalError, CalObservation
+from backend.confirmations import ConfirmationLedger
+from backend.limits import RateLimits
 from backend.model import ModelClient, ModelCompletion, ModelError, ModelText, ToolCall
 from backend.prefetch import PREFETCH_BUDGET_SECONDS, Prefetcher, plan_prefetch
 from backend.prescan import EMAIL, PrescanResult, prescan
-from backend.protocol import CalCallMetrics, ChatRequest, RefsEvent, ServerEvent, SlotView, TextInput, TurnMetrics, UiAction
+from backend.protocol import (
+    CalCallMetrics, ChatRequest, ErrorEvent, ModelCallMetrics, RefsEvent, ServerEvent, SlotView, TextInput, TurnMetrics,
+    UiAction,
+)
 from backend.state import (
-    BookingEntry, ModelContext, NoActionYetOutcome, PendingCall, SessionState, StateError, new_state, sign_state,
+    MAX_NOTES, BookingEntry, ModelContext, NoActionYetOutcome, PendingCall, SessionState, StateError, new_state, sign_state,
     verify_state,
 )
 from backend.time import parse_instant, slot_labels, utc_now
-from backend.tools import CalendarTools, ToolOutcome, ToolRejected
+from backend.tools import CalendarTools, InvalidToolArguments, ToolOutcome, ToolRejected
 
 
 SYSTEM_PROMPT = """You are a scheduling assistant for one calendar.
@@ -66,16 +73,18 @@ BULK_TARGET = re.compile(
 )
 DEFAULT_ERROR = "I'm having trouble on my side. Please try again."
 ERRORS = {
-    "model_down": DEFAULT_ERROR,
-    "timeout": DEFAULT_ERROR,
+    "model_down": "I'm having trouble on my side. You can still pick a time directly.",
+    "timeout": "I'm having trouble on my side. You can still pick a time directly.",
     "rate_limited": "You're sending messages quickly. Please wait a moment and try again.",
     "refusal": "I can only help with booking, viewing, rescheduling or cancelling meetings.",
     "interaction_expired": "Your session expired. Let's start again.",
     "empty": "Sorry, could you say that another way?",
-    "loop_limit": "I couldn't finish that request. Please try again with a specific date or time.",
-    "cal_down": "I can't reach the calendar right now. Please try again.",
+    "loop_limit": "I couldn't finish that request. You can pick a time directly or try again.",
+    "cal_down": "I can't reach the calendar right now. Try again or book directly.",
     "slot_taken": "That time was just taken. Ask for another time.",
 }
+_BOOKER_ERRORS = {"model_down", "timeout", "cal_down", "loop_limit"}
+_PROVIDER_FALLBACK_ERRORS = {"model_down", "timeout", "rate_limited"}
 LOGGER = logging.getLogger(__name__)
 CAL_METRICS: ContextVar[list[CalCallMetrics] | None] = ContextVar("cal_metrics", default=None)
 
@@ -317,17 +326,34 @@ class TurnService:
         self, *, model: ModelClient, calendar, secret: str, clock: Callable[[], datetime] = utc_now,
         allowed_slugs: tuple[str, ...] = (), default_slug: str | None = None,
         prefetch_budget_seconds: float = PREFETCH_BUDGET_SECONDS,
+        backup_model: ModelClient | None = None, backup_continuations: bool = True,
+        rate_limits: RateLimits | None = None,
     ) -> None:
         self.model = model
+        self.backup_model = backup_model
+        self.backup_continuations = backup_continuations
+        self.rate_limits = rate_limits
         self.calendar = calendar
         self.secret = secret
         self.clock = clock
         self.allowed_slugs = allowed_slugs
         self.default_slug = default_slug
+        self.confirmations = ConfirmationLedger()
         self._prefetch = Prefetcher(budget_seconds=prefetch_budget_seconds, metrics_context=CAL_METRICS)
 
     def close_prefetch(self) -> None:
         self._prefetch.close()
+
+    async def close_models(self) -> None:
+        try:
+            close = getattr(self.model, "aclose", None)
+            if close is not None:
+                await close()
+        finally:
+            if self.backup_model is not self.model:
+                close = getattr(self.backup_model, "aclose", None)
+                if close is not None:
+                    await close()
 
     def _tools(self, state: SessionState, now: datetime, *, deny_mutations: bool = False) -> CalendarTools:
         return CalendarTools(
@@ -380,10 +406,14 @@ class TurnService:
                 code = "cal_down"
             metrics["outcome"], metrics["errorCode"] = "failed", code
             state = new_state(request.time_zone, now) if code == "interaction_expired" else previous
-            yield {"type": "error", "code": code, "message": str(error) if isinstance(error, TurnError)
-                   else ERRORS.get(code, DEFAULT_ERROR), "retryable": (
-                       error.retryable if isinstance(error, TurnError) else code not in {"refusal", "interaction_expired"}
-                   )}
+            event: ErrorEvent = {
+                "type": "error", "code": code,
+                "message": str(error) if isinstance(error, TurnError) else ERRORS.get(code, DEFAULT_ERROR),
+                "retryable": error.retryable if isinstance(error, TurnError) else code not in {"refusal", "interaction_expired"},
+            }
+            if code in _BOOKER_ERRORS or (code == "rate_limited" and isinstance(error, ModelError)):
+                event["fallback"] = "booker"
+            yield event
         metrics["totalMs"] = (perf_counter() - began) * 1000
         LOGGER.info("chat_turn %s", json.dumps(metrics, separators=(",", ":")))
         yield {"type": "turn_end", "stateToken": sign_state(state, self.secret), "metrics": metrics}
@@ -401,6 +431,7 @@ class TurnService:
         if hints.email and len(hints.email) <= 254:
             state.user.email = hints.email
         _remember_name(state, text, hints)
+        original_history = state.interaction_id, state.pending_call, state.last_model_input_tokens
         rotated = state.interaction_id is not None and state.last_model_input_tokens > HISTORY_TOKEN_LIMIT
         if rotated:
             state.interaction_id = None
@@ -458,19 +489,27 @@ class TurnService:
         steps = _initial_steps(state, context, text)
         previous_id = state.interaction_id
         text_parts: list[str] = []
-        retried = False
+        argument_errors: Counter[str] = Counter()
+        provider = self.model
+        role: Literal["primary", "backup"] = "primary"
+        failure: ModelError | TurnError | None = None
         while len(metrics["modelCalls"]) < 4:
+            if self.rate_limits is not None and not self.rate_limits.claim_model_call(self.clock()):
+                failure = TurnError("rate_limited")
+                break
             began = perf_counter()
-            metric = {"ttftMs": 0.0, "totalMs": 0.0, "inputTokens": 0, "outputTokens": 0,
-                      "cachedTokens": 0, "thoughtTokens": 0, "status": "model_down"}
+            metric: ModelCallMetrics = {"ttftMs": 0.0, "totalMs": 0.0, "inputTokens": 0, "outputTokens": 0,
+                                        "cachedTokens": 0, "thoughtTokens": 0, "status": "model_down",
+                                        "modelRole": role}
             if rotated and not metrics["modelCalls"]:
                 metric["historyRotated"] = True
             metrics["modelCalls"].append(metric)
             completion = None
             try:
-                async with aclosing(self.model.stream(
+                async with aclosing(provider.stream(
                     input_steps=steps, previous_interaction_id=previous_id,
-                    system_instruction=SYSTEM_PROMPT, tools=schemas,
+                    system_instruction=SYSTEM_PROMPT,
+                    tools=[schema for schema in schemas if argument_errors[str(schema["name"])] < 2],
                 )) as stream:
                     async for chunk in stream:
                         if isinstance(chunk, ModelText) and chunk.text:
@@ -482,11 +521,19 @@ class TurnService:
                             completion = chunk
             except ModelError as error:
                 metric["status"] = error.code
-                if not text_parts and not retried and error.http_status is not None and 500 <= error.http_status < 600:
-                    retried = True
-                    continue
-                if error.code == "interaction_expired":
+                if error.code == "interaction_expired" and role == "primary":
                     raise TurnError(error.code, retryable=False) from None
+                if not text_parts and (error.code in _PROVIDER_FALLBACK_ERRORS or error.code == "interaction_expired"):
+                    can_continue = self.backup_continuations if previous_id else all(
+                        step["type"] != "function_result" for step in steps
+                    )
+                    if (role == "primary" and self.backup_model is not None and len(metrics["modelCalls"]) < 4
+                            and can_continue):
+                        provider, role = self.backup_model, "backup"
+                        metrics["fallback"] = "backup_model"
+                        continue
+                    failure = error
+                    break
                 raise
             finally:
                 metric["totalMs"] = (perf_counter() - began) * 1000
@@ -507,7 +554,8 @@ class TurnService:
 
             calls = completion.tool_calls
             outcomes = await asyncio.gather(*(
-                self._run_tool(tools, call, allow_propose=len(calls) == 1, metrics=metrics) for call in calls
+                self._run_tool(tools, call, allow_propose=len(calls) == 1,
+                               argument_errors=argument_errors, metrics=metrics) for call in calls
             ))
             steps = []
             for call, outcome in zip(calls, outcomes, strict=True):
@@ -519,6 +567,25 @@ class TurnService:
                     return
                 _remember_tool_refs(snapshot, state, outcome.result)
                 steps.append(_function_result(call.id, call.name, outcome.result))
+        if failure is not None:
+            if failure.code == "interaction_expired":
+                failure = TurnError("model_down")
+            visible = [ref for ref in displayed if ref in state.slots]
+            if not text_parts and (visible or booking_refs is not None):
+                state.interaction_id, state.pending_call, state.last_model_input_tokens = original_history
+                if visible:
+                    days = ", ".join(dict.fromkeys(slot_refs[ref]["dayLabel"] for ref in visible))
+                    message = f"I'm having trouble on my side, but here are open times for {days}:"
+                    note = f"App showed open times {', '.join(visible)} while the model was unavailable."
+                else:
+                    message = ("I'm having trouble replying. Your upcoming meetings are listed here." if booking_refs
+                               else "I'm having trouble replying. I found no upcoming meetings for your email.")
+                    note = "App showed the upcoming meeting lookup while the model was unavailable."
+                state.notes = [*state.notes, note][-MAX_NOTES:]
+                metrics.update(outcome="failed", fallback="code_only", errorCode=failure.code)
+                yield {"type": "error", "code": failure.code, "message": message, "retryable": True}
+                return
+            raise failure
         raise TurnError("loop_limit")
 
     @staticmethod
@@ -540,15 +607,22 @@ class TurnService:
 
     @staticmethod
     async def _run_tool(
-        tools: CalendarTools, call: ToolCall, *, allow_propose: bool, metrics: TurnMetrics,
+        tools: CalendarTools, call: ToolCall, *, allow_propose: bool, argument_errors: Counter[str], metrics: TurnMetrics,
     ) -> ToolOutcome:
         began, ok = perf_counter(), False
         try:
+            if argument_errors[call.name] >= 2:
+                raise ToolRejected("This tool reached its argument correction limit. Reply without trying it again.")
             if call.name in PROPOSE_TOOLS and not allow_propose:
                 raise ToolRejected("Call a propose tool alone, after collecting the necessary data.")
             outcome = await asyncio.to_thread(tools.execute, call.name, call.arguments)
             ok = True
             return outcome
+        except InvalidToolArguments as error:
+            argument_errors[call.name] += 1
+            if argument_errors[call.name] >= 2:
+                return ToolOutcome(result={"error": "The corrected arguments were still invalid. Reply without this tool."})
+            return ToolOutcome(result=error.result)
         except ToolRejected as error:
             return ToolOutcome(result=error.result, events=error.events)
         finally:
@@ -568,6 +642,7 @@ class TurnService:
             yield {"type": "status", "text": status}
         actions = CalendarActions(
             self.calendar, state, now, allowed_slugs=self.allowed_slugs, default_slug=self.default_slug,
+            ledger=self.confirmations,
         )
         try:
             result = await asyncio.to_thread(actions.execute, action)

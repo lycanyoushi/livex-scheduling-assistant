@@ -81,3 +81,15 @@ Run `node scripts/run-python.mjs -m scripts.latency_probe --history-sizes`. The 
 | 9,529 | 6/6 | 5,658 / 6,013 | 6,499 / 6,810 | 6,100 in three of six |
 
 The longest parent was slower to first text than the shortest in all six paired rounds. Their medians differed by 2.49 s, and the median paired difference was 1.46 s. The middle size was slower than the shortest in three rounds. First text at the shortest size ranged from 2.20 to 5.00 s with constant cache usage. Larger history contributes to latency at these sizes. Cache behavior and request timing also varied, and the probe did not directly measure a 6,000-token threshold.
+
+## M6 live backup checks
+
+The reverse continuation probe used the unbilled key, stored interactions, minimal thinking, and synthetic text. It seeded a Gemini 3.1 Flash-Lite interaction ending in `find_slots`, then asked Gemini 3.5 Flash-Lite to continue from the same interaction ID and call ID. Both continuation shapes recovered the expected marker. The three calls completed with zero HTTP 429s.
+
+| Model | Request | Result | Input / output tokens |
+| --- | --- | --- | ---: |
+| 3.1 Flash-Lite | Store a pending `find_slots` call | Pending call received | 177 / 16 |
+| 3.5 Flash-Lite | Continue with `[function_result]` | Marker returned | 211 / 16 |
+| 3.5 Flash-Lite | Continue with `[function_result, user_input]` | Marker returned | 234 / 18 |
+
+In a separate application smoke test, a forced primary HTTP 503 returned before text. The real 3.1 Flash-Lite backup completed in 4,992 ms and streamed a response. The turn recorded `outcome=ok`, `fallback=backup_model`, and roles `primary`, `backup`, with zero calendar writes against FakeCal. [Recovery checks](m6-recovery-checks.md)

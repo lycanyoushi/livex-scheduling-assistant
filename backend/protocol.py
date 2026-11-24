@@ -188,6 +188,7 @@ class ModelCallMetrics(TypedDict):
     cachedTokens: int
     thoughtTokens: int
     historyRotated: NotRequired[bool]
+    modelRole: NotRequired[Literal["primary", "backup"]]
     status: str
 
 

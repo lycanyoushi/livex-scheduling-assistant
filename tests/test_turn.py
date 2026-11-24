@@ -105,7 +105,7 @@ class TurnTests(unittest.IsolatedAsyncioTestCase):
                     "slot_ref": "S1", "name": "", "email": "", "notes": "",
                 }),
             ), input_tokens=6_001)),
-            (ModelError("timeout"),),
+            (ModelText("Partial response."), ModelError("timeout")),
             (ModelText("You asked me to use Nova."), ModelCompletion("fresh", "completed", input_tokens=1_200)),
         )
         turn_service = service(model, calendar)
@@ -257,13 +257,14 @@ class TurnTests(unittest.IsolatedAsyncioTestCase):
         model = ScriptedModel(*(repeated for _ in range(4)))
         reply = await collect(service(model), text("Find open slots tomorrow"))
         self.assertEqual(reply[-2]["code"], "loop_limit")
+        self.assertEqual(reply[-2]["fallback"], "booker")
         self.assertIsNone(turn_state(reply).interaction_id)
         self.assertEqual(len(model.requests), 4)
 
     async def test_failed_model_turn_restores_state_after_emitting_refs(self):
         model = ScriptedModel(
             (ModelCompletion("read", "requires_action", (ToolCall("find", "find_slots", FIND),)),),
-            (ModelError("timeout"),),
+            (ModelText("Partial response."), ModelError("timeout")),
         )
         reply = await collect(service(model), text("Find open slots tomorrow"))
         self.assertTrue(any(event["type"] == "refs" and event.get("slots") for event in reply))

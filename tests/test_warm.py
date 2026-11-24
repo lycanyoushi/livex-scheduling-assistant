@@ -99,3 +99,16 @@ class WarmRouteTests(unittest.TestCase):
         self.assertEqual(result.status_code, 503)
         self.assertEqual(result.json, {"code": "cal_down", "error": "The calendar could not be reached."})
         self.assertEqual(self.model.mock_calls, [])
+
+    def test_slot_warm_failure_preserves_public_booking_url(self):
+        def fail_slots(wire, timeout):
+            if urlsplit(wire.full_url).path == "/v2/slots":
+                return 503, b"{}"
+            return self.response(wire, timeout)
+
+        self.transport.side_effect = fail_slots
+        result = self.client.get("/api/warm")
+
+        self.assertEqual(result.status_code, 200)
+        self.assertEqual(result.json["bookingUrl"], BOOKING_URL)
+        self.assertEqual(self.model.mock_calls, [])

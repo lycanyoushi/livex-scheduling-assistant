@@ -101,6 +101,10 @@ class ToolRejected(ValueError):
         self.events = events if events is not None else []
 
 
+class InvalidToolArguments(ToolRejected):
+    """The model's arguments did not match the tool schema."""
+
+
 class _ToolArgs(BaseModel):
     model_config = ConfigDict(strict=True, extra="forbid", hide_input_in_errors=True)
 
@@ -313,7 +317,7 @@ def _validate(model: type[_Args], args: object) -> _Args:
     try:
         return model.model_validate(args)
     except ValidationError:
-        raise ToolRejected("Invalid tool arguments. Use the required fields and short calendar references.") from None
+        raise InvalidToolArguments("Invalid tool arguments. Use the required fields and short calendar references.") from None
 
 
 class CalendarTools:

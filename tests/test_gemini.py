@@ -68,6 +68,13 @@ class StubAsyncClient:
 
 
 class GeminiClientTests(IsolatedAsyncioTestCase):
+    async def test_unexpected_failure_logs_only_exception_type(self):
+        self.sdk.interactions.create.side_effect = RuntimeError("unredacted provider content")
+        with self.assertLogs("backend.gemini", level="WARNING") as logged, self.assertRaises(ModelError) as raised:
+            await anext(self.stream())
+        self.assertEqual(raised.exception.code, "model_down")
+        self.assertEqual(logged.output, ["WARNING:backend.gemini:Unexpected Gemini exception: RuntimeError"])
+
     def setUp(self):
         self.sdk = StubAsyncClient()
         self.sdk_client = self.enterContext(patch("backend.gemini.genai.Client", return_value=SimpleNamespace(aio=self.sdk)))

@@ -9,13 +9,16 @@ import {
   type ReferenceViews,
   type TurnControls,
   type UiAction,
+  canRetryTurn,
   controlsForTurn,
   readChatStream,
   splitReferenceText,
+  unverifiedWrite,
 } from "./chat-protocol";
+import { BookerFallback, safePublicBookingUrl } from "./booker-fallback";
 import { BookingCard, ConfirmCard, OUTLINE_BUTTON, PRIMARY_BUTTON, RefText, SlotChips } from "./chat-cards";
 
-type TurnError = { message: string; retryable: boolean; code?: string };
+type TurnError = { message: string; retryable: boolean; code?: string; fallback?: "booker" };
 type SlotGroup = { refs: string[]; note?: string };
 
 type TurnRecord = {
@@ -33,6 +36,7 @@ type TurnRecord = {
 };
 
 const EMPTY_VIEWS: ReferenceViews = { slots: {}, bookings: {} };
+const RATE_LIMITED = "Too many requests right now. Wait a moment, then retry.";
 
 function browserTimeZone(): string {
   return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
@@ -51,6 +55,10 @@ export default function Home() {
   const [session, setSession] = useState(0);
   const [activeKind, setActiveKind] = useState<ChatInput["kind"] | null>(null);
   const [status, setStatus] = useState("");
+  const [bookingUrl, setBookingUrl] = useState<string | null>(null);
+  const [booker, setBooker] = useState<"unused" | "open" | "closed">("unused");
+  const [warming, setWarming] = useState(true);
+  const [warmAttempt, setWarmAttempt] = useState(0);
   const token = useRef<string | null>(null);
   const savedViews = useRef(EMPTY_VIEWS);
   const nextTurnId = useRef(1);
@@ -66,13 +74,21 @@ export default function Home() {
     const timer = window.setTimeout(() => {
       const query = new URLSearchParams({ timeZone: browserTimeZone() });
       // Warming up the calendar is independent of the chat turn.
-      void fetch(`/api/warm?${query}`, { cache: "no-store", signal: controller.signal }).catch(() => {});
+      void fetch(`/api/warm?${query}`, { cache: "no-store", signal: controller.signal })
+        .then((response) => response.ok ? response.json() as Promise<{ bookingUrl?: unknown }> : null)
+        .then((metadata) => {
+          if (!controller.signal.aborted) setBookingUrl(safePublicBookingUrl(metadata?.bookingUrl));
+        })
+        .catch(() => {})
+        .finally(() => {
+          if (!controller.signal.aborted) setWarming(false);
+        });
     }, 0);
     return () => {
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, []);
+  }, [warmAttempt]);
 
   useEffect(() => {
     const log = transcript.current;
@@ -109,6 +125,16 @@ export default function Home() {
     const confirmsProposal = input.kind === "ui" && input.action.type === "confirm_proposal";
     const originalBookingRef = confirmsProposal ? activeProposal?.value.bookingRef : undefined;
 
+    function clearUnverifiedConfirmation() {
+      setActiveProposal(null);
+      const candidate = activeProposal?.value;
+      const views = { slots: { ...savedViews.current.slots }, bookings: { ...savedViews.current.bookings } };
+      if (candidate?.slotRef) delete views.slots[candidate.slotRef];
+      if (candidate?.bookingRef) delete views.bookings[candidate.bookingRef];
+      savedViews.current = views;
+      setCurrentViews(views);
+    }
+
     try {
       const response = await fetch("/api/chat", {
         method: "POST",
@@ -120,6 +146,12 @@ export default function Home() {
           input,
         }),
       });
+      if (response.status === 429) {
+        updateTurn((turn) => ({ ...turn, error: {
+          code: "rate_limited", message: RATE_LIMITED, retryable: canRetryTurn(input, { kind: "quota" }),
+        } }));
+        return;
+      }
       if (!response.ok || !response.body) {
         rejectedBeforeConfirm = response.status >= 400 && response.status < 500;
         throw new Error("The chat endpoint did not accept the request.");
@@ -176,14 +208,15 @@ export default function Home() {
             break;
           }
           case "error":
-            failure = { code: event.code, message: event.message, retryable: event.retryable && input.kind === "text" };
+            failure = { code: event.code, message: event.message, retryable: event.retryable, fallback: event.fallback };
             resetSession = event.code === "session_expired" || event.code === "interaction_expired";
             break;
         }
       });
 
       token.current = terminal.stateToken;
-      const controls = controlsForTurn(input, terminal.metrics.outcome, failure?.code);
+      const controls = controlsForTurn(input, terminal.metrics, failure?.code);
+      const uncertainConfirmation = confirmsProposal && unverifiedWrite(failure?.code);
       if (resetSession) {
         savedViews.current = EMPTY_VIEWS;
         setSession((previous) => previous + 1);
@@ -202,7 +235,9 @@ export default function Home() {
       if (proposalLostItsSlot && activeProposal) {
         setTurns((previous) => previous.map((turn) => turn.id === activeProposal.turnId ? { ...turn, proposal: undefined } : turn));
       }
-      if (resetSession || bookingResultReceived || proposalLostItsSlot) {
+      if (uncertainConfirmation) {
+        clearUnverifiedConfirmation();
+      } else if (resetSession || bookingResultReceived || proposalLostItsSlot) {
         setActiveProposal(null);
       } else if (controls === "all") {
         if (nextProposal) setActiveProposal({ turnId: id, value: nextProposal });
@@ -212,9 +247,15 @@ export default function Home() {
       updateTurn((turn) => ({ ...turn, controls, proposal: committedProposal }));
 
       if (failure) {
-        const error = failure;
+        const error: TurnError = {
+          ...failure,
+          retryable: canRetryTurn(input, {
+            kind: "terminal", retryable: failure.retryable && !uncertainConfirmation && !bookingResultReceived,
+          }),
+          fallback: uncertainConfirmation ? undefined : failure.fallback,
+        };
         updateTurn((turn) => ({ ...turn, error }));
-      } else if (terminal.metrics.outcome === "failed") {
+      } else if (terminal.metrics.outcome === "failed" && terminal.metrics.fallback !== "code_only") {
         updateTurn((turn) => ({
           ...turn,
           error: { message: "The request could not be completed.", retryable: input.kind === "text" },
@@ -223,10 +264,10 @@ export default function Home() {
     } catch {
       let message = controller.signal.aborted ? "Response stopped." : "The chat connection closed.";
       if (confirmsProposal && !rejectedBeforeConfirm) {
-        setActiveProposal(null);
+        clearUnverifiedConfirmation();
         if (!bookingResultReceived) message = "Check your calendar to see whether the change went through.";
       }
-      updateTurn((turn) => ({ ...turn, error: { message, retryable: input.kind === "text" } }));
+      updateTurn((turn) => ({ ...turn, error: { message, retryable: canRetryTurn(input, { kind: "transport" }) } }));
     } finally {
       request.current = null;
       setActiveKind(null);
@@ -236,6 +277,14 @@ export default function Home() {
 
   function takeAction(action: UiAction) {
     void sendTurn({ kind: "ui", action });
+  }
+
+  function openBooker() {
+    setBooker("open");
+    if (!bookingUrl && !warming) {
+      setWarming(true);
+      setWarmAttempt((previous) => previous + 1);
+    }
   }
 
   function sendDraft(event: FormEvent<HTMLFormElement>) {
@@ -341,16 +390,23 @@ export default function Home() {
                   {turn.error && (
                     <div className="rounded-xl border border-border bg-card px-4 py-3">
                       <p>{turn.error.message}</p>
-                      {turn.error.retryable && isLatest && (
-                        <button
-                          type="button"
-                          disabled={sending}
-                          className={`${OUTLINE_BUTTON} mt-2 border border-border`}
-                          onClick={() => void sendTurn(turn.input, turn.id)}
-                        >
-                          Retry
-                        </button>
-                      )}
+                      <div className="flex flex-wrap gap-2">
+                        {turn.error.retryable && isLatest && (
+                          <button
+                            type="button"
+                            disabled={sending}
+                            className={`${OUTLINE_BUTTON} mt-2 border border-border`}
+                            onClick={() => void sendTurn(turn.input, turn.id)}
+                          >
+                            Retry
+                          </button>
+                        )}
+                        {turn.error.fallback === "booker" && (
+                          <button type="button" className={`${OUTLINE_BUTTON} mt-2 border border-border`} onClick={openBooker}>
+                            Book directly
+                          </button>
+                        )}
+                      </div>
                     </div>
                   )}
                   {turn.input.kind === "ui" && slotGroups}
@@ -403,6 +459,9 @@ export default function Home() {
           )}
         </div>
       </form>
+      {booker !== "unused" && (
+        <BookerFallback bookingUrl={bookingUrl} warming={warming} open={booker === "open"} onClose={() => setBooker("closed")} />
+      )}
     </main>
   );
 }

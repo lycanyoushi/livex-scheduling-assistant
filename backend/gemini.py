@@ -4,6 +4,7 @@ import asyncio
 from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, asynccontextmanager
 import json
+import logging
 
 from google import genai
 from google.genai import types
@@ -14,6 +15,7 @@ from backend.model import ModelCompletion, ModelError, ModelText, ToolCall
 
 _TIMEOUT_SECONDS = 20.0
 _MAX_OUTPUT_TOKENS = 300
+_LOGGER = logging.getLogger(__name__)
 _REFUSAL_CODES = {"safety", "jailbreak", "prohibited_content", "blocklist"}
 _MISSING_INTERACTION_CODES = {
     "interaction_expired",
@@ -181,7 +183,8 @@ class GeminiClient:
             raise ModelError("timeout") from None
         except APIError as error:
             raise _model_error(_sdk_service_code(error), error.status_code, previous_interaction_id) from None
-        except Exception:
+        except Exception as error:
+            _LOGGER.warning("Unexpected Gemini exception: %s", type(error).__name__)
             raise ModelError("model_down") from None
 
         if completion is None:

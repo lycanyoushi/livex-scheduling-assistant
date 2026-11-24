@@ -1,8 +1,10 @@
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 import json
+from threading import Event
 import unittest
 
-from backend.actions import ActionError, CalendarActions
+from backend.actions import ActionError, CalendarActions, ConfirmationLedger
 from backend.cal_client import CalError
 from backend.protocol import ConfirmProposal, DismissProposal, MoreSlots, PickSlot, RequestCancel, RequestReschedule
 from backend.state import PendingCall, SlotEntry, add_booking, add_slot, new_state, sign_state, verify_state
@@ -44,6 +46,49 @@ class Calendar(FakeCal):
     def reschedule_booking(self, uid, start, reason="User requested reschedule"):
         self.writes.append(("reschedule", uid, start))
         return super().reschedule_booking(uid, start, reason)
+
+
+class TimedCalendar(Calendar):
+    def __init__(self, mode, **kwargs):
+        super().__init__(**kwargs)
+        self.mode = mode
+        self.verification_reads = []
+
+    def booking(self, uid):
+        if self.writes and self.mode == "unverified":
+            raise CalError("unavailable", "Synthetic verification failure.")
+        return super().booking(uid)
+
+    def list_bookings(self, *, attendee_email=None, status="upcoming", limit=20, cursor=None):
+        self.verification_reads.append((attendee_email, status, limit, cursor))
+        if self.writes and self.mode == "unverified":
+            raise CalError("unavailable", "Synthetic verification failure.")
+        return super().list_bookings(attendee_email=attendee_email, status=status, limit=limit, cursor=cursor)
+
+    def create_booking(self, **kwargs):
+        if self.mode == "normal":
+            return super().create_booking(**kwargs)
+        if self.mode == "applied":
+            super().create_booking(**kwargs)
+        else:
+            self.writes.append(("create", kwargs))
+        raise CalError("unavailable", "Synthetic write timeout.")
+
+    def cancel_booking(self, uid, reason="User requested cancellation"):
+        if self.mode == "applied":
+            super().cancel_booking(uid, reason)
+        else:
+            self.writes.append(("cancel", uid, reason))
+        raise CalError("unavailable", "Synthetic write timeout.")
+
+    def reschedule_booking(self, uid, start, reason="User requested reschedule"):
+        if self.mode == "applied":
+            super().reschedule_booking(uid, start, reason)
+        else:
+            self.writes.append(("reschedule", uid, start))
+            if self.mode == "partial":
+                FakeCal.cancel_booking(self, uid)
+        raise CalError("unavailable", "Synthetic write timeout.")
 
 
 def event(outcome, kind):
@@ -276,6 +321,277 @@ class CalendarActionsTests(unittest.TestCase):
         self.assertEqual(self.state.pending_call.outcome.outcome, "dismissed")
         self.assertIsNone(self.state.proposal)
         self.assertEqual(calendar.writes, [])
+
+
+class ConfirmationRecoveryTests(unittest.TestCase):
+    def prepare(self, calendar, kind="book"):
+        state = new_state(ZONE, NOW)
+        state.user.name = "Sam"
+        state.user.email = "sam@example.com"
+        actions = CalendarActions(calendar, state, NOW)
+        if kind == "book":
+            slot = stored_slot(state)
+            outcome = actions.execute(PickSlot(type="pick_slot", slotRef=slot))
+            original = None
+        else:
+            original = add_booking(state, booking_entry(calendar.booking("fixture-sam-intro")))
+            if kind == "cancel":
+                outcome = actions.execute(RequestCancel(type="request_cancel", bookingRef=original))
+            else:
+                options = actions.execute(RequestReschedule(type="request_reschedule", bookingRef=original))
+                slot = ref_at(options, SECOND)
+                outcome = actions.execute(PickSlot(type="pick_slot", slotRef=slot))
+        card = event(outcome, "proposal")["proposal"]
+        state.pending_call = PendingCall(
+            id="synthetic-pending-call",
+            name={"book": "propose_booking", "cancel": "propose_cancel", "reschedule": "propose_reschedule"}[kind],
+            proposal_id=card["id"],
+        )
+        return state, original, ConfirmProposal(type="confirm_proposal", proposalId=card["id"])
+
+    def test_timeout_that_applied_completes_each_action_once(self):
+        for kind, result_kind in (("book", "booked"), ("cancel", "cancelled"), ("reschedule", "rescheduled")):
+            with self.subTest(kind=kind):
+                calendar = TimedCalendar("applied", fixture_overrides={
+                    "active_bookings": ["sam_intro"] if kind != "book" else [],
+                })
+                state, original, action = self.prepare(calendar, kind)
+                outcome = CalendarActions(calendar, state, NOW).execute(action)
+                self.assertIsNone(outcome.error_code)
+                result = event(outcome, "booking_result")
+                self.assertEqual(result["kind"], result_kind)
+                self.assertEqual(state.pending_call.outcome.outcome, "confirmed")
+                self.assertIsNone(state.proposal)
+                self.assertIn(action.proposal_id, state.completed)
+                self.assertEqual(len(calendar.writes), 1)
+                if kind != "cancel":
+                    self.assertEqual(calendar.verification_reads, [("sam@example.com", None, 100, None)])
+                if original is not None:
+                    self.assertEqual(state.bookings[original].status, "cancelled")
+                if kind == "reschedule":
+                    replacement = state.bookings[result["booking"]["ref"]]
+                    self.assertNotEqual(replacement.uid, state.bookings[original].uid)
+                    self.assertNotIn(replacement.uid, json.dumps(outcome.events))
+
+    def test_verified_unchanged_is_retryable_for_each_write(self):
+        fragments = {"book": "shows no booking", "cancel": "as active", "reschedule": "original time"}
+        for kind, fragment in fragments.items():
+            with self.subTest(kind=kind):
+                calendar = TimedCalendar("unchanged", fixture_overrides={
+                    "active_bookings": ["sam_intro"] if kind != "book" else [],
+                })
+                state, _, action = self.prepare(calendar, kind)
+                outcome = CalendarActions(calendar, state, NOW, ledger=ConfirmationLedger()).execute(action)
+                self.assertEqual(outcome.error_code, "write_not_applied")
+                error = event(outcome, "error")
+                self.assertIn(fragment, error["message"])
+                self.assertTrue(error["retryable"])
+                self.assertEqual(len(calendar.writes), 1)
+                self.assertEqual(state.proposal.id, action.proposal_id)
+                self.assertIsNone(state.pending_call.outcome)
+
+    def test_hard_to_verify_writes_are_nonretryable_and_identical_replays_are_read_free(self):
+        for kind in ("book", "cancel", "reschedule"):
+            with self.subTest(kind=kind):
+                calendar = TimedCalendar("unverified", fixture_overrides={
+                    "active_bookings": ["sam_intro"] if kind != "book" else [],
+                })
+                state, _, action = self.prepare(calendar, kind)
+                original = sign_state(state, KEY)
+                ledger = ConfirmationLedger()
+                outcome = CalendarActions(calendar, state, NOW, ledger=ledger).execute(action)
+                self.assertEqual(outcome.error_code, "write_unverified")
+                self.assertFalse(event(outcome, "error")["retryable"])
+                self.assertIn("Check Cal.com", event(outcome, "error")["message"])
+                self.assertIsNone(state.proposal)
+                self.assertEqual(state.pending_call.outcome.outcome, "no_action_yet")
+                verification = len(calendar.verification_reads), len(calendar.reads)
+                duplicate = verify_state(original, KEY, NOW)
+                replayed = CalendarActions(calendar, duplicate, NOW, ledger=ledger).execute(action)
+                self.assertEqual(replayed, outcome)
+                self.assertEqual(duplicate, state)
+                self.assertEqual((len(calendar.verification_reads), len(calendar.reads)), verification)
+                self.assertEqual(len(calendar.writes), 1)
+
+    def test_verified_unchanged_can_be_retried_with_the_original_token(self):
+        calendar = TimedCalendar("unchanged")
+        state, _, action = self.prepare(calendar)
+        token = sign_state(state, KEY)
+        ledger = ConfirmationLedger()
+        failed = CalendarActions(calendar, state, NOW, ledger=ledger).execute(action)
+        self.assertEqual(failed.error_code, "write_not_applied")
+        calendar.mode = "normal"
+        recovered = CalendarActions(calendar, verify_state(token, KEY, NOW), NOW, ledger=ledger).execute(action)
+        self.assertEqual(event(recovered, "booking_result")["kind"], "booked")
+        self.assertEqual(len(calendar.writes), 2)
+
+    def test_partial_move_makes_verified_original_cancellation_visible(self):
+        calendar = TimedCalendar("partial", fixture_overrides={"active_bookings": ["sam_intro"]})
+        state, original, action = self.prepare(calendar, "reschedule")
+        outcome = CalendarActions(calendar, state, NOW, ledger=ConfirmationLedger()).execute(action)
+        self.assertEqual(outcome.error_code, "reschedule_partial")
+        self.assertIn("original booking was cancelled", event(outcome, "error")["message"])
+        self.assertFalse(event(outcome, "error")["retryable"])
+        self.assertTrue(all(item["type"] != "booking_result" for item in outcome.events))
+        self.assertEqual(state.bookings[original].status, "cancelled")
+        self.assertEqual(event(outcome, "refs")["bookings"][original]["status"], "cancelled")
+        self.assertEqual(len(calendar.writes), 1)
+
+    def test_different_reschedule_link_cannot_verify_replacement(self):
+        class MismatchedLink(TimedCalendar):
+            def list_bookings(self, **kwargs):
+                page = super().list_bookings(**kwargs)
+                for entry in page["data"]:
+                    if entry.get("rescheduledFromUid"):
+                        entry["rescheduledFromUid"] = "different-original"
+                return page
+
+        calendar = MismatchedLink("applied", fixture_overrides={"active_bookings": ["sam_intro"]})
+        state, original, action = self.prepare(calendar, "reschedule")
+        outcome = CalendarActions(calendar, state, NOW).execute(action)
+        self.assertEqual(outcome.error_code, "reschedule_partial")
+        self.assertEqual(state.bookings[original].status, "cancelled")
+        self.assertTrue(all(item["type"] != "booking_result" for item in outcome.events))
+
+    def test_matching_replacement_with_active_original_is_partial(self):
+        class NewOnly(TimedCalendar):
+            def reschedule_booking(self, uid, start, reason="User requested reschedule"):
+                self.writes.append(("reschedule", uid, start))
+                FakeCal.create_booking(
+                    self, start=start, event_type_id=9001, name="Sam",
+                    email="sam@example.com", time_zone=ZONE,
+                )
+                raise CalError("unavailable", "Synthetic write timeout.")
+
+        calendar = NewOnly("unchanged", fixture_overrides={"active_bookings": ["sam_intro"]})
+        state, original, action = self.prepare(calendar, "reschedule")
+        outcome = CalendarActions(calendar, state, NOW).execute(action)
+        self.assertEqual(outcome.error_code, "reschedule_partial")
+        self.assertIn("original booking is still active", event(outcome, "error")["message"])
+        self.assertEqual(state.bookings[original].status, "accepted")
+        self.assertTrue(all(item["type"] != "booking_result" for item in outcome.events))
+        self.assertEqual(len(calendar.writes), 1)
+
+    def test_create_recovery_paginates_and_filters_matching_attendee_event_and_time(self):
+        class Paginated(TimedCalendar):
+            def list_bookings(self, **kwargs):
+                page = super().list_bookings(**kwargs)
+                if kwargs.get("cursor") is not None:
+                    return page
+                matching = page["data"][0]
+                return {
+                    "status": "success",
+                    "data": [
+                        {**matching, "uid": "different-attendee", "attendees": [{"email": "other@example.com"}]},
+                        {**matching, "uid": "wrong-event", "eventTypeId": 12345},
+                        {**matching, "uid": "wrong-time", "start": "2026-11-24T05:00:00Z", "end": "2026-11-24T05:30:00Z"},
+                    ],
+                    "pagination": {"hasMore": True, "nextCursor": "fixture-page:0"},
+                }
+
+        calendar = Paginated("applied")
+        state, _, action = self.prepare(calendar)
+        outcome = CalendarActions(calendar, state, NOW).execute(action)
+        self.assertEqual(event(outcome, "booking_result")["kind"], "booked")
+        self.assertEqual(
+            calendar.verification_reads,
+            [("sam@example.com", None, 100, None), ("sam@example.com", None, 100, "fixture-page:0")],
+        )
+        self.assertEqual(len(calendar.writes), 1)
+
+    def test_incomplete_verification_never_claims_unchanged(self):
+        class MissingPages(TimedCalendar):
+            def list_bookings(self, **kwargs):
+                super().list_bookings(**kwargs)
+                return {"status": "success", "data": [], "pagination": {"hasMore": True, "nextCursor": "same-page"}}
+
+        calendar = MissingPages("unchanged")
+        state, _, action = self.prepare(calendar)
+        outcome = CalendarActions(calendar, state, NOW).execute(action)
+        self.assertEqual(outcome.error_code, "write_unverified")
+        self.assertEqual(len(calendar.verification_reads), 2)
+        self.assertFalse(event(outcome, "error")["retryable"])
+
+    def test_two_exact_create_matches_are_ambiguous(self):
+        class Ambiguous(TimedCalendar):
+            def list_bookings(self, **kwargs):
+                page = super().list_bookings(**kwargs)
+                page["data"].append({**page["data"][0], "uid": "another-exact-match"})
+                return page
+
+        calendar = Ambiguous("applied")
+        state, _, action = self.prepare(calendar)
+        outcome = CalendarActions(calendar, state, NOW).execute(action)
+        self.assertEqual(outcome.error_code, "write_unverified")
+        self.assertFalse(event(outcome, "error")["retryable"])
+        self.assertEqual(state.bookings, {})
+        self.assertEqual(len(calendar.writes), 1)
+
+    def test_preflight_error_does_not_reconcile_or_retain_claim(self):
+        class FailingRead(TimedCalendar):
+            def slots(self, *args, fresh=False, **kwargs):
+                if self.fail_preflight and fresh:
+                    raise CalError("unavailable", "Synthetic preflight read timeout.")
+                return super().slots(*args, fresh=fresh, **kwargs)
+
+        calendar = FailingRead("normal")
+        calendar.fail_preflight = True
+        state, _, action = self.prepare(calendar)
+        token = sign_state(state, KEY)
+        ledger = ConfirmationLedger()
+        with self.assertRaises(CalError):
+            CalendarActions(calendar, state, NOW, ledger=ledger).execute(action)
+        self.assertEqual(calendar.verification_reads, [])
+        self.assertEqual(calendar.writes, [])
+        calendar.fail_preflight = False
+        retried = CalendarActions(calendar, verify_state(token, KEY, NOW), NOW, ledger=ledger).execute(action)
+        self.assertEqual(event(retried, "booking_result")["kind"], "booked")
+
+    def test_concurrent_identical_token_replays_share_one_write_and_isolated_state(self):
+        writing, release, second_started = Event(), Event(), Event()
+
+        class SlowCalendar(Calendar):
+            def create_booking(self, **kwargs):
+                writing.set()
+                if not release.wait(3):
+                    raise AssertionError("The test did not unblock the write.")
+                return super().create_booking(**kwargs)
+
+        calendar = SlowCalendar()
+        initial, _, action = self.prepare(calendar)
+        token = sign_state(initial, KEY)
+        ledger = ConfirmationLedger()
+        first_state, second_state = (verify_state(token, KEY, NOW) for _ in range(2))
+
+        def repeat():
+            second_started.set()
+            return CalendarActions(calendar, second_state, NOW, ledger=ledger).execute(action)
+
+        with ThreadPoolExecutor(2) as workers:
+            first = workers.submit(CalendarActions(calendar, first_state, NOW, ledger=ledger).execute, action)
+            try:
+                self.assertTrue(writing.wait(2))
+                second = workers.submit(repeat)
+                self.assertTrue(second_started.wait(2))
+                self.assertFalse(second.done())
+            finally:
+                release.set()
+            first_result, second_result = first.result(2), second.result(2)
+        self.assertEqual(len(calendar.writes), 1)
+        self.assertEqual(first_result, second_result)
+        self.assertEqual(first_state, second_state)
+        second_state.bookings.clear()
+        second_result.events.clear()
+        self.assertTrue(first_state.bookings)
+        self.assertTrue(first_result.events)
+        repeated = verify_state(token, KEY, NOW)
+        self.assertEqual(CalendarActions(calendar, repeated, NOW, ledger=ledger).execute(action), first_result)
+        self.assertEqual(repeated, first_state)
+        with self.assertRaises(ActionError):
+            CalendarActions(calendar, verify_state(token, KEY, NOW), NOW, ledger=ledger).execute(
+                ConfirmProposal(type="confirm_proposal", proposalId=action.proposal_id, email="different@example.com")
+            )
+        self.assertEqual(len(calendar.writes), 1)
 
 
 if __name__ == "__main__":

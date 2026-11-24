@@ -161,3 +161,40 @@ class TerminalEventTests(unittest.IsolatedAsyncioTestCase):
         await chat.send({"kind": "ui", "action": {"type": "confirm_proposal", "proposalId": "P1"}})
         await chat.send({"kind": "text", "text": "What did I choose?"})
         self.assertIn("You chose Fixture appointment · Thu 26 Nov, 13:30–14:00.", output.getvalue())
+
+    async def test_can_retry_verified_noop_but_cannot_replay_an_uncertain_confirmation(self):
+        proposal = {"id": "P1", "kind": "reschedule", "title": "Fixture meeting", "whenLabel": "Thu 26 Nov, 13:30",
+                    "timeZone": ZONE, "durationMinutes": 30, "slotRef": "S1", "bookingRef": "B1"}
+        source = {"kind": "ui", "action": {"type": "confirm_proposal", "proposalId": "P1"}}
+        error = {"type": "error", "message": "Fixture write error"}
+        service = TurnFixture(
+            [{**error, "code": "write_not_applied", "retryable": True}, terminal(outcome="failed")],
+            [{**error, "code": "write_unverified", "retryable": False}, terminal(outcome="failed")],
+        )
+        chat = TerminalChat(service, ZONE, read=lambda _: "", output=StringIO())
+        chat.proposal = proposal
+        chat.latest_booking = "B1"
+        chat.slots = {"S1": SLOT}
+        chat.choices = {1: "S1"}
+
+        await chat.send(source)
+        self.assertEqual(chat._input("Retry"), source)
+        self.assertEqual(chat.proposal, proposal)
+        await chat.send(source)
+        self.assertIsNone(chat.retry_input)
+        self.assertIsNone(chat.proposal)
+        self.assertIsNone(chat.latest_booking)
+        self.assertEqual(chat.choices, {})
+
+    async def test_code_only_fallback_keeps_signed_choices(self):
+        source = {"kind": "text", "text": "Look Thursday"}
+        service = TurnFixture([
+            {"type": "refs", "slots": {"S1": SLOT}},
+            {"type": "slot_chips", "refs": ["S1"]},
+            {"type": "error", "code": "model_down", "message": "Use these times.", "retryable": True},
+            terminal(outcome="failed", fallback="code_only"),
+        ])
+        chat = TerminalChat(service, ZONE, read=lambda _: "", output=StringIO())
+        await chat.send(source)
+        self.assertEqual(chat._input("Retry"), source)
+        self.assertEqual(chat._input("1"), {"kind": "ui", "action": {"type": "pick_slot", "slotRef": "S1"}})

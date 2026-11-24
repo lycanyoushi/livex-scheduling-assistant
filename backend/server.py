@@ -4,6 +4,7 @@ import asyncio
 import atexit
 from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine, Iterator
 from concurrent.futures import CancelledError, Future
+from ipaddress import ip_address
 import json
 import logging
 import os
@@ -17,12 +18,13 @@ from pydantic import TypeAdapter, ValidationError
 
 from backend.cal_client import CalClient, CalError
 from backend.gemini import GeminiClient
+from backend.limits import RateLimits
 from backend.prefetch import warm_slot_bounds
 from backend.prescan import EMAIL, warm_prescan
 from backend.protocol import ChatRequest, ServerEvent, TimeZoneName
 from backend.state import new_state
 from backend.tools import CalendarTools, ToolRejected
-from backend.turn import TurnService, observe_cal
+from backend.turn import ERRORS, TurnService, observe_cal
 from scripts.local_environment import ENV_FILE, load_local_environment
 
 
@@ -171,6 +173,29 @@ def _encode(event: ServerEvent) -> bytes:
     return (json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
 
 
+def _client_address() -> str:
+    forwarded = request.headers.get("x-vercel-forwarded-for") if os.environ.get("VERCEL") == "1" else None
+    for candidate in (forwarded, request.remote_addr):
+        if not candidate:
+            continue
+        try:
+            address = ip_address(candidate)
+            return str(getattr(address, "ipv4_mapped", None) or address)
+        except ValueError:
+            continue
+    return "unknown"
+
+
+def _read_limit(settings: dict[str, str], name: str, default: int) -> int:
+    try:
+        value = int(settings.get(name, str(default)))
+    except ValueError:
+        value = 0
+    if value < 1:
+        raise ValueError(f"{name} must be a positive integer.")
+    return value
+
+
 def load_service(*, persistent_model: bool = False) -> TurnService:
     settings = {**(load_local_environment() if ENV_FILE.is_file() else {}), **os.environ}
     required = ("GEMINI_API_KEY", "CAL_API_KEY", "STATE_SIGNING_SECRET")
@@ -182,9 +207,19 @@ def load_service(*, persistent_model: bool = False) -> TurnService:
         raise ValueError("STATE_SIGNING_SECRET must contain at least 32 bytes.")
     model_name = settings.get("GEMINI_MODEL") or "gemini-3.5-flash-lite"
     thinking = settings.get("GEMINI_THINKING_LEVEL") or ("low" if model_name == "gemini-3.8-flash" else "minimal")
+    backup_name = settings.get("GEMINI_FALLBACK_MODEL", "gemini-3.1-flash-lite").strip()
+    backup = None
+    if backup_name and backup_name != model_name:
+        backup = GeminiClient(settings["GEMINI_API_KEY"], model=backup_name,
+                              thinking_level="low" if backup_name == "gemini-3.8-flash" else "minimal",
+                              persistent=persistent_model)
     warm_prescan()
     return TurnService(
         model=GeminiClient(settings["GEMINI_API_KEY"], model=model_name, thinking_level=thinking, persistent=persistent_model),
+        backup_model=backup,
+        backup_continuations={model_name, backup_name} == {"gemini-3.5-flash-lite", "gemini-3.1-flash-lite"},
+        rate_limits=RateLimits(_read_limit(settings, "RATE_LIMIT_TURNS_PER_10MIN", 30),
+                               _read_limit(settings, "DAILY_MODEL_CALL_CAP", 500)),
         calendar=CalClient(settings["CAL_API_KEY"], settings.get("CAL_API_BASE_URL") or "https://api.cal.com",
                            observer=observe_cal),
         secret=secret,
@@ -198,7 +233,7 @@ def create_app(service: TurnService | None = None, *, turn_loop: TurnLoop | None
     app.config["MAX_CONTENT_LENGTH"] = 300 * 1024
     turn_service = service if service is not None else load_service(persistent_model=True)
     if service is None and turn_loop is None:
-        turn_loop = TurnLoop(getattr(turn_service.model, "aclose", None))
+        turn_loop = TurnLoop(turn_service.close_models)
         atexit.register(turn_service.close_prefetch)
         atexit.register(turn_loop.close)
 
@@ -219,10 +254,13 @@ def create_app(service: TurnService | None = None, *, turn_loop: TurnLoop | None
             profile = calendar.me()
             event_types = tools.event_types()
             default = tools.default_event()
-            begin, end = warm_slot_bounds(now, time_zone)
-            calendar.slots(default["id"], begin, end, time_zone)
         except (CalError, ToolRejected):
             return jsonify(error="The calendar could not be reached.", code="cal_down"), 503
+        try:
+            begin, end = warm_slot_bounds(now, time_zone)
+            calendar.slots(default["id"], begin, end, time_zone)
+        except CalError as error:
+            app.logger.info("Calendar slot warm-up failed: %s", error.code)
 
         response = jsonify(
             hostName=_public_text(profile.get("name") or "") or _public_text(profile["username"]),
@@ -246,6 +284,14 @@ def create_app(service: TurnService | None = None, *, turn_loop: TurnLoop | None
             result = jsonify(error="Invalid chat request.", code="invalid_request")
             result.status_code = 400
             return result
+        if turn_service.rate_limits is not None:
+            retry_after = turn_service.rate_limits.request_retry_after(_client_address())
+            if retry_after:
+                result = jsonify(error=ERRORS["rate_limited"], code="rate_limited")
+                result.status_code = 429
+                result.headers["Retry-After"] = str(retry_after)
+                result.headers["Cache-Control"] = "no-store"
+                return result
         return Response(
             stream_with_context(stream_ndjson(turn_service.events(chat_request), turn_loop)),
             content_type="application/x-ndjson; charset=utf-8",

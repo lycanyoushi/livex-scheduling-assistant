@@ -12,18 +12,21 @@ from pathlib import Path
 import re
 import sys
 from typing import TextIO
+from urllib.parse import urlsplit
 
 from backend.cal_client import CalError
 from backend.prescan import EMAIL
 from backend.protocol import BookingView, ChatRequest, ProposalView, SlotView, TurnMetrics, validate_time_zone
-from backend.server import load_service
-from backend.state import MAX_BOOKINGS, MAX_SLOTS
+from backend.server import _public_url, load_service
+from backend.state import MAX_BOOKINGS, MAX_SLOTS, new_state
+from backend.tools import CalendarTools, ToolRejected
 from backend.turn import REFS, TurnService
 
 
 _CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
 _COMMANDS = "/new  /tz <IANA time zone>  /debug  /quit"
 _ACTIVE = {"accepted", "pending"}
+_UNVERIFIED_WRITES = {"write_unverified", "reschedule_partial"}
 _PROPOSAL_TITLES = {"book": "Book this meeting?", "cancel": "Cancel this meeting?", "reschedule": "Move this meeting?"}
 _RESULT_LABELS = {"booked": "Meeting booked", "cancelled": "Meeting cancelled", "rescheduled": "Meeting moved"}
 
@@ -86,6 +89,8 @@ class _TurnDisplay:
         self.proposal: ProposalView | None = None
         self.result: tuple[str, BookingView] | None = None
         self.error: str | None = None
+        self.retryable = False
+        self.booker = False
         self.pending_text = ""
         self.line_open = False
 
@@ -156,6 +161,8 @@ class _TurnDisplay:
                 self.result = event["kind"], booking
             elif kind == "error":
                 self.error = event["code"]
+                self.retryable = event["retryable"]
+                self.booker = event.get("fallback") == "booker"
                 self.chat.write(event["message"])
 
     def commit(self, event, request: dict) -> None:
@@ -165,6 +172,8 @@ class _TurnDisplay:
         slot_action = request["kind"] == "ui" and request["action"]["type"] in {"pick_slot", "confirm_proposal"}
         if self.error in {"session_expired", "interaction_expired"}:
             chat.clear_context()
+        elif self.error in _UNVERIFIED_WRITES:
+            chat.clear_uncertain_proposal()
         elif slot_action and self.error == "slot_taken":
             recovered = {ref: self.slots[ref] for ref in self.recovery_refs}
             chat.slots = _recent({**chat.slots, **recovered}, MAX_SLOTS)
@@ -195,6 +204,8 @@ class _TurnDisplay:
                 chat.write(f"{proposal['title']} · {proposal['whenLabel']} · {proposal['durationMinutes']} min · {proposal['timeZone']}")
             elif request["kind"] == "ui":
                 chat.proposal = None
+        if self.retryable and self.error not in _UNVERIFIED_WRITES and self.result is None:
+            chat.offer_retry(request)
 
 
 class TerminalChat:
@@ -207,6 +218,7 @@ class TerminalChat:
                       and (os.name != "nt" or bool(os.environ.get("WT_SESSION") or os.environ.get("ANSICON"))))
         self.token: str | None = None
         self.metrics: TurnMetrics | None = None
+        self.booking_url: str | None = None
         self.next_choice = 1
         self.clear_context()
 
@@ -216,6 +228,37 @@ class TerminalChat:
         self.choices: dict[int, str] = {}
         self.proposal: ProposalView | None = None
         self.latest_booking: str | None = None
+        self.retry_input: dict | None = None
+
+    def clear_uncertain_proposal(self) -> None:
+        if self.proposal is not None:
+            slot_ref = self.proposal.get("slotRef")
+            if slot_ref:
+                self.slots.pop(slot_ref, None)
+                self.choices = {number: ref for number, ref in self.choices.items() if ref != slot_ref}
+            if self.latest_booking == self.proposal.get("bookingRef"):
+                self.latest_booking = None
+        self.proposal = None
+
+    def offer_retry(self, request: dict) -> None:
+        self.retry_input = request
+        self.write("Type Retry to try again.")
+
+    def _lookup_booking_url(self) -> str | None:
+        now = self.service.clock()
+        try:
+            tools = CalendarTools(
+                self.service.calendar, new_state(self.time_zone, now), now,
+                allowed_slugs=self.service.allowed_slugs, default_slug=self.service.default_slug,
+            )
+            value = _public_url(tools.default_event().get("bookingUrl"))
+            if value is not None:
+                parsed = urlsplit(value)
+                if parsed.scheme == "https":
+                    return parsed._replace(query="", fragment="").geturl()
+        except (CalError, ToolRejected):
+            pass
+        return None
 
     def write(self, text: str, *, end: str = "\n", dim: bool = False) -> None:
         text = _CONTROL.sub("", text)
@@ -224,6 +267,7 @@ class TerminalChat:
         print(text, end=end, file=self.output, flush=True)
 
     async def send(self, source: dict) -> None:
+        self.retry_input = None
         request = ChatRequest.model_validate({"stateToken": self.token, "timeZone": self.time_zone, "input": source})
         display = _TurnDisplay(self)
         terminal = None
@@ -235,9 +279,19 @@ class TerminalChat:
                     display.show(event)
         display.finish_text()
         if terminal is None:
-            self.write("The chat ended before saving this turn. Please try again.")
+            if source["kind"] == "ui" and source["action"]["type"] == "confirm_proposal":
+                self.clear_uncertain_proposal()
+                self.write("Check your calendar to see whether the change went through.")
+            else:
+                self.write("The chat ended before saving this turn.")
+                self.offer_retry(source)
             return
         display.commit(terminal, source)
+        if display.booker and display.error not in _UNVERIFIED_WRITES:
+            if self.booking_url is None:
+                self.booking_url = await asyncio.to_thread(self._lookup_booking_url)
+            if self.booking_url is not None:
+                self.write(f"Book directly: {self.booking_url}")
 
     def _prompt(self) -> str:
         if self.proposal is None:
@@ -275,6 +329,8 @@ class TerminalChat:
         return None
 
     def _input(self, text: str) -> dict | None:
+        if text.casefold() == "retry" and self.retry_input is not None:
+            return self.retry_input
         if self.proposal is not None:
             return self._proposed_action(text)
         if text.isdecimal():
@@ -308,6 +364,7 @@ class TerminalChat:
             else:
                 self.proposal = None
                 self.choices.clear()
+                self.retry_input = None
                 self.write(f"Time zone: {self.time_zone}")
         elif command == "/debug" and not value:
             self.write(json.dumps(self.metrics, indent=2) if self.metrics is not None else "No turn metrics yet.")
@@ -342,7 +399,7 @@ def run_chat(service: TurnService, *, read: Callable[[str], str] = input, output
             chat.write("")
         finally:
             try:
-                close_model = getattr(service.model, "aclose", None)
+                close_model = getattr(service, "close_models", None) or getattr(service.model, "aclose", None)
                 if close_model is not None:
                     runner.run(close_model())
             finally:

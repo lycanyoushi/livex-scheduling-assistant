@@ -2,6 +2,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { expect, it } from "vitest";
 
+import { BookerFallback, calEmbedLink, safePublicBookingUrl } from "../app/booker-fallback";
 import { ConfirmCard, SlotChips } from "../app/chat-cards";
 import Home from "../app/page";
 
@@ -49,4 +50,20 @@ it("uses a contact-free confirmation for moving a booking", () => {
   expect(html).toContain("Move this meeting?");
   expect(html).toMatch(/<fieldset\b[^>]*disabled=""/);
   expect(html).not.toContain('name="email"');
+});
+
+it("provides a regular safe booking link and leaves the Cal.com script unloaded on the server", () => {
+  const url = "https://cal.com/fixture-host/intro?email=nova@example.com#private";
+  expect(safePublicBookingUrl(url)).toBe("https://cal.com/fixture-host/intro");
+  expect(calEmbedLink(url)).toBe("fixture-host/intro");
+  const html = renderToStaticMarkup(createElement(BookerFallback, {
+    bookingUrl: url, warming: false, open: true, onClose: () => {},
+  }));
+  expect(html).toContain('aria-label="Book directly"');
+  expect(html).toContain('href="https://cal.com/fixture-host/intro"');
+  expect(html).not.toContain("nova@example.com");
+  expect(html).not.toContain("<script");
+  expect(calEmbedLink("https://booking.example.com/fixture/intro")).toBeNull();
+  expect(safePublicBookingUrl("javascript:alert(1)")).toBeNull();
+  expect(safePublicBookingUrl("https://fixture@cal.com/fixture/intro")).toBeNull();
 });

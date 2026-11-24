@@ -1,7 +1,7 @@
 import { expect, it } from "vitest";
 
 import { calendarFile, googleCalendarLink, safeMeetingLink } from "../app/calendar-export";
-import { type BookingView, type ServerEvent, controlsForTurn, nextSlotDate, readChatStream, splitReferenceText } from "../app/chat-protocol";
+import { type BookingView, type ChatInput, type ServerEvent, canRetryTurn, controlsForTurn, nextSlotDate, readChatStream, splitReferenceText, unverifiedWrite } from "../app/chat-protocol";
 
 const encoder = new TextEncoder();
 
@@ -52,10 +52,30 @@ it("buffers incomplete reference syntax and preserves only complete chips while 
 });
 
 it("permits only terminal alternatives after a slot-taken UI action", () => {
-  expect(controlsForTurn({ kind: "text", text: "tomorrow" }, "failed", "slot_taken")).toBe("none");
-  expect(controlsForTurn({ kind: "ui", action: { type: "confirm_proposal", proposalId: "P1" } }, "failed", "slot_taken")).toBe("alternatives");
-  expect(controlsForTurn({ kind: "ui", action: { type: "pick_slot", slotRef: "S1" } }, "failed", "slot_taken")).toBe("alternatives");
-  expect(controlsForTurn({ kind: "ui", action: { type: "confirm_proposal", proposalId: "P1" } }, "failed", "cal_down")).toBe("none");
+  const failed = { outcome: "failed" } as const;
+  expect(controlsForTurn({ kind: "text", text: "tomorrow" }, failed, "slot_taken")).toBe("none");
+  expect(controlsForTurn({ kind: "ui", action: { type: "confirm_proposal", proposalId: "P1" } }, failed, "slot_taken")).toBe("alternatives");
+  expect(controlsForTurn({ kind: "ui", action: { type: "pick_slot", slotRef: "S1" } }, failed, "slot_taken")).toBe("alternatives");
+  expect(controlsForTurn({ kind: "ui", action: { type: "confirm_proposal", proposalId: "P1" } }, failed, "cal_down")).toBe("none");
+});
+
+it("keeps authoritative code-only fallback controls usable on a failed model turn", () => {
+  const input: ChatInput = { kind: "text", text: "Find an opening tomorrow" };
+  expect(controlsForTurn(input, { outcome: "failed", fallback: "code_only" }, "model_down")).toBe("all");
+  expect(controlsForTurn(input, { outcome: "failed", fallback: "backup_model" }, "model_down")).toBe("none");
+});
+
+it("retries verified rejections and never replays an interrupted confirmation", () => {
+  const confirm: ChatInput = { kind: "ui", action: { type: "confirm_proposal", proposalId: "P1" } };
+  expect(canRetryTurn(confirm, { kind: "quota" })).toBe(true);
+  expect(canRetryTurn(confirm, { kind: "terminal", retryable: true })).toBe(true);
+  expect(canRetryTurn(confirm, { kind: "terminal", retryable: false })).toBe(false);
+  expect(canRetryTurn(confirm, { kind: "transport" })).toBe(false);
+  expect(canRetryTurn({ kind: "ui", action: { type: "pick_slot", slotRef: "S1" } }, { kind: "transport" })).toBe(true);
+  expect(canRetryTurn({ kind: "text", text: "Tomorrow" }, { kind: "transport" })).toBe(true);
+  expect(unverifiedWrite("write_unverified")).toBe(true);
+  expect(unverifiedWrite("reschedule_partial")).toBe(true);
+  expect(unverifiedWrite("write_not_applied")).toBe(false);
 });
 
 it("starts the next availability window after the final local date", () => {

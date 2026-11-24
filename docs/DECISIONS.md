@@ -89,7 +89,13 @@ Run Flask turns on one process-owned event loop and reuse one SDK client. Setup 
 
 Reconcile each timed-out write with Cal.com before reporting its outcome. For create, look up the attendee's booking at the requested start. For cancel, re-read the original booking status. For reschedule, re-read the original booking and look for a distinct replacement at the requested start. Use the verified result to tell the user what happened.
 
-For an HTTP 503 or timeout before any text, make the single retry on the backup model. Use the existing stored-interaction compatibility rules for pending tool results. The M5 same-model retry remains in place until M6.
+If the readback shows no change, keep the confirmation available for a manual retry. If the result is partial or inconclusive, retire the proposal and tell the user which part could be verified. Confirmation replays with the same signed request share the recorded outcome within one process. The booking search uses at most three pages of 100 attendee records, with incomplete searches treated as inconclusive.
+
+## M6 model and browser fallback
+
+Make one attempt on the backup after a primary 503, timeout, or quota failure before any text streams. The verified 3.5 and 3.1 Flash-Lite pair can continue stored interactions in either direction. A different model pair can retry a fresh interaction without tool results. If the backup cannot run or fails too, use signed availability or booking data already collected. Keep the last working interaction ID and pending call for Retry. Offer the Cal.com booker when neither model can answer and the app has no usable scheduling options. [Gemini verification](gemini-notes.md#m6-live-backup-checks)
+
+Load Cal.com's own embed script on demand using the public booking URL. This provides the approved booker without another package. Limit chat requests per IP over ten minutes and count primary and backup calls against a single daily budget that resets at midnight Pacific time. These counters and confirmation replay records are scoped to one process. [Official Cal.com embed](https://site.cal.com/embed)
 
 ## M5b latency changes
 

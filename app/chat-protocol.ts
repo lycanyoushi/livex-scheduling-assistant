@@ -44,7 +44,7 @@ export type BookingResult = {
 type TurnEnd = {
   type: "turn_end";
   stateToken: string;
-  metrics: { outcome: "ok" | "failed" };
+  metrics: { outcome: "ok" | "failed"; fallback?: "backup_model" | "code_only" };
 };
 
 export type ServerEvent =
@@ -58,13 +58,26 @@ export type ServerEvent =
 
 export type TurnControls = "all" | "alternatives" | "none";
 
-export function controlsForTurn(input: ChatInput, outcome: TurnEnd["metrics"]["outcome"], errorCode?: string): TurnControls {
-  if (outcome === "ok") return "all";
+export function controlsForTurn(input: ChatInput, metrics: TurnEnd["metrics"], errorCode?: string): TurnControls {
+  if (metrics.outcome === "ok" || metrics.fallback === "code_only") return "all";
   if (input.kind === "ui" && errorCode === "slot_taken" &&
       (input.action.type === "confirm_proposal" || input.action.type === "pick_slot")) {
     return "alternatives";
   }
   return "none";
+}
+
+export function unverifiedWrite(code?: string): boolean {
+  return code === "write_unverified" || code === "reschedule_partial";
+}
+
+export function canRetryTurn(
+  input: ChatInput,
+  evidence: { kind: "terminal"; retryable: boolean } | { kind: "quota" } | { kind: "transport" },
+): boolean {
+  if (evidence.kind === "terminal") return evidence.retryable;
+  if (evidence.kind === "quota") return true;
+  return input.kind === "text" || input.action.type !== "confirm_proposal";
 }
 
 export type ReferencePart = { text: string } | { ref: string };
