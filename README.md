@@ -4,7 +4,7 @@ A conversational Python assistant for booking, viewing, rescheduling, and cancel
 
 [Local web chat](http://localhost:3000) · [Local widget demo](http://localhost:3000/widget-demo) · [Deployment plan](docs/deploy-plan.md)
 
-The public demo link is pending deployment approval.
+[Live web chat](https://livex-scheduling-assistant.vercel.app) · [Live widget demo](https://livex-scheduling-assistant.vercel.app/widget-demo)
 
 ![Local web chat showing a fictional booking and its management controls](docs/images/scheduling-demo.png)
 
@@ -97,5 +97,6 @@ The Python mapping, state signing, model fallback, and hosting choices are recor
 - Anyone who knows an attendee's email can look up or cancel that attendee's bookings in the demo.
 - A production version would verify the attendee's email with a one-time code before showing or changing bookings.
 - Per-IP limits, the daily model-call budget, and duplicate-confirm protection are held in each process's memory. They reset when the process restarts and are independent across instances.
+- Stop ends the stream in the browser, but the server may finish the current Gemini call. Calendar changes still require Confirm.
 - When Cal.com times out on a confirmed change, the app checks the booking records and reports what it can verify. If the records are inconclusive, check the calendar before submitting another change.
 - Google can use free-tier Gemini prompts and responses to improve its products. Use fictional contact details in conversation and keep deliverable test aliases in the local Cal.com probe settings.
