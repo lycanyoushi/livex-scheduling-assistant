@@ -38,6 +38,7 @@ APPROVED_CASE_IDS = range(1, 24)
 REGRESSION_SPECS = {
     "regression_spec_sha256": (SPEC_PATH.with_name("regressions.yaml"), (32,)),
     "typed_confirmation_variants_sha256": (SPEC_PATH.with_name("typed_confirmation_variants.yaml"), (33, 34)),
+    "schedule_listing_sha256": (SPEC_PATH.with_name("schedule_listing.yaml"), (35,)),
 }
 REGRESSION_CASE_IDS = frozenset(case_id for _, case_ids in REGRESSION_SPECS.values() for case_id in case_ids)
 DEFAULT_MODEL = "gemini-3.5-flash-lite"
@@ -52,6 +53,7 @@ SUPPORTED_CHECKS = {
     "prefetch_hit", "proposal_email", "reply_patterns", "pending_tool_call", "proposal_differs_from_turn",
     "first_model_step", "cal_reads", "cal_writes", "booking_result", "rejected_forbidden_tools",
     "reply_language", "template", "forbidden_cal_calls", "reply_max_lines", "attempted_model_roles", "fallback",
+    "booking_cards",
 }
 SUPPORTED_TEMPLATES = {None, "booked", "cancelled", "rescheduled", "slot_taken", "model_down_slots"}
 

@@ -15,7 +15,7 @@ The LiveX brief requires an interactive Python chatbot that books, views, cancel
 | Flow | How to try it | Cal.com REST API |
 | --- | --- | --- |
 | Book | Ask for availability, select a time, provide your name and email, then confirm. | `GET /v2/slots`, `POST /v2/bookings` |
-| List | Ask for upcoming meetings and give the attendee email if prompted. | `GET /v2/bookings` with the `attendeeEmail` filter |
+| List | Ask “What's on my calendar?” and give the email address you entered when booking if prompted. | `GET /v2/bookings` with the `attendeeEmail` filter |
 | Reschedule | Choose a booked meeting, pick a different time, then confirm. | `GET /v2/bookings/{uid}`, `GET /v2/slots`, `POST /v2/bookings/{uid}/reschedule` |
 | Cancel | Choose a booked meeting and confirm the cancellation. | `GET /v2/bookings/{uid}`, `POST /v2/bookings/{uid}/cancel` |
 

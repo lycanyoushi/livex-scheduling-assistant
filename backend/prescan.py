@@ -39,11 +39,14 @@ PARTS: dict[PartOfDay, re.Pattern[str]] = {
     "afternoon": re.compile(r"\b(?:afternoon|por la tarde)\b", re.IGNORECASE),
     "evening": re.compile(r"\b(?:evening|por la noche)\b", re.IGNORECASE),
 }
+_PERSONAL_SCHEDULE = re.compile(r"\bmy\s+schedule\b")
 INTENTS = {
     "book": re.compile(r"\b(?:book|schedule|meet|meeting|call|slots?|available|free|time|reservar)\b", re.I),
     "list": re.compile(
         r"\b(?:my meetings|my bookings|upcoming|scheduled|what do i have|what meetings|"
-        r"appointments? (?:are |is )?coming up|meetings? i(?:['’]m| am) booked for)\b", re.I,
+        r"appointments? (?:are |is )?coming up|meetings? i(?:['’]m| am) booked for)\b"
+        r"|(?:^\s*(?:on\s+)?|\b(?:show(?:\s+me)?|see|check|list)\s+|\bwhat(?:['’]s|\s+is)(?:\s+on)?\s+)"
+        r"my\s+(?:schedule|calendar)\b", re.I,
     ),
     "cancel": re.compile(r"\b(?:cancel|call off|drop|cancelar)\b", re.I),
     "reschedule": re.compile(r"\b(?:reschedule|move|push|change the time|reprogramar)\b", re.I),
@@ -275,7 +278,8 @@ def _availability_request(
         return False
     if EXPLANATION.search(text) or EXISTING_BOOKING.search(text):
         return False
-    if BOOKING_REQUEST.search(text) or AVAILABILITY_REQUEST.search(text) or TIME_REQUEST.search(text):
+    if (BOOKING_REQUEST.search(_PERSONAL_SCHEDULE.sub(" ", text)) or AVAILABILITY_REQUEST.search(text)
+            or TIME_REQUEST.search(text)):
         return True
     if dates and DATED_FOLLOWUP.match(text):
         return True
@@ -303,7 +307,10 @@ def prescan(text: str, *, now: datetime, time_zone: str) -> PrescanResult:
         part = next((name for name, pattern in PARTS.items() if pattern.search(positive)), "any")
         dates = tuple(hint for hint in _dates(positive, reference)
                       if hint.day not in excluded and hint.day.weekday() not in weekdays)
-    intents = tuple(name for name, pattern in INTENTS.items() if pattern.search(text_without_email))
+    # Remove the noun phrase from booking detection while keeping other booking language.
+    booking_text = _PERSONAL_SCHEDULE.sub(" ", text_without_email)
+    intents = tuple(name for name, pattern in INTENTS.items()
+                    if pattern.search(booking_text if name == "book" else text_without_email))
     relative_week = bool(excluded or weekdays) and any(match["week"] for match in DATES.finditer(positive))
     availability = not unresolved and _availability_request(positive, dates, part, intents)
     if relative_week and not unresolved and not set(intents) & {"list", "cancel", "reschedule"}:

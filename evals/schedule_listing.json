@@ -1,0 +1,93 @@
+{
+  "spec": {
+    "calendar_fixture": "fake_cal.json",
+    "cases": [
+      {
+        "fixture_overrides": {
+          "active_bookings": [
+            "sam_intro",
+            "other_intro"
+          ],
+          "user": {
+            "email": "sam@example.com",
+            "name": "Sam"
+          }
+        },
+        "id": 35,
+        "name": "List an attendee's bookings from schedule and calendar requests",
+        "turns": [
+          {
+            "checks": {
+              "booking_cards": [
+                "sam_intro"
+              ],
+              "booking_result": null,
+              "cal_reads": [
+                {
+                  "attendee_email": "sam@example.com",
+                  "operation": "list_bookings",
+                  "status": "upcoming"
+                }
+              ],
+              "cal_writes": [],
+              "forbidden_cal_calls": [
+                "slots"
+              ],
+              "forbidden_tools": [
+                "*"
+              ],
+              "max_model_calls": 1,
+              "min_model_calls": 1,
+              "prefetch_hit": "bookings",
+              "proposal_kind": null,
+              "refs_within": {
+                "kind": "slot",
+                "max": 0,
+                "min": 0
+              },
+              "tool_calls": []
+            },
+            "user": "Show me my schedule"
+          },
+          {
+            "checks": {
+              "booking_cards": [
+                "sam_intro"
+              ],
+              "booking_result": null,
+              "cal_reads": [
+                {
+                  "attendee_email": "sam@example.com",
+                  "operation": "list_bookings",
+                  "status": "upcoming"
+                }
+              ],
+              "cal_writes": [],
+              "forbidden_cal_calls": [
+                "slots"
+              ],
+              "forbidden_tools": [
+                "*"
+              ],
+              "max_model_calls": 1,
+              "min_model_calls": 1,
+              "prefetch_hit": "bookings",
+              "proposal_kind": null,
+              "refs_within": {
+                "kind": "slot",
+                "max": 0,
+                "min": 0
+              },
+              "tool_calls": []
+            },
+            "user": "What's on my calendar?"
+          }
+        ]
+      }
+    ],
+    "default_clock": "2026-11-23T10:00:00+08:00",
+    "default_time_zone": "Asia/Singapore",
+    "schema_version": 1
+  },
+  "yaml_sha256": "370b99742ae99cd101b3f31105fbc1ead9e3cd82746380ba46ab9913b38c8afd"
+}

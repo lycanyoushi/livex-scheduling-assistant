@@ -183,6 +183,7 @@ class SessionState(_StateModel):
     model_context: ModelContext | None = None
     last_model_input_tokens: Annotated[int, Field(ge=0)] = 0
     pending_call: PendingCall | None = None
+    awaiting_booking_email: bool = Field(default=False, exclude_if=lambda pending: not pending)
     notes: Annotated[list[_Summary], Field(max_length=MAX_NOTES)] = Field(default_factory=list)
     completed: Annotated[dict[ProposalId, _Summary], Field(max_length=MAX_COMPLETED)] = Field(default_factory=dict)
 

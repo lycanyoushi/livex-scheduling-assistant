@@ -314,24 +314,42 @@ class TurnTests(unittest.IsolatedAsyncioTestCase):
         context = model.requests[0]["input_steps"][0]["content"][0]["text"]
         self.assertIn("Booking cards already on screen in this order: B1, B2.", context)
 
-    async def test_listing_asks_for_email_or_uses_completed_prefetch_without_a_tool(self):
+    async def test_listing_uses_completed_prefetch_without_a_tool(self):
         calendar = FakeCal(fixture_overrides={"active_bookings": ["other_intro"]})
-        for email, direction in (
-            (None, "Ask for the attendee email in one short question"),
-            ("sam@example.com", "they have no upcoming meetings and offer to help book one"),
-        ):
-            with self.subTest(email_known=bool(email)):
-                model = ScriptedModel((ModelText("Scheduling reply"), ModelCompletion("done", "completed")),)
-                turn_service = service(model, calendar)
-                self.addCleanup(turn_service.close_prefetch)
-                state = new_state(ZONE, NOW)
-                state.user.email = email
-                reply = await collect(turn_service, text("What meetings do I have?"), sign_state(state, SECRET))
-                request = model.requests[0]
-                self.assertIn(direction, request["input_steps"][0]["content"][0]["text"])
-                self.assertEqual(request["tools"], [])
-                displayed = [event["refs"] for event in reply if event["type"] == "booking_cards"]
-                self.assertEqual(displayed, [[]] if email else [])
+        model = ScriptedModel((ModelText("Scheduling reply"), ModelCompletion("done", "completed")),)
+        turn_service = service(model, calendar)
+        self.addCleanup(turn_service.close_prefetch)
+        state = new_state(ZONE, NOW)
+        state.user.email = "sam@example.com"
+        reply = await collect(turn_service, text("What meetings do I have?"), sign_state(state, SECRET))
+        request = model.requests[0]
+        context = request["input_steps"][0]["content"][0]["text"]
+        self.assertIn("they have no upcoming meetings and offer to help book one", context)
+        self.assertEqual(request["tools"], [])
+        self.assertEqual([event["refs"] for event in reply if event["type"] == "booking_cards"], [[]])
+
+    async def test_schedule_lookup_explains_email_and_continues_when_address_is_provided(self):
+        calendar = FakeCal(fixture_overrides={"active_bookings": ["sam_intro", "other_intro"]})
+        model = ScriptedModel((ModelText("Here are your upcoming meetings."), ModelCompletion("done", "completed")),)
+        turn_service = service(model, calendar)
+        self.addCleanup(turn_service.close_prefetch)
+
+        prompt = await collect(turn_service, text("Show me my schedule"))
+        self.assertIn("were the meetings booked under", prompt[0]["text"])
+        self.assertTrue(turn_state(prompt).awaiting_booking_email)
+        explanation = await collect(turn_service, text("Which email do I provide?"), prompt[-1]["stateToken"])
+        self.assertIn("email address you entered when booking", explanation[0]["text"])
+        self.assertEqual(model.requests, [])
+        self.assertTrue(turn_state(explanation).awaiting_booking_email)
+
+        listing = await collect(turn_service, text("sam@example.com"), explanation[-1]["stateToken"])
+        self.assertEqual(listing[-1]["metrics"]["prescan"]["intents"], ["list"])
+        displayed = next(event["refs"] for event in listing if event["type"] == "booking_cards")
+        state = turn_state(listing)
+        self.assertEqual([state.bookings[ref].uid for ref in displayed], ["fixture-sam-intro"])
+        self.assertFalse(state.awaiting_booking_email)
+        self.assertEqual(len(model.requests), 1)
+        self.assertNotIn("sam@example.com", json.dumps(model.requests))
 
     async def test_rephrased_booking_list_requests_use_one_model_and_no_read_tool(self):
         for phrase, email in (("What appointments are coming up?", None),
@@ -344,8 +362,9 @@ class TurnTests(unittest.IsolatedAsyncioTestCase):
                 state = new_state(ZONE, NOW)
                 state.user.email = email
                 events = await collect(turn_service, text(phrase), sign_state(state, SECRET))
-                self.assertEqual(len(events[-1]["metrics"]["modelCalls"]), 1)
-                self.assertEqual(model.requests[0]["tools"], [])
+                self.assertEqual(len(events[-1]["metrics"]["modelCalls"]), int(bool(email)))
+                if email:
+                    self.assertEqual(model.requests[0]["tools"], [])
                 self.assertEqual(events[-1]["metrics"]["prefetch"]["bookings"], int(bool(email)))
 
     async def test_unadvertised_tool_cannot_regenerate_booking_inventory(self):

@@ -221,6 +221,15 @@ def slot_view(entry: SlotEntry, time_zone: str) -> SlotView:
     return {"dayLabel": day, "timeLabel": hours, "startLocalIso": local_start.isoformat()}
 
 
+def is_daytime(local_start: datetime) -> bool:
+    return 8 <= local_start.hour < 20
+
+
+def preferred_daytime_slots(entries: list[SlotEntry], zone: ZoneInfo) -> list[SlotEntry]:
+    daytime = [entry for entry in entries if is_daytime(parse_instant(entry.start_utc).astimezone(zone))]
+    return daytime or entries
+
+
 def nearest_slots(
     entries: Iterable[SlotEntry], hints: Sequence[DateHint], part: PartOfDay, time_zone: str,
 ) -> list[SlotEntry]:
@@ -334,6 +343,7 @@ class CalendarTools:
         excluded_days: frozenset[date] = frozenset(),
         excluded_weekdays: frozenset[int] = frozenset(),
         reuse_pending_proposal: bool = False,
+        prefer_daytime: bool = False,
     ) -> None:
         self.calendar = calendar
         self.state = state
@@ -346,6 +356,7 @@ class CalendarTools:
         self._excluded_days = excluded_days
         self._excluded_weekdays = excluded_weekdays
         self._reuse_pending_proposal = reuse_pending_proposal
+        self._prefer_daytime = prefer_daytime
         self._state_lock = Lock()
         self._events_lock = Lock()
         self._event_types: list[EventType] | None = None
@@ -533,19 +544,22 @@ class CalendarTools:
         today = self.now.astimezone(self._zone).date()
         entries = self.read_slot_entries(event["id"], max(first, today), last, args.part_of_day, booking_ref, uid) if last >= today else []
         next_open: str | None = None
-        if not entries:
+        followup_window = not entries
+        if followup_window:
             try:
                 resume = max(last + timedelta(days=1), today)
                 end = resume + timedelta(days=6)
             except OverflowError:
                 return ToolOutcome({"slots": [], "timeZone": self.state.time_zone})
             entries = self.read_slot_entries(event["id"], resume, end, args.part_of_day, booking_ref, uid)
-            if entries:
-                next_open = parse_instant(entries[0].start_utc).astimezone(self._zone).date().isoformat()
-                entries = [
-                    entry for entry in entries
-                    if parse_instant(entry.start_utc).astimezone(self._zone).date().isoformat() == next_open
-                ]
+        if self._prefer_daytime and booking_ref is None:
+            entries = preferred_daytime_slots(entries, self._zone)
+        if followup_window and entries:
+            next_open = parse_instant(entries[0].start_utc).astimezone(self._zone).date().isoformat()
+            entries = [
+                entry for entry in entries
+                if parse_instant(entry.start_utc).astimezone(self._zone).date().isoformat() == next_open
+            ]
         refs = self.register_slots(entries[:_MAX_SLOT_CHOICES])
         result: JsonObject = {
             "slots": [{"ref": ref, **view} for ref, view in refs.items()],

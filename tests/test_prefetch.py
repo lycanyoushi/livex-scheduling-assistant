@@ -24,6 +24,15 @@ KEY = "test-only-secret-for-prefetch-observations"
 PREFETCH_REF = re.compile(r"^Prefetched slot (S[1-9][0-9]*):", re.MULTILINE)
 
 
+class LocalHoursCalendar(FakeCal):
+    def __init__(self, *starts):
+        super().__init__()
+        self.starts = [datetime.fromisoformat(f"{start}+08:00") for start in starts]
+
+    def _scheduled_starts(self, begin, until):
+        return (start for start in self.starts if begin <= start < until)
+
+
 class ReplyFromContext:
     def __init__(self):
         self.contexts = []
@@ -102,6 +111,40 @@ class PrefetchTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(len(PREFETCH_REF.findall(self.model.contexts[0])), 0)
         self.assertEqual(PREFETCH_REF.findall(self.model.contexts[1]), [])
         self.assertIn("Openings already on screen", self.model.contexts[1])
+
+    async def test_undated_slots_use_local_daytime_before_spreading_across_days(self):
+        for starts, expected in (
+            (["2026-11-24T07:59", "2026-11-24T08:00", "2026-11-25T05:00",
+              "2026-11-26T19:59", "2026-11-26T20:00"],
+             ["2026-11-24T08:00", "2026-11-26T19:59"]),
+            (["2026-11-24T07:59", "2026-11-26T20:00"], ["2026-11-24T07:59", "2026-11-26T20:00"]),
+            (["2026-11-30T20:00", "2026-12-01T08:00"], ["2026-12-01T08:00"]),
+        ):
+            with self.subTest(starts=starts):
+                service = self.service(LocalHoursCalendar(*starts))
+                events = await self.collect(service, "Show me some openings")
+                refs = next(event["slots"] for event in events if event["type"] == "refs")
+                chips = next(event["refs"] for event in events if event["type"] == "slot_chips")
+                self.assertEqual(
+                    [refs[ref]["startLocalIso"] for ref in chips],
+                    [f"{stamp}:00+08:00" for stamp in expected],
+                )
+                self.assertEqual(len(refs), len(expected))
+
+    async def test_dated_lookup_and_undated_evening_keep_requested_hours(self):
+        cases = [
+            ("Show me availability Thursday", ["2026-11-26T19:59", "2026-11-26T20:00"],
+             ["2026-11-26T19:59", "2026-11-26T20:00"]),
+            ("Show me availability in the evening", ["2026-11-30T09:00", "2026-11-30T20:30"],
+             ["2026-11-30T20:30"]),
+        ]
+        for message, starts, expected in cases:
+            with self.subTest(message=message):
+                service = self.service(LocalHoursCalendar(*starts))
+                events = await self.collect(service, message)
+                refs = next(event["slots"] for event in events if event["type"] == "refs")
+                chips = next(event["refs"] for event in events if event["type"] == "slot_chips")
+                self.assertEqual([refs[ref]["startLocalIso"] for ref in chips], [f"{stamp}:00+08:00" for stamp in expected])
 
     async def test_checked_empty_window_is_distinct_from_missing_availability(self):
         service = self.service(FakeCal(fixture_overrides={"open_local_starts": []}))
@@ -225,7 +268,8 @@ class PrefetchTests(unittest.IsolatedAsyncioTestCase):
         service = self.service(DelayedCalendar(fixture_overrides={"active_bookings": ["sam_intro", "other_intro"]}), budget=0.06)
         try:
             events = await asyncio.wait_for(
-                self.collect(service, "What meetings do I have tomorrow for sam@example.com?"), timeout=0.6
+                self.collect(service, "What meetings do I have tomorrow, and can I book a meeting for sam@example.com?"),
+                timeout=0.6,
             )
             terminal = events[-1]
             timings = terminal["metrics"]["prefetch"]

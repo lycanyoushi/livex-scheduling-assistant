@@ -167,6 +167,35 @@ class PrescanTests(unittest.TestCase):
         self.assertIn("reschedule", self.scan("Move it an hour later", ZONES[0]).intents)
         self.assertFalse(self.scan("What about 30 minutes?", ZONES[0]).dates)
 
+    def test_personal_schedule_and_calendar_requests_are_listing_only(self):
+        for phrase in (
+            "my schedule", "  Show me my schedule  ", "What's my schedule", "What’s my schedule?",
+            "What's on my calendar?", "What’s on my calendar?", "What's my calendar", "What’s my calendar",
+            "What is on my calendar?", "on my calendar",
+        ):
+            with self.subTest(phrase=phrase):
+                hints = self.scan(phrase, ZONES[0])
+                self.assertEqual(hints.intents, ("list",))
+                self.assertFalse(hints.availability_request)
+
+        dated = self.scan("What's on my calendar tomorrow?", ZONES[0])
+        self.assertEqual(dated.intents, ("list",))
+        self.assertEqual(dated.dates, (DateHint(date(2026, 11, 24)),))
+        self.assertFalse(dated.availability_request)
+
+    def test_scheduling_verb_and_combined_requests_keep_independent_intents(self):
+        for phrase in ("schedule a meeting", "Schedule a meeting around my schedule"):
+            with self.subTest(phrase=phrase):
+                hints = self.scan(phrase, ZONES[0])
+                self.assertEqual(hints.intents, ("book",))
+                self.assertTrue(hints.availability_request)
+        self.assertEqual(self.scan("Schedule a meeting on my calendar", ZONES[0]).intents, ("book",))
+
+        for phrase in ("Show me my schedule and schedule a meeting", "Book a meeting, then show me my schedule"):
+            with self.subTest(phrase=phrase):
+                self.assertEqual(self.scan(phrase, ZONES[0]).intents, ("book", "list"))
+        self.assertEqual(self.scan("Show me my schedule and cancel this", ZONES[0]).intents, ("list", "cancel"))
+
     def test_english_and_spanish_calendar_spans(self):
         warm_prescan()
         for phrase in ("Book November 26", "Reservar el 26 de noviembre", "¿Puedo reservar el jueves?"):

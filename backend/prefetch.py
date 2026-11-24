@@ -22,7 +22,7 @@ from backend.prescan import EMAIL, PART_HOURS, DateHint, PartOfDay, PrescanResul
 from backend.protocol import CalCallMetrics
 from backend.state import BookingEntry, SessionState, SlotEntry
 from backend.time import local_bounds, parse_instant
-from backend.tools import WARM_SLOT_DAYS, CalendarTools, ToolRejected, nearest_slots
+from backend.tools import WARM_SLOT_DAYS, CalendarTools, ToolRejected, is_daytime, nearest_slots, preferred_daytime_slots
 
 
 PREFETCH_BUDGET_SECONDS = 1.2
@@ -62,6 +62,7 @@ class PrefetchPlan:
     excluded_days: frozenset[date] = frozenset()
     excluded_weekdays: frozenset[int] = frozenset()
     exclusion_unresolved: bool = False
+    prefer_daytime: bool = False
 
     def excludes(self, day: date) -> bool:
         return day in self.excluded_days or day.weekday() in self.excluded_weekdays
@@ -77,6 +78,15 @@ class PrefetchPlan:
                 return f"Checking availability for {day:%A} {day.day} {day:%b}…"
             return "Checking availability…"
         return "Checking the schedule…"
+
+
+def prefer_daytime_for_request(state: SessionState, hints: PrescanResult) -> bool:
+    return (
+        not hints.dates and not hints.exclusion_unresolved
+        and not {"list", "cancel", "reschedule"}.intersection(hints.intents)
+        and state.rescheduling_booking_ref is None
+        and (state.proposal is None or state.proposal.kind == "book")
+    )
 
 
 def plan_prefetch(state: SessionState, now: datetime, hints: PrescanResult, *, text: str = "") -> PrefetchPlan:
@@ -120,6 +130,7 @@ def plan_prefetch(state: SessionState, now: datetime, hints: PrescanResult, *, t
         show_openings=bool(days and hints.availability_request and not has_pending_change),
         excluded_days=hints.excluded_days, excluded_weekdays=hints.excluded_weekdays,
         exclusion_unresolved=hints.exclusion_unresolved,
+        prefer_daytime=prefer_daytime_for_request(state, hints),
     )
 
 
@@ -172,6 +183,7 @@ def _prefetch_slots(tools: CalendarTools, plan: PrefetchPlan) -> _SlotResults:
     ranges.extend(_date_ranges(other_days))
     wanted_days = set(plan.days)
     day_slots: dict[date, list[SlotEntry]] = defaultdict(list)
+    daytime_slots: dict[date, list[SlotEntry]] = defaultdict(list)
     warm_entries = None
     offer_alternatives = plan.show_openings and target is None
     hours = PART_HOURS.get(plan.part_of_day)
@@ -188,7 +200,10 @@ def _prefetch_slots(tools: CalendarTools, plan: PrefetchPlan) -> _SlotResults:
             local = parse_instant(entry.start_utc).astimezone(zone)
             if local.date() in wanted_days and (hours is None or hours[0] <= local.hour < hours[1]):
                 day_slots[local.date()].append(entry)
+                if plan.prefer_daytime and is_daytime(local):
+                    daytime_slots[local.date()].append(entry)
 
+    day_slots = daytime_slots or day_slots
     if offer_alternatives:
         requested_times: dict[date, set[time | None]] = defaultdict(set)
         for hint in plan.times:
@@ -212,6 +227,12 @@ def _prefetch_slots(tools: CalendarTools, plan: PrefetchPlan) -> _SlotResults:
             if plan.excluded_days or plan.excluded_weekdays:
                 warm_entries = [entry for entry in warm_entries
                                 if not plan.excludes(parse_instant(entry.start_utc).astimezone(zone).date())]
+            if plan.prefer_daytime:
+                matching_part = warm_entries if hours is None else [
+                    entry for entry in warm_entries
+                    if hours[0] <= parse_instant(entry.start_utc).astimezone(zone).hour < hours[1]
+                ]
+                warm_entries = preferred_daytime_slots(matching_part or warm_entries, zone)
             return _SlotResults(alternatives=nearest_slots(warm_entries, anchors, plan.part_of_day, tools.time_zone))
 
     if plan.spread_slots:

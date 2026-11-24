@@ -53,6 +53,8 @@ The web chat accepts a short typed confirmation or dismissal for its visible pro
 
 For a direct new-booking request that asks to skip confirmation, the app prepares a proposal for the exact available time and still waits for a separate confirmation. When a booking change has already been denied by the app, a model stream error falls back to a code-written refusal.
 
+Route personal schedule and calendar questions to the attendee's booking list. When an undated upcoming lookup needs an email, ask for the email used to book, remember the request in signed state, and resume it when the attendee supplies the address. Undated availability prefers starts from 08:00 through 19:59 in the selected time zone. Use other hours when the search has no daytime opening.
+
 `find_slots` requires `for_booking_ref`. An empty string requests ordinary availability. For a reschedule, validate the reference, the booking's status and start, and its membership for the session's attendee email before passing the real UID as `bookingUidToReschedule`. This lets a text request fetch the right slots without a prior UI action. Associate the returned refs with that booking so a proposal can validate the pairing.
 
 ### Streaming and development

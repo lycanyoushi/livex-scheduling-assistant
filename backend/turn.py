@@ -23,7 +23,7 @@ from backend.cal_client import CalError, CalObservation
 from backend.confirmations import ConfirmationLedger
 from backend.limits import RateLimits
 from backend.model import ModelClient, ModelCompletion, ModelError, ModelStreamStart, ModelText, ToolCall
-from backend.prefetch import PREFETCH_BUDGET_SECONDS, Prefetcher, plan_prefetch
+from backend.prefetch import PREFETCH_BUDGET_SECONDS, Prefetcher, plan_prefetch, prefer_daytime_for_request
 from backend.prescan import EMAIL, PrescanResult, prescan
 from backend.protocol import (
     CalCallMetrics, ChatRequest, ConfirmProposal, DismissProposal, ErrorEvent, ModelCallMetrics, RefsEvent, ServerEvent,
@@ -53,7 +53,7 @@ Honor the supplied exclusions and never offer a slot on an excluded day.
 Treat refs marked retired as unavailable and leave their earlier details out of replies.
 For a move, use a slot associated with that exact booking ref, or supply that ref to find_slots.
 Use list_bookings for the session email, with email="" when the app already has it.
-Ask for an email only when needed to look up or change the attendee's existing bookings. New bookings collect it on Confirm.
+Ask for an email only when needed to look up or change existing bookings. Say to use the attendee email entered when booking. New bookings collect it on Confirm.
 Never offer or change another attendee's meetings, or cancel everyone's bookings.
 When the app identifies an unavailable booking ref or a denied group change, explain that you can't make the change and can only help with the attendee's own bookings.
 For a specific agreed slot, propose_booking. Set email="" to use the session email.
@@ -77,6 +77,11 @@ BYPASS_CONFIRMATION = re.compile(
 REFS = re.compile(r"\[\[([SB][1-9]\d*)\]\]")
 BOOKING_MENTION = re.compile(r"\bB[1-9]\d{0,8}\b", re.IGNORECASE)
 PAST_BOOKINGS = re.compile(r"\b(?:past|previous|earlier|history|last (?:week|month|year)|pasad[oa]s?|anteriores?)\b", re.I)
+LOOKUP_EMAIL_QUESTION = re.compile(
+    r"(?:which|what)\s+e-?mail(?:\s+address)?(?:\s+(?:do|should|can)\s+i\s+(?:provide|give|enter|use|send))?",
+    re.I,
+)
+BOOKING_EMAIL_EXPLANATION = "For meeting lookups, use the attendee email address you entered when booking."
 CONTEXT_TAG = re.compile(r"</?\s*turn_context\b[^>]*>", re.IGNORECASE)
 HISTORY_TOKEN_LIMIT = 6_000
 _NAME_WORD = r"[^\W\d_]+(?:[-'’][^\W\d_]+)*"
@@ -282,7 +287,7 @@ def _context(
     if denied_change:
         lines.append("The requested change is denied. Reply with a short refusal.")
     if listing_response == "ask_email":
-        lines.append("Ask for the attendee email in one short question before looking up bookings.")
+        lines.append("Ask which email address the meetings were booked under before looking them up.")
     if listing_response == "shown" and not prefetched_bookings:
         lines.append("Tell the attendee they have no upcoming meetings and offer to help book one.")
     if prefetched_bookings:
@@ -429,6 +434,7 @@ class TurnService:
             self.calendar, state, now, allowed_slugs=self.allowed_slugs, default_slug=self.default_slug,
             deny_mutations=deny_mutations, excluded_days=hints.excluded_days, excluded_weekdays=hints.excluded_weekdays,
             reuse_pending_proposal=True,
+            prefer_daytime=prefer_daytime_for_request(state, hints),
         )
 
     async def events(self, request: ChatRequest) -> AsyncIterator[ServerEvent]:
@@ -516,12 +522,21 @@ class TurnService:
     async def _text_events(
         self, state: SessionState, now: datetime, text: str, hints: PrescanResult, metrics: TurnMetrics,
     ) -> AsyncIterator[ServerEvent]:
+        awaiting_email = state.awaiting_booking_email and state.user.email is None
+        if awaiting_email and hints.email and not hints.intents:
+            hints = replace(hints, intents=("list",), availability_request=False)
         metrics["prescan"] = {
             "email": hints.email is not None, "dates": [hint.day.isoformat() for hint in hints.dates],
             "partOfDay": hints.part_of_day, "intents": list(hints.intents),
             "availabilityRequest": hints.availability_request,
             "exactTimes": [f"{hint.day.isoformat()}T{hint.at:%H:%M}" for hint in hints.dates if hint.at is not None],
         }
+        if LOOKUP_EMAIL_QUESTION.fullmatch(text.strip().rstrip("?.!").rstrip()):
+            metrics["path"] = "ui_action"
+            yield {"type": "assistant_text", "text": BOOKING_EMAIL_EXPLANATION}
+            return
+        if hints.intents or state.user.email:
+            state.awaiting_booking_email = False
         retired_bookings: tuple[str, ...] = ()
         if hints.email and len(hints.email) <= 254:
             if state.user.email and state.user.email.casefold() != hints.email.casefold():
@@ -535,6 +550,12 @@ class TurnService:
                 state.notes.clear()
             state.user.email = hints.email
         _remember_name(state, text, hints)
+        listing_only = hints.intents == ("list",)
+        if listing_only and not state.user.email and not hints.dates and not PAST_BOOKINGS.search(text):
+            state.awaiting_booking_email = True
+            metrics["path"] = "ui_action"
+            yield {"type": "assistant_text", "text": "What email address were the meetings booked under?"}
+            return
         original_history = state.interaction_id, state.pending_call, state.last_model_input_tokens
         rotated = state.interaction_id is not None and state.last_model_input_tokens > HISTORY_TOKEN_LIMIT
         if rotated:
@@ -547,13 +568,13 @@ class TurnService:
         is_change = bool({"cancel", "reschedule"}.intersection(hints.intents))
         denied = is_change and bool(unavailable_bookings or BULK_TARGET.search(text))
         retired_bookings = tuple(dict.fromkeys((*retired_bookings, *unavailable_bookings)))
-        listing_only = "list" in hints.intents and not {"book", "cancel", "reschedule"}.intersection(hints.intents)
         tools = self._tools(state, now, hints=hints, deny_mutations=denied or listing_only)
         plan = plan_prefetch(state, now, hints, text=text)
         if denied:
             plan = replace(plan, attendee_email=None, days=(), show_openings=False, reschedule=None)
-        if listing_only and PAST_BOOKINGS.search(text):
-            plan = replace(plan, attendee_email=None)
+        elif listing_only:
+            attendee_email = None if PAST_BOOKINGS.search(text) else plan.attendee_email
+            plan = replace(plan, attendee_email=attendee_email, days=(), show_openings=False)
         yield {"type": "status", "text": plan.status()}
         prefetched = await self._prefetch.fetch(tools, plan)
         slots = prefetched.alternatives or prefetched.slots

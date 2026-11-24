@@ -1,0 +1,29 @@
+schema_version: 1
+calendar_fixture: fake_cal.json
+default_clock: "2026-11-23T10:00:00+08:00"
+default_time_zone: Asia/Singapore
+
+cases:
+  - id: 35
+    name: List an attendee's bookings from schedule and calendar requests
+    fixture_overrides:
+      user: {name: Sam, email: sam@example.com}
+      active_bookings: [sam_intro, other_intro]
+    turns:
+      - user: "Show me my schedule"
+        checks: &schedule_listing
+          tool_calls: []
+          forbidden_tools: ["*"]
+          refs_within: {kind: slot, min: 0, max: 0}
+          booking_cards: [sam_intro]
+          proposal_kind: null
+          min_model_calls: 1
+          max_model_calls: 1
+          prefetch_hit: bookings
+          cal_reads:
+            - {operation: list_bookings, attendee_email: sam@example.com, status: upcoming}
+          forbidden_cal_calls: [slots]
+          cal_writes: []
+          booking_result: null
+      - user: "What's on my calendar?"
+        checks: *schedule_listing

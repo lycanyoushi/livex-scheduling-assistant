@@ -131,7 +131,7 @@ class EvalRunnerTests(TestCase):
         prior = {1: {"proposal": {"id": "P1"}}}
         state = SimpleNamespace(proposal=SimpleNamespace(id="P1"))
         replies = {32: "yes", 33: "yes please", 34: "ok"}
-        for case in regression_cases(self.spec):
+        for case in regression_cases(self.spec, set(replies)):
             with self.subTest(case=case["id"]):
                 reply = replies[case["id"]]
                 turn = case["turns"][1]
@@ -148,7 +148,7 @@ class EvalRunnerTests(TestCase):
                 self.assertIsNone(turn_payload(turn, {}))
 
     def test_typed_confirmation_variants_book_through_flask_without_a_second_model_call(self):
-        for case in regression_cases(self.spec):
+        for case in regression_cases(self.spec, {32, 33, 34}):
             with self.subTest(case=case["id"]):
                 model = BookingScenario()
                 result = case_report(case, 1, run_case(self.spec, case, self.fixture, model, None, None,
@@ -164,6 +164,26 @@ class EvalRunnerTests(TestCase):
                 self.assertEqual([write["operation"] for write in after["exact_calendar_writes"]], ["create_booking"])
                 self.assertTrue(after["typed_confirmation_matches_signed_proposal"])
                 self.assertTrue(after["typed_confirmation_clears_proposal"])
+
+    def test_case_35_lists_the_attendees_cards_without_slot_searches(self):
+        case, = regression_cases(self.spec, {35})
+        model_calls = []
+
+        async def reply(*, tools, **_):
+            model_calls.append(tools)
+            yield ModelText("Here is your upcoming booking.")
+            yield ModelCompletion(f"schedule-turn-{len(model_calls)}", "completed")
+
+        result = case_report(case, 1, run_case(self.spec, case, self.fixture, SimpleNamespace(stream=reply), None, None,
+                                              model_name=DEFAULT_MODEL))
+        self.assertEqual(result["status"], "pass", result["turns"])
+        self.assertEqual(model_calls, [[], []])
+        for turn in result["turns"]:
+            observations = {check["check"]: check["observed"] for check in turn["checks"]}
+            self.assertEqual(observations["booking_cards"], [["sam_intro"]])
+            self.assertEqual(observations["forbidden_calendar_reads"], [])
+            self.assertEqual(observations["exact_calendar_writes"], [])
+            self.assertEqual(turn["slot_offer_starts"], [])
 
     def test_thresholds_and_wording_failures_stay_distinct(self):
         statuses = ["pass", "wording_only_failure", "pass"]

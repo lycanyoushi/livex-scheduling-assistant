@@ -177,6 +177,36 @@ class CalendarToolsTests(unittest.TestCase):
             [f"2026-11-30T{hour}:00:00+08:00" for hour in ("09", "10", "11")],
         )
 
+    def test_undated_search_prefers_daytime_in_the_primary_or_fallback_window(self):
+        class MixedHoursCalendar(TrackingCalendar):
+            def _scheduled_starts(self, begin, until):
+                starts = (
+                    "2026-11-26T07:59:00+08:00", "2026-11-26T08:00:00+08:00",
+                    "2026-11-26T19:59:00+08:00", "2026-11-26T20:00:00+08:00",
+                    "2026-11-27T20:30:00+08:00", "2026-11-28T08:00:00+08:00",
+                    "2026-11-30T20:30:00+08:00", "2026-12-01T08:00:00+08:00",
+                )
+                return (start for start in map(datetime.fromisoformat, starts) if begin <= start < until)
+
+        calendar = MixedHoursCalendar(fixture_overrides={"active_bookings": ["sam_intro"]})
+        undated = CalendarTools(calendar, self.state, NOW, prefer_daytime=True)
+        dated = CalendarTools(calendar, self.state, NOW)
+
+        def search(tools, **args):
+            return tools.execute("find_slots", slot_args(**args)).result
+
+        def times(rows):
+            return [row["startLocalIso"][11:16] for row in rows["slots"]]
+
+        self.assertEqual(times(search(undated)), ["08:00", "19:59"])
+        self.assertEqual(times(search(dated)), ["07:59", "08:00", "19:59", "20:00"])
+        self.assertEqual(times(search(undated, day="2026-11-27")), ["20:30"])
+        self.assertEqual(times(search(undated, booking_ref=self.known_booking())), ["07:59", "08:00", "19:59", "20:00"])
+
+        fallback = search(undated, day="2026-11-29")
+        self.assertEqual(fallback["nextOpenDate"], "2026-12-01")
+        self.assertEqual(times(fallback), ["08:00"])
+
     def test_excluded_dates_filter_primary_and_fallback_search_and_reject_an_old_ref(self):
         monday = self.tools.execute("find_slots", slot_args("2026-11-30")).result["slots"][0]["ref"]
         tools = CalendarTools(self.calendar, self.state, NOW, excluded_days=frozenset({date(2026, 12, 1)}),

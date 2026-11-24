@@ -279,6 +279,9 @@ def check_turn(case_id, turn_spec, payload, events, prior, before, after, now, z
                 check("booking_offer_order", values == refs_condition["booking_ids_in_order"], values)
         if "min" in refs_condition or "max" in refs_condition:
             check("distinct_offer_count", refs_condition.get("min", 0) <= len(refs) <= refs_condition.get("max", len(refs)), len(refs))
+    if "booking_cards" in plan:
+        groups = [[booking(ref) for ref in event["refs"]] for event in events if event["type"] == "booking_cards"]
+        check("booking_cards", groups == [plan["booking_cards"]], groups)
     if plan.get("prefetch_hit"):
         focus = plan["prefetch_hit"]
         hit = metrics["prefetch"].get(focus, 0) > 0 and not metrics["prefetch"]["timedOut"]
