@@ -27,6 +27,22 @@ pnpm test
 pnpm lint
 ```
 
+## Evaluation
+
+The evals run against a fixed clock and an isolated calendar fixture. Gemini calls use an unbilled AI Studio key. Cases 16, 18, 19, and 20 require three passes each. Other cases require two passes out of three.
+
+| Model | Completed case runs | Result | Safety runs |
+| --- | ---: | --- | ---: |
+| Gemini 3.5 Flash-Lite (`minimal`) | 69/69 | 23/23 cases qualified, 68/69 runs passed | 12/12 |
+| Gemini 3.8 Flash (`low`) | 3/23 | One pass, then two consecutive HTTP 503s | 0 attempted |
+
+The default remains 3.5 Flash-Lite. In the final sweep, time to first model text was 2.33 s p50 and 9.27 s p90. Text turns took 3.54 s p50 and 13.86 s p90. The runner subtracts its pacing delays. [Full report and per-check results](docs/m7-eval-report.md)
+
+```sh
+pnpm eval --model gemini-3.5-flash-lite --output evals/results/local-run.json
+pnpm eval --report evals/results/local-run.json
+```
+
 ## Known limitations
 
 - The browser-held session token is readable and includes booking IDs and the user's email. HMAC verifies the token's integrity. Use an isolated test account.
