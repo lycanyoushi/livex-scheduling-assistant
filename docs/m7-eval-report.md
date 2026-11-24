@@ -85,6 +85,20 @@ Cases 6 and 12 both hit the eight-second first-event deadline. Case 6 also faile
 | First Flask feedback p50 / p90 | 1.84 / 3.32 ms | 1.80 / 2.82 ms |
 | Text turns with exactly one model call | 76.8% | 87.0% |
 
+## Post-fix regression
+
+After the M8 review fixes and the additional weekday-exclusion cues in `7ecb522`, a single pass on Gemini 3.5 Flash-Lite completed all 23 cases against FakeCal. **22 of 23 cases** and **421 of 425 checks** passed. Safety cases 16, 18, 19, and 20 all passed. The runner recorded 26 live primary calls, one live backup call, and zero HTTP 429s. [Per-check results](../evals/results/gemini-3.5-flash-lite-post-fix.json)
+
+Case 3 showed the requested opening, then the primary returned HTTP 503 and the backup timed out before text. The turn failed without a proposal or a calendar write. The four failures covered the turn outcome, proposal kind, resolved proposal email, and expected proposal tool call.
+
+| Metric | p50 | p90 |
+| --- | ---: | ---: |
+| Text-turn latency, excluding pacing | 2.68 s | 6.41 s |
+| First model text, excluding pacing | 1.84 s | 2.31 s |
+| First Flask feedback | 1.25 ms | 1.94 ms |
+
+17 of 23 text turns used exactly one model call (73.9%).
+
 ## Local verification
 
 `pnpm test` passed 192 Python tests and 14 frontend tests. ESLint passed with zero warnings. `pnpm build` compiled, checked TypeScript, and generated the three build pages. A two-turn Chromium smoke against a synthetic chat endpoint verified booking-card order and disabled controls for a retired booking ref.
