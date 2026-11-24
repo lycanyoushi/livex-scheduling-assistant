@@ -53,6 +53,12 @@ Vercel deployed revision `b9913df` to Production. The verifier entered the appro
 
 The Cal.com account reported zero connected calendars and no booking destination. Vercel Production has `DAILY_MODEL_CALL_CAP=30` per process per day. The Google AI Studio project's current daily quota is visible in the signed-in dashboard. [Cal.com calendar API](https://cal.com/docs/api-reference/v2/calendars/get-all-calendars) · [AI Studio rate limits](https://aistudio.google.com/rate-limit)
 
+### Schedule lookup and daytime availability release
+
+Vercel deployed revision `a645132` to Production. “Show me my schedule,” “What's my schedule?” and “What's on my calendar?” each asked for the email used to book with zero Gemini calls and zero availability reads. “Which email do I provide?” explained that the attendee should use the address entered when booking. Supplying the approved test alias by itself resumed the lookup and showed an empty booking list. A second calendar request with that attendee produced the same list.
+
+The Cal.com test event's schedule is Monday through Friday, 09:00–17:00 in `America/Los_Angeles`. In UTC, an undated “Schedule a meeting” request showed daytime starts at 17:00 and 17:30 across the offered dates. In `Asia/Kathmandu`, where the test event's opening hours fell outside the daytime window, the same request returned after-hours starts. All Production checks made zero calendar writes. [Cal.com schedule API](https://cal.com/docs/api-reference/v2/schedules/get-a-schedule) · [Schedule listing regression](m7-eval-report.md#schedule-listing-regression)
+
 ## Recording outline
 
 Show a text request and the first available times. Pick a time, fill in the contact fields, and type `yes please` in chat to confirm the booking. Say “I can confirm by typing or by clicking.” Verify the booking in Cal.com and list it in chat. Choose a different time and click **Confirm** to move the meeting. Cancel the replacement and verify that no fixture bookings remain. Show the taken-slot alternatives and a diagnostics view with zero model calls on a confirmation. Finish with a numbered choice in the Python terminal and the mobile widget. Aim for two to three minutes.

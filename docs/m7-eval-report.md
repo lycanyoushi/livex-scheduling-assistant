@@ -123,6 +123,10 @@ The release passed 235 Python tests, 21 frontend tests, ESLint, and the producti
 pnpm eval --model gemini-3.5-flash-lite --cases 16 18 19 20 32 33 34 --repeats 3
 ```
 
+## Schedule listing regression
+
+Cases 2, 10, 11, and 35 passed **75/75 checks** in one live Gemini run against FakeCal. Case 10 asked for the email used to book with zero model calls and zero calendar reads. Case 35 sent “Show me my schedule” and “What's on my calendar?” with a known attendee. Each turn displayed only that attendee's booking, with one model call and zero slot reads or calendar writes. Cases 2 and 11 also preserved dated availability and known-attendee listing. All four live model calls completed without HTTP errors. The release passed 242 Python tests, 21 frontend tests, ESLint, and the production build. [Per-check results](../evals/results/schedule-listing.json) · [Case 35](../evals/schedule_listing.yaml)
+
 ## Local verification
 
 `pnpm test` passed 192 Python tests and 14 frontend tests. ESLint passed with zero warnings. `pnpm build` compiled, checked TypeScript, and generated the three build pages. A two-turn Chromium smoke against a synthetic chat endpoint verified booking-card order and disabled controls for a retired booking ref.
