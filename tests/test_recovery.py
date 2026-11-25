@@ -148,15 +148,14 @@ class ModelRecoveryTests(unittest.IsolatedAsyncioTestCase):
         pick = {"kind": "ui", "action": {"type": "pick_slot", "slotRef": chips["refs"][0]}}
         selected = await self.turn(service, pick, events[-1]["stateToken"])
         self.assertEqual(selected[-1]["metrics"]["modelCalls"], [])
-        self.assertEqual(next(event["proposal"]["kind"] for event in selected if event["type"] == "proposal"), "book")
+        self.assertTrue(any("guest" in event["text"].lower() for event in selected if event["type"] == "assistant_text"))
         self.assertEqual(calendar.list_bookings()["data"], [])
 
-    async def test_unverified_stored_backup_preserves_pending_history_and_lists_owned_bookings(self):
+    async def test_unverified_stored_backup_preserves_pending_history_and_lists_calendar(self):
         primary, backup = ScriptedModel((ModelError("timeout"),)), ScriptedModel()
         calendar = FakeCal(fixture_overrides={"active_bookings": ["sam_intro", "other_intro"]})
         service = self.service(primary, backup_model=backup, backup_continuations=False, calendar=calendar)
         previous = new_state(ZONE, DEFAULT_CLOCK)
-        previous.user.email = "sam@example.com"
         previous.counters.p = 1
         previous.interaction_id = "primary-parent"
         previous.pending_call = PendingCall(id="find-1", name="propose_cancel", proposal_id="P1",
@@ -167,8 +166,8 @@ class ModelRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(metrics["fallback"], "code_only")
         self.assertEqual(state.interaction_id, previous.interaction_id)
         self.assertEqual(state.pending_call, previous.pending_call)
-        self.assertEqual(len(state.bookings), 1)
-        self.assertIn("upcoming meetings", exception_event(events)["message"])
+        self.assertEqual(len(state.bookings), 2)
+        self.assertIn("calendar meetings", exception_event(events)["message"])
 
     async def test_verified_backup_can_close_the_same_pending_call(self):
         primary, backup = ScriptedModel((ModelError("timeout"),)), ScriptedModel(reply())
@@ -339,15 +338,13 @@ class RateLimitTests(unittest.TestCase):
         self.addCleanup(service.close_prefetch)
         client = create_app(service).test_client()
 
-        def send(action, token=None):
-            response = client.post("/api/chat", json=wire({"kind": "ui", "action": action}, token), buffered=True)
+        def send(value, token=None):
+            response = client.post("/api/chat", json=wire(value, token), buffered=True)
             return [json.loads(line) for line in response.data.splitlines()]
 
-        offered = send({"type": "more_slots", "fromDate": "2026-11-24"})
-        slot = next(event["refs"][0] for event in offered if event["type"] == "slot_chips")
-        selection = send({"type": "pick_slot", "slotRef": slot}, offered[-1]["stateToken"])
+        selection = send(text("Book tomorrow at 2pm with Avery Fixture, avery@example.com."))
         proposed = next(event["proposal"]["id"] for event in selection if event["type"] == "proposal")
-        action = {"type": "confirm_proposal", "proposalId": proposed, "name": "Avery Fixture", "email": "avery@example.com"}
+        action = {"kind": "text", "text": "yes", "proposalId": proposed}
         confirms = [send(action, selection[-1]["stateToken"]) for _ in range(2)]
         results = [next(event for event in events if event["type"] == "booking_result") for events in confirms]
         self.assertEqual(results[0], results[1])

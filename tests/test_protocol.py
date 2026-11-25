@@ -33,9 +33,8 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(request.input.text, "Tomorrow morning")
         self.assertEqual(request.model_dump(by_alias=True), original)
 
-    def test_typed_confirmation_round_trips_the_bound_card_and_contact(self):
-        original = chat_request({"kind": "text", "text": "yes", "proposalId": "P1",
-                                 "contact": {"name": "Sam", "email": ""}})
+    def test_typed_confirmation_round_trips_the_bound_card(self):
+        original = chat_request({"kind": "text", "text": "yes", "proposalId": "P1"})
         request = ChatRequest.model_validate(original)
         self.assertEqual(request.input.proposal_id, "P1")
         self.assertEqual(request.model_dump(by_alias=True), original)
@@ -46,13 +45,6 @@ class ProtocolTests(unittest.TestCase):
             {"type": "more_slots"},
             {"type": "more_slots", "fromDate": "2026-11-23"},
             {"type": "confirm_proposal", "proposalId": "P4"},
-            {
-                "type": "confirm_proposal",
-                "proposalId": "P6",
-                "name": "Sam Test",
-                "email": "sam@example.com",
-                "notes": "Test booking",
-            },
             {"type": "dismiss_proposal", "proposalId": "P3"},
             {"type": "request_cancel", "bookingRef": "B1"},
             {"type": "request_reschedule", "bookingRef": "B2"},
@@ -74,6 +66,7 @@ class ProtocolTests(unittest.TestCase):
     def test_wrong_types_unknown_fields_and_unsupported_variants_are_rejected(self):
         invalid_inputs = [
             {"kind": "text", "text": 12},
+            {"kind": "text", "text": "yes", "proposalId": "P1", "contact": {"email": "other@example.com"}},
             {"kind": "text", "text": "Hi", "action": {"type": "more_slots"}},
             {"kind": "action", "action": {"type": "more_slots"}},
             {"kind": "ui", "action": {"type": "unknown_action"}},

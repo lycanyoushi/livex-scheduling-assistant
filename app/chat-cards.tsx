@@ -1,4 +1,4 @@
-import { type FormEvent, type KeyboardEvent, type ReactNode, type Ref, useEffect, useId, useRef, useState } from "react";
+import { type KeyboardEvent, type ReactNode, useEffect, useId, useRef, useState } from "react";
 import {
   ArrowRight, CalendarCheck, CalendarClock, CalendarDays, CalendarPlus, Check, ChevronDown, ChevronRight,
   CircleCheck, Clock3, Globe, UserRound, Video, X, type LucideIcon,
@@ -13,14 +13,12 @@ import {
   type ReferenceViews,
   type SlotView,
   type UiAction,
-  bookingContact,
   nextSlotDate,
 } from "./chat-protocol";
 
 export const OUTLINE_BUTTON = "min-h-11 rounded-md px-4 text-sm font-semibold focus-visible:outline-2 focus-visible:outline-ring disabled:opacity-50";
 export const PRIMARY_BUTTON = `${OUTLINE_BUTTON} bg-primary text-primary-foreground`;
 
-const CONTACT_FIELD = "min-h-11 w-full min-w-0 rounded-md border border-border bg-background px-3 py-2 text-base focus-visible:outline-2 focus-visible:outline-ring";
 const SLOT_TARGET = "min-h-11 min-w-11 font-medium leading-snug focus-visible:outline-2 focus-visible:outline-ring disabled:text-muted-foreground disabled:opacity-55";
 const CARD = "rounded-2xl border border-border bg-card p-4 shadow-xs sm:p-5";
 const RESULT_LABELS: Record<BookingResult["kind"], string> = {
@@ -34,9 +32,9 @@ const PROPOSAL_LABELS: Record<ProposalView["kind"], string> = {
   reschedule: "Move this meeting?",
 };
 const PROPOSAL_STYLE = {
-  book: { title: "Confirm booking", action: "Confirm booking", icon: CalendarCheck },
-  cancel: { title: "Cancel meeting?", action: "Cancel meeting", icon: X },
-  reschedule: { title: "Move meeting", action: "Move meeting", icon: CalendarClock },
+  book: { title: "Confirm booking", icon: CalendarCheck },
+  cancel: { title: "Cancel meeting?", icon: X },
+  reschedule: { title: "Move meeting", icon: CalendarClock },
 };
 
 type SendAction = (action: UiAction) => void;
@@ -56,42 +54,34 @@ function Detail({ icon: Icon, children }: { icon: LucideIcon; children: ReactNod
   );
 }
 
-export function ConfirmCard({ proposal, originalBooking, selectedSlot, active, submitting, formRef, onAction }: {
+export function ConfirmCard({ proposal, originalBooking, selectedSlot, active, submitting, onAction }: {
   proposal: ProposalView;
   originalBooking?: BookingView;
   selectedSlot?: SlotView;
   active: boolean;
   submitting: boolean;
-  formRef?: Ref<HTMLFormElement>;
   onAction: SendAction;
 }) {
-  const { title, action, icon: TitleIcon } = PROPOSAL_STYLE[proposal.kind];
+  const headingId = useId();
+  const { title, icon: TitleIcon } = PROPOSAL_STYLE[proposal.kind];
   const { dayLabel, timeLabel } = selectedSlot ?? whenParts(proposal.whenLabel);
   const duration = `${proposal.durationMinutes} min`;
-  const attendee = proposal.kind === "book" ? undefined : originalBooking?.attendees.join(", ");
+  const guestName = proposal.kind === "book" ? proposal.name : originalBooking?.guestName ?? proposal.name;
+  const guestEmail = proposal.kind === "book" ? proposal.email : originalBooking?.attendees.join(", ") || proposal.email;
+  const guest = [guestName, guestEmail].filter(Boolean).join(" · ");
   const move = proposal.kind === "reschedule" && originalBooking ? whenParts(originalBooking.whenLabel) : undefined;
   const working = active && submitting;
-
-  function confirm(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!active || submitting) return;
-    const contact = proposal.kind === "book" ? bookingContact(new FormData(event.currentTarget)) : undefined;
-    onAction({ type: "confirm_proposal", proposalId: proposal.id, ...contact });
-  }
+  const disabled = !active || submitting;
+  const hasGuestDetails = proposal.kind !== "book" || Boolean(proposal.name && proposal.email);
 
   return (
-    <form
-      ref={formRef}
-      onSubmit={confirm}
-      className={`${CARD} ${active ? "" : "opacity-65"}`}
-      aria-label={PROPOSAL_LABELS[proposal.kind]}
-    >
+    <section className={`${CARD} ${active ? "" : "opacity-65"}`} aria-labelledby={headingId}>
       <div className="flex items-center gap-2.5">
         <div className={`grid size-9 shrink-0 place-items-center rounded-xl ${proposal.kind === "cancel"
           ? "bg-red-500/10 text-red-700 dark:text-red-300" : "bg-primary/10 text-ring"}`}>
           <TitleIcon size={18} aria-hidden="true" />
         </div>
-        <h2 className="text-lg font-semibold" aria-label={PROPOSAL_LABELS[proposal.kind]}>{title}</h2>
+        <h2 id={headingId} className="text-lg font-semibold" aria-label={PROPOSAL_LABELS[proposal.kind]}>{title}</h2>
       </div>
       <p className="mt-3 font-medium">{proposal.title}</p>
       {move && (
@@ -115,43 +105,29 @@ export function ConfirmCard({ proposal, originalBooking, selectedSlot, active, s
           <Detail icon={Clock3}>{timeLabel ? `${timeLabel} · ${duration}` : duration}</Detail>
         </>}
         <Detail icon={Globe}>{proposal.timeZone}</Detail>
-        {attendee && <Detail icon={UserRound}>{attendee}</Detail>}
+        {guest && <Detail icon={UserRound}>{guest}</Detail>}
       </div>
-      <fieldset className="mt-4 grid grid-cols-2 gap-3" disabled={!active || submitting}>
-        {proposal.kind === "book" && (
-          <>
-            <p className="col-span-2 text-sm font-semibold">Contact</p>
-            <label className="grid min-w-0 gap-1 text-sm font-medium">
-              Name
-              <input className={CONTACT_FIELD} name="name" autoComplete="name" defaultValue={proposal.name} required maxLength={200} pattern=".*\S.*" />
-            </label>
-            <label className="grid min-w-0 gap-1 text-sm font-medium">
-              Email
-              <input className={CONTACT_FIELD} name="email" type="email" autoComplete="email" defaultValue={proposal.email} required maxLength={254} />
-            </label>
-            <label className="col-span-2 grid min-w-0 gap-1 text-sm font-medium">
-              Note (optional)
-              <textarea className={CONTACT_FIELD} name="notes" defaultValue={proposal.notes} rows={2} maxLength={2_000} />
-            </label>
-          </>
-        )}
-        <div className="col-span-2 flex flex-wrap items-center gap-2">
-          <button className={proposal.kind === "cancel" ? `${OUTLINE_BUTTON} bg-red-700 text-white hover:bg-red-800` : PRIMARY_BUTTON}
-            type="submit" aria-label={working ? "Working…" : "Confirm"}>
-            {working ? "Working…" : action}
-          </button>
-          <button
-            className={`${OUTLINE_BUTTON} border border-border`}
-            type="button"
-            aria-label="Change"
-            onClick={() => onAction({ type: "dismiss_proposal", proposalId: proposal.id })}
-          >
-            Not now
-          </button>
-        </div>
-      </fieldset>
-      {active && <p className="mt-2 text-xs text-muted-foreground">You can also type yes in the chat.</p>}
-    </form>
+      {proposal.notes && <p className="mt-2 text-sm text-muted-foreground wrap-anywhere">{proposal.notes}</p>}
+      <div className="mt-4 flex flex-wrap items-center gap-2">
+        <button
+          className={proposal.kind === "cancel" ? `${OUTLINE_BUTTON} bg-red-700 text-white hover:bg-red-800` : PRIMARY_BUTTON}
+          type="button"
+          disabled={disabled}
+          onClick={() => onAction({ type: "confirm_proposal", proposalId: proposal.id })}
+        >
+          {working ? "Working…" : "Confirm"}
+        </button>
+        <button
+          className={`${OUTLINE_BUTTON} border border-border`}
+          type="button"
+          disabled={disabled}
+          onClick={() => onAction({ type: "dismiss_proposal", proposalId: proposal.id })}
+        >
+          Not now
+        </button>
+      </div>
+      {active && hasGuestDetails && <p className="mt-2 text-xs text-muted-foreground">You can also type yes or no in chat.</p>}
+    </section>
   );
 }
 

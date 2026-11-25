@@ -12,16 +12,13 @@ from pathlib import Path
 import re
 import sys
 from typing import TextIO
-from urllib.parse import urlsplit
 
 from backend.cal_client import CalError
-from backend.prescan import EMAIL
 from backend.protocol import BookingView, ChatRequest, ProposalView, SlotView, TurnMetrics, validate_time_zone
 from backend.reference_text import ReferenceLabel, ReferenceText, repeats_time
-from backend.server import _public_url, load_service
-from backend.state import MAX_BOOKINGS, MAX_SLOTS, new_state
-from backend.tools import CalendarTools, ToolRejected
-from backend.turn import TurnService
+from backend.server import load_service
+from backend.state import MAX_BOOKINGS, MAX_SLOTS
+from backend.turn import TurnService, proposal_reply
 
 
 _CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
@@ -30,6 +27,7 @@ _ACTIVE = {"accepted", "pending"}
 _UNVERIFIED_WRITES = {"write_unverified", "reschedule_partial"}
 _PROPOSAL_TITLES = {"book": "Book this meeting?", "cancel": "Cancel this meeting?", "reschedule": "Move this meeting?"}
 _RESULT_LABELS = {"booked": "Meeting booked", "cancelled": "Meeting cancelled", "rescheduled": "Meeting moved"}
+_CAL_BOOKINGS_URL = "https://app.cal.com/bookings/upcoming"
 
 
 def _windows_zone() -> str | None:
@@ -76,6 +74,12 @@ def _ui(action: str, **fields: str) -> dict:
 
 def _recent(views: dict, limit: int) -> dict:
     return dict(sorted(views.items(), key=lambda item: int(item[0][1:]))[-limit:])
+
+
+def _decision(request: dict) -> str | None:
+    if request["kind"] == "text":
+        return proposal_reply(request["text"]) if request.get("proposalId") else None
+    return {"confirm_proposal": "confirm", "dismiss_proposal": "dismiss"}.get(request["action"]["type"])
 
 
 class _TurnDisplay:
@@ -184,7 +188,9 @@ class _TurnDisplay:
         if chat.latest_booking in self.retired_bookings:
             chat.latest_booking = None
         success = chat.metrics["outcome"] == "ok" or chat.metrics.get("fallback") == "code_only"
-        slot_action = request["kind"] == "ui" and request["action"]["type"] in {"pick_slot", "confirm_proposal"}
+        slot_action = (
+            request["kind"] == "ui" and request["action"]["type"] in {"pick_slot", "confirm_proposal"}
+        ) or chat.metrics.get("path") == "ui_action"
         if self.error in {"session_expired", "interaction_expired"}:
             chat.clear_context()
         elif self.error in _UNVERIFIED_WRITES:
@@ -202,7 +208,8 @@ class _TurnDisplay:
             for ref in dict.fromkeys(self.listed):
                 booking = self.bookings.get(ref)
                 if booking is not None and (self.result is None or ref != self.result[1]["ref"]):
-                    chat.write(f"[{ref}] {booking['title']} · {booking['whenLabel']} · {booking['status']}")
+                    guest = f" · {booking['guestName']}" if booking.get("guestName") else ""
+                    chat.write(f"[{ref}] {booking['title']} · {booking['whenLabel']} · {booking['status']}{guest}")
             if self.result is not None:
                 action, booking = self.result
                 if booking["status"] in _ACTIVE:
@@ -217,7 +224,11 @@ class _TurnDisplay:
                 proposal = self.proposal
                 chat.write(_PROPOSAL_TITLES[proposal["kind"]])
                 chat.write(f"{proposal['title']} · {proposal['whenLabel']} · {proposal['durationMinutes']} min · {proposal['timeZone']}")
-            elif request["kind"] == "ui":
+                guest = proposal.get("name") or self.bookings.get(proposal.get("bookingRef", ""), {}).get("guestName")
+                if guest:
+                    chat.write(f"Guest: {guest}")
+                chat.write("Type yes or no. [y/n]")
+            elif self.result is not None or _decision(request) == "dismiss":
                 chat.proposal = None
         if self.retryable and self.error not in _UNVERIFIED_WRITES and self.result is None:
             chat.offer_retry(request)
@@ -233,7 +244,6 @@ class TerminalChat:
                       and (os.name != "nt" or bool(os.environ.get("WT_SESSION") or os.environ.get("ANSICON"))))
         self.token: str | None = None
         self.metrics: TurnMetrics | None = None
-        self.booking_url: str | None = None
         self.next_choice = 1
         self.clear_context()
 
@@ -259,22 +269,6 @@ class TerminalChat:
         self.retry_input = request
         self.write("Type Retry to try again.")
 
-    def _lookup_booking_url(self) -> str | None:
-        now = self.service.clock()
-        try:
-            tools = CalendarTools(
-                self.service.calendar, new_state(self.time_zone, now), now,
-                allowed_slugs=self.service.allowed_slugs, default_slug=self.service.default_slug,
-            )
-            value = _public_url(tools.default_event().get("bookingUrl"))
-            if value is not None:
-                parsed = urlsplit(value)
-                if parsed.scheme == "https":
-                    return parsed._replace(query="", fragment="").geturl()
-        except (CalError, ToolRejected):
-            pass
-        return None
-
     def write(self, text: str, *, end: str = "\n", dim: bool = False) -> None:
         text = _CONTROL.sub("", text)
         if dim and self.color:
@@ -294,7 +288,7 @@ class TerminalChat:
                     display.show(event)
         display.finish_text()
         if terminal is None:
-            if source["kind"] == "ui" and source["action"]["type"] == "confirm_proposal":
+            if _decision(source) == "confirm":
                 self.clear_uncertain_proposal()
                 self.write("Check your calendar to see whether the change went through.")
             else:
@@ -303,57 +297,14 @@ class TerminalChat:
             return
         display.commit(terminal, source)
         if display.booker and display.error not in _UNVERIFIED_WRITES:
-            if self.booking_url is None:
-                self.booking_url = await asyncio.to_thread(self._lookup_booking_url)
-            if self.booking_url is not None:
-                self.write(f"Book directly: {self.booking_url}")
-
-    def _contact_field(self) -> str | None:
-        if self.proposal is not None and self.proposal["kind"] == "book":
-            if not self.proposal.get("name"):
-                return "name"
-            if not self.proposal.get("email"):
-                return "email"
-        return None
-
-    def _prompt(self) -> str:
-        field = self._contact_field()
-        if field is not None:
-            return f"{field.title()}: "
-        return "You: " if self.proposal is None else "Confirm? [y/n] "
-
-    def _proposed_action(self, answer: str) -> dict | None:
-        proposal = self.proposal
-        assert proposal is not None
-        field = self._contact_field()
-        if field is not None and answer.casefold() in {"", "/cancel"}:
-            return _ui("dismiss_proposal", proposalId=proposal["id"])
-        if field == "name":
-            if len(answer) <= 200:
-                proposal["name"] = answer
-            else:
-                self.write("Use a name of 200 characters or fewer.")
-            return None
-        if field == "email":
-            if len(answer) <= 254 and EMAIL.fullmatch(answer):
-                proposal["email"] = answer
-            else:
-                self.write("Enter a valid email address.")
-            return None
-        if answer.casefold() == "n":
-            return _ui("dismiss_proposal", proposalId=proposal["id"])
-        if answer.casefold() == "y":
-            details = {key: proposal[key] for key in ("name", "email", "notes")
-                       if proposal["kind"] == "book" and proposal.get(key)}
-            return _ui("confirm_proposal", proposalId=proposal["id"], **details)
-        self.write("Enter y or n.")
-        return None
+            self.write(f"Open Cal.com bookings: {_CAL_BOOKINGS_URL}")
 
     def _input(self, text: str) -> dict | None:
         if text.casefold() == "retry" and self.retry_input is not None:
             return self.retry_input
-        if self.proposal is not None:
-            return self._proposed_action(text)
+        if self.proposal is not None and text.casefold() in {"y", "n", "/cancel"}:
+            action = "confirm_proposal" if text.casefold() == "y" else "dismiss_proposal"
+            return _ui(action, proposalId=self.proposal["id"])
         if text.isdecimal():
             ref = self.choices.get(int(text)) if len(text) <= 8 else None
             if ref is not None:
@@ -369,7 +320,10 @@ class TerminalChat:
         if len(text) > 2_000:
             self.write("Use a message of 2,000 characters or fewer.")
             return None
-        return {"kind": "text", "text": text}
+        source = {"kind": "text", "text": text}
+        if self.proposal is not None:
+            source["proposalId"] = self.proposal["id"]
+        return source
 
     def _command(self, text: str) -> None:
         command, _, value = text.partition(" ")
@@ -394,13 +348,12 @@ class TerminalChat:
 
     def run(self, runner: asyncio.Runner) -> None:
         while True:
-            choice = self.read(self._prompt()).strip()
+            choice = self.read("You: ").strip()
             if choice == "/quit":
                 return
-            collecting_contact = self._contact_field() is not None
-            if choice.startswith("/") and not (collecting_contact and choice.casefold() == "/cancel"):
+            if choice.startswith("/") and not (self.proposal is not None and choice.casefold() == "/cancel"):
                 self._command(choice)
-            elif (choice or collecting_contact) and (source := self._input(choice)) is not None:
+            elif choice and (source := self._input(choice)) is not None:
                 runner.run(self.send(source))
 
 

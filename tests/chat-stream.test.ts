@@ -1,7 +1,7 @@
 import { expect, it } from "vitest";
 
 import { calendarFile, googleCalendarLink, safeMeetingLink } from "../app/calendar-export";
-import { type BookingView, type ChatInput, type ProposalView, type ServerEvent, bookingContact, canRetryTurn, clearsProposalOnSuccess, controlsForTurn, listedBookingRefs, nextSlotDate, proposalDecision, readChatStream, splitReferenceText, typedInput, unverifiedWrite, withoutRetiredBookings } from "../app/chat-protocol";
+import { type BookingView, type ChatInput, type ServerEvent, canRetryTurn, clearsProposalOnSuccess, controlsForTurn, listedBookingRefs, nextSlotDate, proposalDecision, readChatStream, splitReferenceText, typedInput, unverifiedWrite, withoutRetiredBookings } from "../app/chat-protocol";
 
 const encoder = new TextEncoder();
 
@@ -150,40 +150,29 @@ it("gives a typed confirmation the same transport and taken-slot safety as the b
   expect(controlsForTurn(confirm, failed, "write_unverified")).toBe("none");
 });
 
-it("sends the current booking form edits with a typed yes", () => {
-  const changedFields = new FormData();
-  changedFields.set("name", "  Edited name  ");
-  changedFields.set("email", "edited@example.com");
-  changedFields.set("notes", " Updated note ");
-  const contact = bookingContact(changedFields);
-  expect(JSON.parse(JSON.stringify(typedInput("yes", "P1", contact)))).toEqual({
-    kind: "text", text: "yes", proposalId: "P1",
-    contact: { name: "Edited name", email: "edited@example.com", notes: "Updated note" },
-  });
-  expect(typedInput("no", "P1", contact)).toEqual({ kind: "text", text: "no", proposalId: "P1" });
-  expect(typedInput("yes", undefined, contact)).toEqual({ kind: "text", text: "yes" });
+it("sends guest details and slot picks as ordinary chat text", () => {
+  for (const text of ["Nova Fixture, nova@example.com", "the second one", "2:30 works"]) {
+    expect(typedInput(text, "P1")).toEqual({ kind: "text", text });
+  }
+  expect(controlsForTurn(typedInput("the second one"), { outcome: "failed", path: "ui_action" }, "slot_taken"))
+    .toBe("alternatives");
+  expect(controlsForTurn(typedInput("the second one"), { outcome: "failed", path: "model" }, "slot_taken"))
+    .toBe("none");
 });
 
-it("keeps the original card active when typed yes asks for cleared, missing or invalid contact", async () => {
-  const proposal: ProposalView = { id: "P1", kind: "book", title: "Meeting", whenLabel: "Monday",
-    timeZone: "UTC", durationMinutes: 30, name: "Earlier name", email: "previous@example.com" };
-  const cleared = new FormData();
-  cleared.set("name", "  ");
-  cleared.set("email", "new@example.com");
-  const sent = typedInput("yes", proposal.id, bookingContact(cleared));
-  expect(sent.contact).toEqual({ name: "", email: "new@example.com", notes: "" });
+it("keeps the original card active when the server asks for missing guest details", async () => {
   const response = new Response([
-    JSON.stringify({ type: "assistant_text", text: "Enter a name in the booking card." }),
+    JSON.stringify({ type: "assistant_text", text: "What is the guest's email address?" }),
     JSON.stringify({ type: "turn_end", stateToken: "fixture.signature", metrics: { path: "ui_action", outcome: "ok" } }),
     "",
   ].join("\n"));
   const terminal = await readChatStream(response.body!, () => {});
-  expect(clearsProposalOnSuccess(sent, terminal.metrics.path)).toBe(false);
-  expect(clearsProposalOnSuccess(typedInput("yes", proposal.id), terminal.metrics.path)).toBe(false);
-  const invalid = typedInput("yes", proposal.id, { name: "Edited name", email: "not-an-email" });
-  expect(clearsProposalOnSuccess(invalid, terminal.metrics.path)).toBe(false);
-  expect(clearsProposalOnSuccess(typedInput("no", proposal.id), terminal.metrics.path)).toBe(true);
-  expect(clearsProposalOnSuccess(typedInput("yes?", proposal.id), "model")).toBe(false);
+  expect(clearsProposalOnSuccess(typedInput("yes", "P1"), terminal.metrics.path)).toBe(false);
+  expect(clearsProposalOnSuccess(
+    { kind: "ui", action: { type: "confirm_proposal", proposalId: "P1" } }, terminal.metrics.path,
+  )).toBe(false);
+  expect(clearsProposalOnSuccess(typedInput("no", "P1"), terminal.metrics.path)).toBe(true);
+  expect(clearsProposalOnSuccess(typedInput("yes?", "P1"), "model")).toBe(false);
 });
 
 it("starts the next availability window after the final local date", () => {

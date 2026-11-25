@@ -51,37 +51,15 @@ def terminal(token="synthetic.token", *, outcome="ok", fallback=None):
 
 
 class TerminalIntegrationTests(unittest.TestCase):
-    def test_empty_or_cancel_at_either_contact_prompt_dismisses_the_proposal(self):
-        for contact_field in ("Name: ", "Email: "):
-            for dismissal in ("   ", " /CaNcEl "):
-                with self.subTest(contact_field=contact_field, dismissal=dismissal):
-                    service = TurnFixture([
-                        {"type": "assistant_text", "text": "Okay. The schedule is unchanged."},
-                        terminal("dismissed.token"),
-                    ])
-                    answers = iter((dismissal, "/quit"))
-                    prompts = []
-
-                    def read(prompt):
-                        prompts.append(prompt)
-                        return next(answers)
-
-                    chat = TerminalChat(service, ZONE, read=read, output=StringIO())
-                    chat.token = "proposal.token"
-                    chat.proposal = {"id": "P1", "kind": "book"}
-                    if contact_field == "Email: ":
-                        chat.proposal["name"] = "Nova Fixture"
-                    with asyncio.Runner() as runner:
-                        chat.run(runner)
-
-                    self.assertEqual(prompts, [contact_field, "You: "])
-                    self.assertEqual(len(service.requests), 1)
-                    request = service.requests[0]
-                    self.assertEqual(request.state_token, "proposal.token")
-                    self.assertEqual(request.input.action.type, "dismiss_proposal")
-                    self.assertEqual(request.input.action.proposal_id, "P1")
-                    self.assertEqual(chat.token, "dismissed.token")
-                    self.assertIsNone(chat.proposal)
+    def test_terminal_binds_confirmation_text_and_preserves_shortcuts(self):
+        chat = TerminalChat(TurnFixture(), ZONE, read=lambda _: "", output=StringIO())
+        chat.proposal = {"id": "P1", "kind": "book"}
+        self.assertEqual(chat._input("yes please"), {"kind": "text", "text": "yes please", "proposalId": "P1"})
+        self.assertEqual(chat._input("Actually, a different day"), {
+            "kind": "text", "text": "Actually, a different day", "proposalId": "P1",
+        })
+        self.assertEqual(chat._input("y")["action"], {"type": "confirm_proposal", "proposalId": "P1"})
+        self.assertEqual(chat._input("/cancel")["action"], {"type": "dismiss_proposal", "proposalId": "P1"})
 
     def test_terminal_books_lists_moves_and_cancels_on_the_shared_service(self):
         calendar = FakeCal(fixture_overrides={"open_local_starts": ["2026-11-26T13:30", "2026-11-27T09:00"]})
@@ -91,7 +69,7 @@ class TerminalIntegrationTests(unittest.TestCase):
         )
         service = TurnService(model=model, calendar=calendar, clock=lambda: DEFAULT_CLOCK, secret=SECRET)
         answers = iter((
-            "Can I grab a meeting Thursday afternoon?", "1", "Nova Fixture", "nova@example.com", "y",
+            "Can I grab a meeting Thursday afternoon?", "1", "Nova Fixture", "nova@example.com", "yes please",
             "r", "pick Friday", "y", "What meetings do I have coming up?", "c", "n", "c", "y", "/debug", "/quit",
         ))
         output = StringIO()
@@ -118,9 +96,7 @@ class TerminalIntegrationTests(unittest.TestCase):
         self.assertEqual(transcript.count("Cancel this meeting?"), 2)
         self.assertIn("Meeting cancelled", transcript)
         self.assertIn('"modelCalls": []', transcript)
-        self.assertEqual(prompts.count("Name: "), 1)
-        self.assertEqual(prompts.count("Email: "), 1)
-        self.assertEqual(prompts.count("Confirm? [y/n] "), 4)
+        self.assertEqual(set(prompts), {"You: "})
         self.assertEqual(len(model.requests), 2)
         self.assertIs(model.requests[0][0], model.close_loop)
         self.assertIs(model.requests[1][0], model.close_loop)

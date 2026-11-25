@@ -95,7 +95,7 @@ it("leaves explicit booking mentions as text and disables controls on historical
   expect(historical).not.toContain("Add to calendar");
 });
 
-it("uses a contact-free confirmation for moving a booking", () => {
+it("summarizes the guest and both times on an inactive move proposal", () => {
   const html = renderToStaticMarkup(createElement(ConfirmCard, {
     proposal: {
       id: "P2", kind: "reschedule", title: "Synthetic meeting", whenLabel: "Fri 27 Nov, 9:00 am",
@@ -103,7 +103,8 @@ it("uses a contact-free confirmation for moving a booking", () => {
     },
     originalBooking: {
       ref: "B1", title: "Synthetic meeting", whenLabel: "Thu 26 Nov, 8:00 am", status: "accepted",
-      attendees: ["fixture@example.com"], startUtc: "2026-11-26T16:00:00Z", endUtc: "2026-11-26T16:30:00Z",
+      guestName: "Nova Fixture", attendees: ["fixture@example.com"],
+      startUtc: "2026-11-26T16:00:00Z", endUtc: "2026-11-26T16:30:00Z",
     },
     selectedSlot: { dayLabel: "Fri 27 Nov", timeLabel: "9:00 am", startLocalIso: "2026-11-27T17:00:00Z" },
     active: false,
@@ -117,26 +118,34 @@ it("uses a contact-free confirmation for moving a booking", () => {
   expect(html).toContain(">To</p>");
   expect(html).toContain("8:00 am");
   expect(html).toContain("9:00 am · 30 min");
-  expect(html).toContain("fixture@example.com");
-  expect(html).toContain('aria-label="Confirm">Move meeting</button>');
-  expect(html).toContain('aria-label="Change">Not now</button>');
-  expect(html).toMatch(/<fieldset\b[^>]*disabled=""/);
-  expect(html).not.toContain('name="email"');
+  expect(html).toContain("Nova Fixture · fixture@example.com");
+  expect(html).toMatch(/<button\b[^>]*disabled=""[^>]*>Confirm<\/button>/);
+  expect(html).toMatch(/<button\b[^>]*disabled=""[^>]*>Not now<\/button>/);
+  expect(html).not.toMatch(/<(form|input|textarea)\b/);
 });
 
-it("keeps booking contact in a two-column form with a full-width note", () => {
-  const html = renderToStaticMarkup(createElement(ConfirmCard, {
-    proposal: { id: "P2", kind: "book", title: "Synthetic meeting", whenLabel: "Fri 27 Nov, 9:00 am",
-      timeZone: "UTC", durationMinutes: 30, slotRef: "S2" },
+it("shows a booking summary with the guest details collected in chat", () => {
+  const proposal = { id: "P2", kind: "book" as const, title: "Synthetic meeting", whenLabel: "Fri 27 Nov, 9:00 am",
+    timeZone: "UTC", durationMinutes: 30, slotRef: "S2" };
+  const render = (details: { name?: string; email?: string; notes?: string }) => renderToStaticMarkup(createElement(ConfirmCard, {
+    proposal: { ...proposal, ...details },
     active: true, submitting: false, onAction: () => {},
   }));
+  const html = render({ name: "Nova Fixture", email: "nova@example.com", notes: "Candidate intro" });
 
+  expect(html).toMatch(/^<section\b[^>]*aria-labelledby="[^"]+"/);
   expect(html).toContain('aria-label="Book this meeting?">Confirm booking</h2>');
-  expect(html).toMatch(/<fieldset class="[^"]*\bgrid-cols-2\b[^\"]*">/);
-  expect(html).toMatch(/<label class="[^"]*\bmin-w-0\b[^\"]*">Name<input[^>]*name="name"/);
-  expect(html).toMatch(/<label class="[^"]*\bmin-w-0\b[^\"]*">Email<input[^>]*name="email"/);
-  expect(html).toMatch(/<label class="[^"]*\bcol-span-2\b[^\"]*">Note \(optional\)<textarea/);
-  expect(html).toContain("You can also type yes in the chat.");
+  expect(html).toContain("Nova Fixture · nova@example.com");
+  expect(html).toContain("Candidate intro");
+  expect(html).toContain(">Confirm</button>");
+  expect(html).toContain(">Not now</button>");
+  expect(html).toContain("You can also type yes or no in chat.");
+  expect(html).not.toMatch(/<(form|input|textarea)\b/);
+
+  const incomplete = render({ name: "Nova Fixture" });
+  expect(incomplete).toContain("Nova Fixture");
+  expect(incomplete).not.toMatch(/<(form|input|textarea)\b/);
+  expect(incomplete).not.toContain("You can also type yes or no in chat.");
 });
 
 it("uses status colors, a booking banner and a calendar dropdown", () => {

@@ -134,7 +134,6 @@ class _ProposeBooking(_ToolArgs):
     slot_ref: SlotRef
     name: ContactName
     notes: ContactNotes
-    email: str | None = None
 
 
 class _ProposeCancel(_ToolArgs):

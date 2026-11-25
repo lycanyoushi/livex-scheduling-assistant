@@ -8,7 +8,6 @@ import {
   type ProposalView,
   type ReferenceViews,
   type UiAction,
-  bookingContact,
   canRetryTurn,
   clearsProposalOnSuccess,
   controlsForTurn,
@@ -84,7 +83,6 @@ export default function ChatWorkspace({ embedded = false, onClose }: { embedded?
   const savedViews = useRef(EMPTY_VIEWS);
   const nextTurnId = useRef(1);
   const request = useRef<AbortController | null>(null);
-  const activeBookingForm = useRef<HTMLFormElement>(null);
   const transcript = useRef<HTMLElement>(null);
   const followsTranscript = useRef(true);
   const sending = activeKind !== null;
@@ -162,10 +160,6 @@ export default function ChatWorkspace({ embedded = false, onClose }: { embedded?
         ? requestedInput.proposalId : undefined)
       : requestedInput;
     const decision = proposalDecision(input);
-    const form = candidate?.kind === "book" ? activeBookingForm.current : null;
-    const wireInput = input.kind === "text" && decision === "confirm" && form
-      ? typedInput(input.text, input.proposalId, bookingContact(new FormData(form)))
-      : input;
     const controller = new AbortController();
     request.current = controller;
     followsTranscript.current = true;
@@ -222,7 +216,7 @@ export default function ChatWorkspace({ embedded = false, onClose }: { embedded?
         body: JSON.stringify({
           stateToken: token.current,
           timeZone,
-          input: wireInput,
+          input,
         }),
       });
       if (response.status === 429) {
@@ -348,7 +342,7 @@ export default function ChatWorkspace({ embedded = false, onClose }: { embedded?
         setActiveProposal(null);
       } else if (controls === "all") {
         if (committedProposal) setActiveProposal({ turnId: id, value: committedProposal });
-        else if (clearsProposalOnSuccess(wireInput, terminal.metrics.path)) setActiveProposal(null);
+        else if (clearsProposalOnSuccess(input, terminal.metrics.path)) setActiveProposal(null);
       }
       updateTurn((turn) => ({ ...turn, controls, proposal: committedProposal }));
 
@@ -596,7 +590,6 @@ export default function ChatWorkspace({ embedded = false, onClose }: { embedded?
                           submitting={sending}
                           originalBooking={turn.proposal.bookingRef ? turn.views.bookings[turn.proposal.bookingRef] : undefined}
                           selectedSlot={turn.proposal.slotRef ? turn.views.slots[turn.proposal.slotRef] : undefined}
-                          formRef={isActiveProposal && turn.proposal.kind === "book" ? activeBookingForm : undefined}
                           onAction={takeAction}
                         />
                       )}
