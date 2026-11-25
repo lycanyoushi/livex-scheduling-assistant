@@ -1,6 +1,7 @@
 "use client";
 
-import { type FormEvent, useEffect, useRef, useState } from "react";
+import { ArrowDown, ArrowUp, ArrowUpRight, CalendarClock, CalendarDays, CalendarPlus, CalendarX, Square, TriangleAlert } from "lucide-react";
+import { type FormEvent, type ReactNode, useEffect, useRef, useState } from "react";
 
 import {
   type ChatInput,
@@ -20,9 +21,9 @@ import {
   withoutRetiredBookings,
 } from "./chat-protocol";
 import { BookerFallback, safePublicBookingUrl } from "./booker-fallback";
-import { BookingCard, ConfirmCard, OUTLINE_BUTTON, PRIMARY_BUTTON, RefText, SlotChips } from "./chat-cards";
+import { BookingCard, ConfirmCard, OUTLINE_BUTTON, RefText, SlotChips } from "./chat-cards";
 import { ChatDebug, type DebugSnapshot } from "./chat-debug";
-import { ChatHeader } from "./chat-header";
+import { AssistantAvatar, ChatHeader } from "./chat-header";
 import {
   type ActiveProposal, type TurnError, type TurnRecord,
   browserStorage, clearHistory, loadHistory, saveHistory, validTimeZone,
@@ -30,8 +31,14 @@ import {
 
 const EMPTY_VIEWS: ReferenceViews = { slots: {}, bookings: {} };
 const RATE_LIMITED = "Too many requests right now. Wait a moment, then retry.";
-const SUGGESTIONS = ["Book a 30-min meeting", "What's on my calendar?", "Reschedule my next meeting"];
+const SUGGESTIONS = [
+  { title: "Book a meeting", prompt: "Book a 30-minute meeting", label: "Book a 30-min meeting", icon: CalendarPlus },
+  { title: "View meetings", prompt: "What meetings do I have?", label: "What's on my calendar?", icon: CalendarDays },
+  { title: "Reschedule", prompt: "Reschedule my meeting", label: "Reschedule my next meeting", icon: CalendarClock },
+  { title: "Cancel a meeting", prompt: "Cancel my meeting", label: "Cancel my meeting", icon: CalendarX },
+];
 const LAST_EVENT_LIMIT = 200;
+const ICON_TARGET = "inline-grid size-11 shrink-0 cursor-pointer place-items-center focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-default disabled:opacity-45";
 
 function browserTimeZone(): string {
   return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
@@ -42,7 +49,16 @@ function keepLatestReferences<T>(views: Record<string, T>, limit: number): Recor
   return Object.fromEntries(entries.slice(-limit));
 }
 
-export default function ChatWorkspace({ embedded = false }: { embedded?: boolean }) {
+function AssistantRow({ children }: { children: ReactNode }) {
+  return (
+    <div className="grid min-w-0 grid-cols-[1.875rem_minmax(0,1fr)] items-start gap-2.5 sm:gap-3">
+      <AssistantAvatar className="size-[30px]" />
+      <div className="grid min-w-0 gap-3 pt-0.5">{children}</div>
+    </div>
+  );
+}
+
+export default function ChatWorkspace({ embedded = false, onClose }: { embedded?: boolean; onClose?: () => void }) {
   const storageKey = embedded ? "livex.widget.v1" : "livex.chat.v1";
   const titleId = embedded ? "widget-chat-title" : "chat-title";
   const messageId = embedded ? "widget-chat-message" : "chat-message";
@@ -413,40 +429,56 @@ export default function ChatWorkspace({ embedded = false }: { embedded?: boolean
   }
 
   const Container = embedded ? "div" : "main";
+  const latestTurn = turns.at(-1);
+  const waitingForText = sending && !latestTurn?.text.trim();
+  const selectedRef = activeProposal?.value.slotRef ?? turns.findLast((turn) =>
+    turn.session === session && turn.input.kind === "ui" && turn.input.action.type === "pick_slot" && turn.proposal,
+  )?.proposal?.slotRef;
   return (
-    <Container className={`relative flex min-h-0 flex-col bg-background ${embedded ? "h-full" : "h-dvh"}`}>
+    <Container className={`relative flex min-h-0 flex-col overflow-hidden bg-background ${embedded ? "h-full" : "h-dvh"}`}>
       <ChatHeader {...host} timeZone={timeZone} onTimeZoneChange={changeTimeZone} onNewChat={newChat}
         busy={sending} debugEnabled={debugEnabled} debugOpen={debugOpen}
-        onDebugToggle={() => setDebugOpen((visible) => !visible)} embedded={embedded} />
+        onDebugToggle={() => setDebugOpen((visible) => !visible)} embedded={embedded} onClose={onClose} />
 
       <section
         ref={transcript}
         aria-labelledby={titleId}
-        className="min-h-0 flex-1 overflow-y-auto"
+        className="min-h-0 flex-1 overflow-y-auto overscroll-contain"
         onScroll={(event) => {
           const { scrollHeight, scrollTop, clientHeight } = event.currentTarget;
           followsTranscript.current = scrollHeight - scrollTop - clientHeight < 48;
           setBehindLatest(!followsTranscript.current);
         }}
       >
-        <div className="mx-auto flex min-h-full max-w-3xl flex-col px-4 py-6 sm:px-8">
+        <div className={`mx-auto flex min-h-full w-full max-w-3xl flex-col px-3.5 py-5 ${embedded ? "" : "sm:px-7 sm:py-8"}`}>
           {turns.length ? <h1 id={titleId} className="sr-only">Scheduling conversation</h1> : (
-            <div className="my-auto grid justify-items-center gap-5 py-6 text-center">
-              <span className="calendar-mark" aria-hidden="true" />
-              <h1 id={titleId} className={`${embedded ? "text-2xl" : "text-3xl sm:text-4xl"} max-w-md font-semibold tracking-tight`}>
-                What would you like to schedule?
+            <div className={`my-auto grid justify-items-center gap-5 py-4 text-center ${embedded ? "" : "sm:gap-7 sm:py-8"}`}>
+              <AssistantAvatar className={embedded ? "size-11" : "size-12 sm:size-14"} />
+              <h1 id={titleId} className={`max-w-[34rem] font-semibold leading-[1.25] tracking-[-0.035em] ${embedded ? "text-[1.35rem]" : "text-[1.65rem] sm:text-[2.25rem]"}`}>
+                Hi! I can book, show, reschedule or cancel meetings.
               </h1>
-              <div role="group" aria-label="Suggested prompts" className="flex flex-wrap justify-center gap-2">
-                {SUGGESTIONS.map((text) => <button key={text} type="button"
-                  className={`${OUTLINE_BUTTON} rounded-full border border-border bg-card hover:border-primary`}
-                  onClick={() => void sendTurn({ kind: "text", text })}>{text}</button>)}
+              <div role="group" aria-label="Suggested prompts" className={`grid w-full max-w-[36rem] grid-cols-1 gap-2 ${embedded ? "" : "sm:grid-cols-2 sm:gap-3"}`}>
+                {SUGGESTIONS.map(({ title, prompt, label, icon: Icon }) => (
+                  <button key={prompt} type="button" aria-label={label}
+                    className="group flex min-h-14 cursor-pointer items-center gap-3 rounded-2xl border border-border bg-card px-3 py-2.5 text-left transition-colors hover:border-ring/45 hover:bg-ring/5 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring sm:px-4"
+                    onClick={() => void sendTurn({ kind: "text", text: prompt })}>
+                    <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-ring/10 text-ring" aria-hidden="true">
+                      <Icon className="size-[18px]" />
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-sm leading-5 font-semibold">{title}</span>
+                      <span className="block text-xs leading-[1.45] text-muted-foreground">{prompt}</span>
+                    </span>
+                    <ArrowUpRight className="size-4 shrink-0 text-muted-foreground transition-colors group-hover:text-ring" aria-hidden="true" />
+                  </button>
+                ))}
               </div>
             </div>
           )}
 
-          <div role="log" aria-label="Messages" className="grid gap-5">
+          <div role="log" aria-label="Messages" className="grid gap-6">
             {turns.map((turn) => {
-              const isLatest = turn.id === turns.at(-1)?.id;
+              const isLatest = turn.id === latestTurn?.id;
               const sameSession = turn.session === session;
               const isActiveProposal = sameSession && activeProposal?.turnId === turn.id &&
                 activeProposal.value.id === turn.proposal?.id;
@@ -454,6 +486,9 @@ export default function ChatWorkspace({ embedded = false }: { embedded?: boolean
               const currentBookings = sameSession ? currentViews.bookings : EMPTY_VIEWS.bookings;
               const parts = splitReferenceText(turn.text, sending && isLatest);
               const listed = listedBookingRefs(turn.listedBookings, turn.views.bookings);
+              const emptyList = turn.listedBookings?.length === 0 && turn.controls === "all";
+              const hasAssistant = Boolean(parts.length || turn.groups.length || listed.length || emptyList ||
+                turn.results.length || turn.error || turn.proposal);
               const slotAvailable = (ref: string) => live && Boolean(currentViews.slots[ref]);
               const bookingAvailable = (ref: string) => live && turn.controls === "all" && Boolean(currentBookings[ref]);
               const slotGroups = turn.groups.map((group, index) => (
@@ -463,6 +498,8 @@ export default function ChatWorkspace({ embedded = false }: { embedded?: boolean
                   plainRefs={group.plainRefs}
                   slots={turn.views.slots}
                   note={group.note === turn.error?.message ? undefined : group.note}
+                  timeZone={timeZone}
+                  selectedRef={sameSession ? selectedRef : undefined}
                   available={(ref) => turn.controls !== "none" && slotAvailable(ref)}
                   allowMore={turn.controls !== "alternatives"}
                   onAction={takeAction}
@@ -470,121 +507,140 @@ export default function ChatWorkspace({ embedded = false }: { embedded?: boolean
               ));
 
               return (
-                <div key={turn.id} className="grid gap-3">
+                <div key={turn.id} className="chat-appear grid min-w-0 gap-4">
                   {turn.input.kind === "text" && (
-                    <p className="max-w-[90%] justify-self-end rounded-2xl bg-primary/10 px-4 py-3 whitespace-pre-wrap wrap-break-word">
+                    <p className="max-w-[88%] justify-self-end rounded-[1.15rem] rounded-br-md bg-primary px-4 py-2.5 leading-[1.6] whitespace-pre-wrap wrap-break-word text-primary-foreground sm:max-w-[79%]">
                       <span className="sr-only">You: </span>{turn.input.text}
                     </p>
                   )}
-                  {turn.input.kind === "text" && slotGroups}
-                  {parts.length > 0 && (
-                    <RefText
-                      parts={parts}
-                      views={turn.views}
-                      currentBookings={currentBookings}
-                      listedBookings={listed}
-                      slotAvailable={(ref) => turn.controls === "all" && slotAvailable(ref)}
-                      bookingAvailable={bookingAvailable}
-                      showMore={!turn.groups.some((group) => group.refs.length) && turn.controls !== "alternatives"}
-                      onAction={takeAction}
-                    />
-                  )}
-                  {listed.length > 0 && (
-                    <ul aria-label="Meetings" className="grid gap-1">
-                      {listed.map((ref) => (
-                        <li key={ref}>
+                  {hasAssistant && (
+                    <AssistantRow>
+                      {turn.input.kind === "text" && slotGroups}
+                      {parts.length > 0 && (
+                        <RefText
+                          parts={parts}
+                          views={turn.views}
+                          currentBookings={currentBookings}
+                          listedBookings={listed}
+                          selectedRef={sameSession ? selectedRef : undefined}
+                          slotAvailable={(ref) => turn.controls === "all" && slotAvailable(ref)}
+                          bookingAvailable={bookingAvailable}
+                          showMore={!turn.groups.some((group) => group.refs.length) && turn.controls !== "alternatives"}
+                          onAction={takeAction}
+                        />
+                      )}
+                      {listed.length > 0 && (
+                        <ul aria-label="Meetings" className="grid gap-2.5">
+                          {listed.map((ref) => (
+                            <li key={ref}>
+                              <BookingCard
+                                booking={currentBookings[ref] ?? turn.views.bookings[ref]}
+                                available={bookingAvailable(ref)}
+                                linksAvailable={Boolean(currentBookings[ref])}
+                                onAction={takeAction}
+                              />
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                      {emptyList && (
+                        <div className="space-y-2">
+                          {!turn.text && <p className="text-muted-foreground">No meetings to show.</p>}
+                          <button type="button" className={`${OUTLINE_BUTTON} border border-border`}
+                            disabled={!isLatest || !live} onClick={() => takeAction({ type: "more_slots" })}>
+                            Book a meeting
+                          </button>
+                        </div>
+                      )}
+                      {turn.results.map((result) => (
                           <BookingCard
-                            booking={currentBookings[ref] ?? turn.views.bookings[ref]}
-                            available={bookingAvailable(ref)}
-                            linksAvailable={Boolean(currentBookings[ref])}
+                            key={result.booking.ref}
+                            booking={currentBookings[result.booking.ref] ?? result.booking}
+                            result={result.kind}
+                            available={bookingAvailable(result.booking.ref)}
+                            linksAvailable={Boolean(currentBookings[result.booking.ref])}
                             onAction={takeAction}
                           />
-                        </li>
                       ))}
-                    </ul>
-                  )}
-                  {turn.listedBookings?.length === 0 && turn.controls === "all" && (
-                    <div>
-                      {!turn.text && <p className="text-muted-foreground">No meetings to show.</p>}
-                      <button type="button" className={`${OUTLINE_BUTTON} border border-border`}
-                        disabled={!isLatest || !live} onClick={() => takeAction({ type: "more_slots" })}>
-                        Book a meeting
-                      </button>
-                    </div>
-                  )}
-                  {turn.results.map((result) => (
-                    <BookingCard
-                      key={result.booking.ref}
-                      booking={currentBookings[result.booking.ref] ?? result.booking}
-                      result={result.kind}
-                      available={bookingAvailable(result.booking.ref)}
-                      linksAvailable={Boolean(currentBookings[result.booking.ref])}
-                      onAction={takeAction}
-                    />
-                  ))}
-                  {turn.error && (
-                    <div className="rounded-xl border border-border bg-card px-4 py-3">
-                      <p>{turn.error.message}</p>
-                      <div className="flex flex-wrap gap-2">
-                        {turn.error.retryable && isLatest && (
-                          <button
-                            type="button"
-                            disabled={sending}
-                            className={`${OUTLINE_BUTTON} mt-2 border border-border`}
-                            onClick={() => void sendTurn(turn.input, turn.id)}
-                          >
-                            Retry
-                          </button>
-                        )}
-                        {turn.error.fallback === "booker" && (
-                          <button type="button" className={`${OUTLINE_BUTTON} mt-2 border border-border`} onClick={openBooker}>
-                            Book directly
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  )}
-                  {turn.input.kind === "ui" && slotGroups}
-                  {turn.proposal && (
-                    <ConfirmCard
-                      key={turn.proposal.id}
-                      proposal={turn.proposal}
-                      active={isActiveProposal}
-                      submitting={sending}
-                      formRef={isActiveProposal && turn.proposal.kind === "book" ? activeBookingForm : undefined}
-                      onAction={takeAction}
-                    />
+                      {turn.error && (
+                        <div role="alert" className="grid grid-cols-[1.125rem_minmax(0,1fr)] gap-2.5 rounded-2xl border border-amber-600/25 bg-amber-500/5 px-3.5 py-3 sm:px-4">
+                          <TriangleAlert className="mt-1 size-[18px] text-amber-700 dark:text-amber-400" aria-hidden="true" />
+                          <div>
+                            <p className="text-sm leading-relaxed">{turn.error.message}</p>
+                            <div className="flex flex-wrap gap-2">
+                              {turn.error.retryable && isLatest && (
+                                <button
+                                  type="button"
+                                  disabled={sending}
+                                  className={`${OUTLINE_BUTTON} mt-2 border border-border bg-card`}
+                                  onClick={() => void sendTurn(turn.input, turn.id)}
+                                >
+                                  Retry
+                                </button>
+                              )}
+                              {turn.error.fallback === "booker" && (
+                                <button type="button" className={`${OUTLINE_BUTTON} mt-2 border border-border bg-card`} onClick={openBooker}>
+                                  Book directly
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                      {turn.input.kind === "ui" && slotGroups}
+                      {turn.proposal && (
+                        <ConfirmCard
+                          key={turn.proposal.id}
+                          proposal={turn.proposal}
+                          active={isActiveProposal}
+                          submitting={sending}
+                          originalBooking={turn.proposal.bookingRef ? turn.views.bookings[turn.proposal.bookingRef] : undefined}
+                          selectedSlot={turn.proposal.slotRef ? turn.views.slots[turn.proposal.slotRef] : undefined}
+                          formRef={isActiveProposal && turn.proposal.kind === "book" ? activeBookingForm : undefined}
+                          onAction={takeAction}
+                        />
+                      )}
+                    </AssistantRow>
                   )}
                 </div>
               );
             })}
           </div>
 
-          <div role="status" className={status ? "mt-4 flex items-center gap-2 text-sm text-muted-foreground" : "sr-only"}>
-            {status && <span aria-hidden="true" className="size-3.5 shrink-0 animate-spin rounded-full border-2 border-current border-t-transparent motion-reduce:animate-none" />}
-            {status}
+          <div role="status" className={waitingForText ? "chat-appear mt-4" : "sr-only"}>
+            {waitingForText ? (
+              <AssistantRow>
+                <div className="flex min-h-[1.625rem] flex-wrap items-center gap-x-3 gap-y-1 text-[13px] text-muted-foreground">
+                  <span className="inline-flex items-center gap-1" aria-hidden="true">
+                    {[0, 1, 2].map((dot) => <span key={dot} className="chat-typing-dot size-[5px] rounded-full bg-ring" />)}
+                  </span>
+                  {status || "Thinking…"}
+                </div>
+              </AssistantRow>
+            ) : status}
           </div>
         </div>
       </section>
 
-      {behindLatest && (
-        <button type="button" className={`${OUTLINE_BUTTON} absolute right-5 bottom-24 z-10 rounded-full border border-border bg-card shadow-sm`}
-          onClick={() => {
-            followsTranscript.current = true;
-            setBehindLatest(false);
-            const log = transcript.current;
-            if (log) log.scrollTop = log.scrollHeight;
-          }}>↓ Latest messages</button>
-      )}
-
-      <form aria-label="Message composer" onSubmit={sendDraft} className="mx-auto w-full max-w-3xl px-4 pb-4 sm:px-8 sm:pb-8">
-        <div className="flex items-end gap-2 rounded-xl border border-border bg-card p-2 shadow-xs">
+      <form aria-label="Message composer" onSubmit={sendDraft}
+        className={`relative mx-auto w-full max-w-3xl shrink-0 bg-background px-3.5 pt-2 pb-[max(0.75rem,env(safe-area-inset-bottom))] ${embedded ? "" : "sm:px-7 sm:pb-5"}`}>
+        {behindLatest && (
+          <button type="button" aria-label="↓ Latest messages" title="Latest messages"
+            className={`${ICON_TARGET} absolute -top-12 right-5 rounded-full border border-border bg-card text-muted-foreground shadow-md hover:text-ring sm:right-8`}
+            onClick={() => {
+              followsTranscript.current = true;
+              setBehindLatest(false);
+              const log = transcript.current;
+              if (log) log.scrollTop = log.scrollHeight;
+            }}><ArrowDown className="size-5" aria-hidden="true" /></button>
+        )}
+        <div className="flex items-end gap-2 rounded-[1.35rem] border border-border bg-card p-1.5 shadow-sm transition-colors focus-within:border-ring/60 sm:p-2">
           <label htmlFor={messageId} className="sr-only">Message</label>
           <textarea
             id={messageId}
-            className="min-h-11 min-w-0 flex-1 resize-none rounded-md px-3 py-2.5 text-base placeholder:text-muted-foreground focus-visible:outline-2 focus-visible:outline-ring"
+            className="chat-composer-input min-h-11 min-w-0 flex-1 resize-none rounded-xl px-2.5 py-2.5 text-base leading-[1.6] placeholder:text-muted-foreground focus:outline-none"
             placeholder="Type a message"
-            rows={draft.includes("\n") ? 3 : 1}
+            rows={1}
             value={draft}
             maxLength={2_000}
             onChange={(event) => setDraft(event.target.value)}
@@ -597,13 +653,21 @@ export default function ChatWorkspace({ embedded = false }: { embedded?: boolean
             disabled={sending}
           />
           {activeKind === "text" ? (
-            <button type="button" className={`${OUTLINE_BUTTON} border border-border`} onClick={() => request.current?.abort()}>
-              Stop
+            <button type="button" aria-label="Stop" title="Stop"
+              className={`${ICON_TARGET} rounded-[0.85rem] border border-border bg-background text-foreground hover:border-ring/50`}
+              onClick={() => request.current?.abort()}>
+              <Square className="size-3.5 fill-current" aria-hidden="true" />
             </button>
           ) : (
-            <button type="submit" className={PRIMARY_BUTTON} disabled={sending || !draft.trim()}>Send</button>
+            <button type="submit" aria-label="Send" title="Send" disabled={sending || !draft.trim()}
+              className={`${ICON_TARGET} rounded-full bg-primary text-primary-foreground hover:brightness-110`}>
+              <ArrowUp className="size-5" strokeWidth={2.2} aria-hidden="true" />
+            </button>
           )}
         </div>
+        <p className="mt-1.5 text-center text-[11px] leading-4 text-muted-foreground sm:text-xs">
+          Nothing is booked or changed until you confirm.
+        </p>
       </form>
       {booker !== "unused" && (
         <BookerFallback bookingUrl={bookingUrl} warming={warming} open={booker === "open"} onClose={() => setBooker("closed")} />

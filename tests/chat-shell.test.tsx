@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { expect, it } from "vitest";
 
 import { BookerFallback, calEmbedLink, safePublicBookingUrl } from "../app/booker-fallback";
-import { ConfirmCard, RefText, SlotChips } from "../app/chat-cards";
+import { BookingCard, ConfirmCard, RefText, SlotChips } from "../app/chat-cards";
 import Home from "../app/page";
 
 it("renders the chat with an enabled, labeled composer and an empty draft", () => {
@@ -15,7 +15,7 @@ it("renders the chat with an enabled, labeled composer and an empty draft", () =
   expect(html).toContain('role="log"');
   expect(html).toMatch(/<textarea\b[^>]*\bid="chat-message"[^>]*>/);
   expect(html).not.toMatch(/<textarea\b[^>]*\bdisabled=""/);
-  expect(html).toMatch(/<button\b[^>]*\btype="submit"[^>]*\bdisabled=""[^>]*>Send<\/button>/);
+  expect(html).toMatch(/<button\b(?=[^>]*\btype="submit")(?=[^>]*\baria-label="Send")(?=[^>]*\bdisabled="")[^>]*>/);
 });
 
 it("renders grouped date-labeled chips and greys out unavailable references", () => {
@@ -39,6 +39,31 @@ it("renders grouped date-labeled chips and greys out unavailable references", ()
   expect(html).toContain(">11:00 am</span>");
   expect(html).not.toContain('aria-label="Sat 28 Nov at 11:00 am"');
   expect(html).toContain("More times");
+});
+
+it("marks the selected opening while leaving other available times usable", () => {
+  const props = {
+    refs: ["S1", "S2"], selectedRef: "S1", note: "Openings across the requested dates",
+    slots: {
+      S1: { dayLabel: "Thu 26 Nov", timeLabel: "2:30 pm", startLocalIso: "2026-11-26T14:30:00-08:00" },
+      S2: { dayLabel: "Thu 26 Nov", timeLabel: "3:30 pm", startLocalIso: "2026-11-26T15:30:00-08:00" },
+    },
+    available: () => true, allowMore: true, onAction: () => {},
+  };
+  const html = renderToStaticMarkup(createElement(SlotChips, { ...props, timeZone: "America/Los_Angeles" }));
+
+  expect(html).toContain("Available times</h2>");
+  expect(html).toContain("America/Los_Angeles</p>");
+  expect(html).not.toContain("Openings across the requested dates");
+  expect(html).toMatch(/aria-label="Thu 26 Nov at 2:30 pm" aria-pressed="true"/);
+  expect(html).toMatch(/aria-label="Thu 26 Nov at 3:30 pm" aria-pressed="false"/);
+  expect(html).not.toMatch(/aria-label="Thu 26 Nov at 3:30 pm"[^>]*disabled=""/);
+  expect(html).toContain("text-xs tabular-nums");
+  expect(html).toContain("lucide-check");
+  expect(html).toContain("lucide-chevron-right");
+  const historical = renderToStaticMarkup(createElement(SlotChips, { ...props, timeZone: "Asia/Singapore" }));
+  expect(historical).toContain("UTC-08:00</p>");
+  expect(historical).not.toContain("Asia/Singapore");
 });
 
 it("leaves explicit booking mentions as text and disables controls on historical cards", () => {
@@ -76,14 +101,84 @@ it("uses a contact-free confirmation for moving a booking", () => {
       id: "P2", kind: "reschedule", title: "Synthetic meeting", whenLabel: "Fri 27 Nov, 9:00 am",
       timeZone: "America/Los_Angeles", durationMinutes: 30, bookingRef: "B1", slotRef: "S2",
     },
+    originalBooking: {
+      ref: "B1", title: "Synthetic meeting", whenLabel: "Thu 26 Nov, 8:00 am", status: "accepted",
+      attendees: ["fixture@example.com"], startUtc: "2026-11-26T16:00:00Z", endUtc: "2026-11-26T16:30:00Z",
+    },
+    selectedSlot: { dayLabel: "Fri 27 Nov", timeLabel: "9:00 am", startLocalIso: "2026-11-27T17:00:00Z" },
     active: false,
     submitting: false,
     onAction: () => {},
   }));
 
   expect(html).toContain("Move this meeting?");
+  expect(html).toContain(">Move meeting</h2>");
+  expect(html).toContain(">From</p>");
+  expect(html).toContain(">To</p>");
+  expect(html).toContain("8:00 am");
+  expect(html).toContain("9:00 am · 30 min");
+  expect(html).toContain("fixture@example.com");
+  expect(html).toContain('aria-label="Confirm">Move meeting</button>');
+  expect(html).toContain('aria-label="Change">Not now</button>');
   expect(html).toMatch(/<fieldset\b[^>]*disabled=""/);
   expect(html).not.toContain('name="email"');
+});
+
+it("keeps booking contact in a two-column form with a full-width note", () => {
+  const html = renderToStaticMarkup(createElement(ConfirmCard, {
+    proposal: { id: "P2", kind: "book", title: "Synthetic meeting", whenLabel: "Fri 27 Nov, 9:00 am",
+      timeZone: "UTC", durationMinutes: 30, slotRef: "S2" },
+    active: true, submitting: false, onAction: () => {},
+  }));
+
+  expect(html).toContain('aria-label="Book this meeting?">Confirm booking</h2>');
+  expect(html).toMatch(/<fieldset class="[^"]*\bgrid-cols-2\b[^\"]*">/);
+  expect(html).toMatch(/<label class="[^"]*\bmin-w-0\b[^\"]*">Name<input[^>]*name="name"/);
+  expect(html).toMatch(/<label class="[^"]*\bmin-w-0\b[^\"]*">Email<input[^>]*name="email"/);
+  expect(html).toMatch(/<label class="[^"]*\bcol-span-2\b[^\"]*">Note \(optional\)<textarea/);
+  expect(html).toContain("You can also type yes in the chat.");
+});
+
+it("uses status colors, a booking banner and a calendar dropdown", () => {
+  const booking = { ref: "B1", title: "Fixture meeting", whenLabel: "Fri 27 Nov, 9:00 am", status: "accepted",
+    attendees: [], startUtc: "2026-11-27T09:00:00Z", endUtc: "2026-11-27T09:30:00Z" };
+  const render = (status: string) => renderToStaticMarkup(createElement(BookingCard, {
+    booking: { ...booking, status }, available: true, linksAvailable: true, onAction: () => {},
+    result: status === "accepted" ? "booked" : undefined,
+  }));
+
+  const accepted = render("accepted");
+  expect(accepted).toContain("Meeting booked</h2>");
+  expect(accepted).toContain('text-emerald-300">Confirmed</span>');
+  expect(accepted).toContain("lucide-calendar-days");
+  expect(accepted).toContain(">9:00 am</span>");
+  expect(accepted).toContain('aria-expanded="false"');
+  expect(accepted).toContain("Add to calendar");
+  expect(accepted).toContain("Google Calendar</a>");
+  expect(accepted).toContain("Download .ics</button>");
+  expect(accepted).not.toContain("<details");
+  expect(render("pending")).toContain('text-amber-300">Pending</span>');
+  expect(render("cancelled")).toContain('text-red-300">Cancelled</span>');
+  expect(render("cancelled")).not.toContain("Add to calendar");
+});
+
+it("renders safe bullets, bold and line breaks around clickable slot references", () => {
+  const html = renderToStaticMarkup(createElement(RefText, {
+    parts: [{ text: "**Choose a time:**\n- **Morning: " }, { ref: "S1" },
+      { text: "**\n- <img src=x onerror=alert(1)>\n\nLast line." }],
+    views: { slots: { S1: { dayLabel: "Thu 26 Nov", timeLabel: "9:00 am", startLocalIso: "2026-11-26T09:00:00Z" } }, bookings: {} },
+    currentBookings: {}, listedBookings: [], slotAvailable: () => true, bookingAvailable: () => false,
+    showMore: false, onAction: () => {},
+  }));
+
+  expect(html).toContain("<strong>Choose a time:</strong>");
+  expect(html).toContain("<li><strong>Morning: </strong><button");
+  expect(html).toContain('aria-label="Thu 26 Nov at 9:00 am"');
+  expect(html).toContain("min-h-11");
+  expect(html).toContain("&lt;img src=x onerror=alert(1)&gt;");
+  expect(html).not.toContain("<img");
+  expect(html).not.toContain("leading-10");
+  expect(html).toContain("<div><span>Last line.</span></div>");
 });
 
 it("provides a regular safe booking link and leaves the Cal.com script unloaded on the server", () => {

@@ -14,51 +14,62 @@
 
 :root {
   color-scheme: light dark;
-  --background: #f8fafc;
-  --foreground: #141c2b;
+  --background: #f7f8fa;
+  --foreground: #192231;
   --card: #ffffff;
   --card-foreground: var(--foreground);
-  --muted-foreground: #525e70;
-  --border: #d8e0e9;
-  --primary: #144b9b;
+  --muted-foreground: #576375;
+  --border: #dce2ea;
+  --primary: #2e58c4;
   --primary-foreground: #ffffff;
-  --ring: #2868c0;
+  --ring: #315fc8;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --background: #141922;
-    --foreground: #edf2f8;
-    --card: #1b222e;
-    --muted-foreground: #aab8c9;
-    --border: #374454;
-    --primary: #a9ccff;
-    --primary-foreground: #162d4e;
-    --ring: #a9ccff;
+    --background: #141820;
+    --foreground: #eef2f9;
+    --card: #1d2430;
+    --muted-foreground: #abb6c6;
+    --border: #354152;
+    --primary: #345ec4;
+    --ring: #9dbaff;
   }
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: system-ui, sans-serif;
+  font-family: var(--font-inter), Arial, sans-serif;
+  font-size: 15px;
+  line-height: 1.6;
 }
 
-.calendar-mark {
-  display: grid;
-  width: 2rem;
-  height: 2rem;
-  place-items: center;
-  border-radius: 0.55rem;
-  background: color-mix(in oklab, var(--primary) 12%, transparent);
-  color: var(--primary);
+.chat-composer-input {
+  field-sizing: content;
+  max-block-size: calc(9.6em + 1.25rem);
+  overflow-y: auto;
 }
 
-.calendar-mark::before {
-  width: 1rem;
-  height: 0.9rem;
-  border: 1.5px solid currentcolor;
-  border-top-width: 4px;
-  border-radius: 0.2rem;
-  content: "";
+@media (prefers-reduced-motion: no-preference) {
+  .chat-appear {
+    animation: chat-appear 180ms ease-out both;
+  }
+
+  .chat-typing-dot {
+    animation: chat-typing 1.15s ease-in-out infinite;
+  }
+
+  .chat-typing-dot:nth-child(2) { animation-delay: 120ms; }
+  .chat-typing-dot:nth-child(3) { animation-delay: 240ms; }
+}
+
+@keyframes chat-appear {
+  from { opacity: 0; transform: translateY(3px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes chat-typing {
+  0%, 65%, 100% { opacity: 0.4; transform: translateY(0); }
+  32% { opacity: 1; transform: translateY(-3px); }
 }
