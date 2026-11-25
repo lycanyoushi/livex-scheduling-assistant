@@ -79,6 +79,8 @@ For the demo calendar, set `DEMO_MODE=fake` and leave `CAL_API_KEY` empty. `DEMO
 
 For local Cal.com testing in the terminal, leave `DEMO_MODE` empty and use an isolated test account with a visible 30-minute event and an availability schedule. Generate an API key in **Settings → Developer → API Keys**, save it as `CAL_API_KEY`, and set `CAL_DEFAULT_EVENT_TYPE_SLUG` to the test event's slug. [Cal.com event setup](https://next.cal.com/blog/event-types-guide-calcom) · [Cal.com API key setup](https://next.cal.com/blog/where-is-my-api-key-and-what-can-it-do)
 
+Meetings can be any length the event type offers. The demo calendar offers 5 to 480 minutes in 5-minute steps, so “a 1 hour meeting on 9 Dec from 11am to 12pm” or “2 Dec from 1100 to 1300” books exactly that interval. For a live account, `pnpm cal:lengths` shows the lengths the test event offers. After the account owner approves, `pnpm cal:lengths --apply` saves the same list on that event and checks for 2-hour openings. A move keeps the meeting's length. [Cal.com event lengths](https://cal.com/docs/api-reference/v2/event-types/update-an-event-type) · [Slots by duration](https://cal.com/docs/api-reference/v2/slots/get-available-time-slots-for-an-event-type)
+
 | Setting | Purpose |
 | --- | --- |
 | `GEMINI_MODEL`, `GEMINI_THINKING_LEVEL` | Default to 3.5 Flash-Lite with minimal thinking. |

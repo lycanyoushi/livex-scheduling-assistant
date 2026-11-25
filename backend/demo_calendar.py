@@ -13,6 +13,10 @@ from evals.fake_cal import FakeCal
 DEFAULT_DEMO_TIME_ZONE = "America/Los_Angeles"
 _SEED_CUTOFF = time(14)
 _DEMO_DURATION = timedelta(minutes=30)
+# Any length in 5-minute steps up to a full working day, like a Cal.com event
+# type whose "multiple durations" setting lists these values.
+DEMO_LENGTHS = tuple(range(5, 481, 5))
+_WORKDAY = (time(9), time(17))
 _DEMO_GUESTS = (
     (0, time(15), "Avery Chen"),
     (1, time(10), "Jordan Patel"),
@@ -63,6 +67,10 @@ class DemoCalendar(FakeCal):
         except (ValueError, ZoneInfoNotFoundError):
             raise ValueError("DEMO_TIME_ZONE must be a valid IANA time zone.") from None
         super().__init__(clock=clock)
+        self._event_types = [
+            {**event, "lengthInMinutesOptions": list(DEMO_LENGTHS)} if event["id"] == self._event_type_id else event
+            for event in self._event_types
+        ]
         local_now = parse_instant(clock()).astimezone(self._host_zone)
         first_day = local_now.date() + timedelta(days=local_now.time() >= _SEED_CUTOFF)
         event = self._event_type(self._event_type_id)
@@ -87,14 +95,20 @@ class DemoCalendar(FakeCal):
             event.pop("bookingUrl", None)
         return events
 
+    def _close(self, day: date) -> datetime:
+        return datetime.combine(day, _WORKDAY[1], self._host_zone).astimezone(timezone.utc)
+
     def _starts_on(self, day: date) -> Iterator[datetime]:
         if day.weekday() >= 5:
             return
-        start = datetime.combine(day, time(9), self._host_zone).astimezone(timezone.utc)
-        close = datetime.combine(day, time(17), self._host_zone).astimezone(timezone.utc)
+        start = datetime.combine(day, _WORKDAY[0], self._host_zone).astimezone(timezone.utc)
+        close = self._close(day)
         while start + self._duration <= close:
             yield start
             start += self._duration
+
+    def _fits(self, start: datetime, length: timedelta) -> bool:
+        return start + length <= self._close(start.astimezone(self._host_zone).date())
 
     def _scheduled_starts(self, begin: datetime, until: datetime) -> Iterator[datetime]:
         first = begin.astimezone(self._host_zone).date()

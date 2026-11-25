@@ -14,6 +14,7 @@
     "check": "node scripts/run-python.mjs -m scripts.check",
     "eval": "node scripts/run-python.mjs -m evals.runner",
     "cal:probe": "node scripts/run-python.mjs -m scripts.cal_probe",
+    "cal:lengths": "node scripts/run-python.mjs -m scripts.set_lengths",
     "model:probe": "node scripts/run-python.mjs -m scripts.model_probe",
     "typecheck": "tsc --noEmit"
   },

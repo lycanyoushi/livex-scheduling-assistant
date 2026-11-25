@@ -51,6 +51,7 @@ class RescheduleTarget:
     uid: str
     event_type_id: int
     start: datetime
+    length_minutes: int | None = None
 
 
 @dataclass(frozen=True)
@@ -196,17 +197,22 @@ def _prefetch_slots(tools: CalendarTools, plan: PrefetchPlan) -> _SlotResults:
         event_id = target.event_type_id
         if not any(event["id"] == event_id for event in tools.event_types()):
             return _SlotResults()
+        # A move keeps the meeting's own length.
+        duration = tools.query_duration(event_id, target.length_minutes)
     else:
         draft = tools.state.guest_draft
+        minutes = draft.duration_minutes if draft else None
         try:
-            event_id = tools.event_for_duration(draft.duration_minutes if draft else None)["id"]
+            event_id = tools.event_for_duration(minutes)["id"]
         except ToolRejected as error:
             return _SlotResults(unavailable_event=str(error))
         if window is not None and window.full_meeting:
             try:
                 event_id = tools.event_for_duration(window.minutes)["id"]
+                minutes = window.minutes
             except ToolRejected:
                 shorter_options = True
+        duration = tools.query_duration(event_id, minutes)
     zone = ZoneInfo(tools.time_zone)
     first_warm_date, last_warm_date = _warm_dates(tools.now, zone)
     other_days = plan.days
@@ -228,6 +234,7 @@ def _prefetch_slots(tools: CalendarTools, plan: PrefetchPlan) -> _SlotResults:
             event_id, first, last, "any" if offer_alternatives and is_warm_range else plan.part_of_day,
             target.ref if target is not None else None,
             target.uid if target is not None else None,
+            duration=duration,
         )
         if offer_alternatives and is_warm_range:
             warm_entries = entries
@@ -261,7 +268,7 @@ def _prefetch_slots(tools: CalendarTools, plan: PrefetchPlan) -> _SlotResults:
             if warm_entries is None:
                 try:
                     warm_entries = tools.read_slot_entries(
-                        event_id, first_warm_date, last_warm_date, "any", None, None,
+                        event_id, first_warm_date, last_warm_date, "any", None, None, duration=duration,
                     )
                 except (CalError, ToolRejected, ValidationError):
                     warm_entries = []
@@ -282,7 +289,9 @@ def _prefetch_slots(tools: CalendarTools, plan: PrefetchPlan) -> _SlotResults:
     if target is not None and not day_slots and (plan.move_later or plan.move_after or plan.part_of_day != "any"):
         first = max(wanted_days) + timedelta(days=1)
         if first <= last_warm_date:
-            later = tools.read_slot_entries(event_id, first, last_warm_date, "any", target.ref, target.uid)
+            later = tools.read_slot_entries(
+                event_id, first, last_warm_date, "any", target.ref, target.uid, duration=duration,
+            )
             return _SlotResults(alternatives=[
                 entry for entry in later
                 if not plan.excludes(parse_instant(entry.start_utc).astimezone(zone).date())

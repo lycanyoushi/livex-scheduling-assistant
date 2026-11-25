@@ -23,6 +23,7 @@ from backend.cal_client import (
     SlotBound,
     SlotRange,
     Timestamp,
+    event_lengths,
 )
 
 
@@ -138,8 +139,16 @@ class FakeCal:
                 return event
         raise CalError("not_found", "Cal.com could not find the requested event type.", status=404)
 
-    def _slot_blocked(self, start: datetime, uid_to_ignore: str | None) -> bool:
-        end = start + self._duration
+    def _length(self, event: EventType, minutes: int | None) -> timedelta:
+        """Match Cal.com: a length must be one the event type offers."""
+        if minutes is None:
+            return self._duration
+        if minutes not in event_lengths(event):
+            raise CalError("invalid", "That meeting length is not offered by this event type.", status=400)
+        return timedelta(minutes=minutes)
+
+    def _slot_blocked(self, start: datetime, uid_to_ignore: str | None, length: timedelta | None = None) -> bool:
+        end = start + (length or self._duration)
         for booking in self._bookings.values():
             if booking["uid"] == uid_to_ignore or booking["status"] not in self._blocking_statuses:
                 continue
@@ -153,6 +162,10 @@ class FakeCal:
     def _is_scheduled_start(self, start: datetime) -> bool:
         return start in self._starts
 
+    def _fits(self, start: datetime, length: timedelta) -> bool:
+        """Whether a meeting of this length fits the host's working hours."""
+        return True
+
     def slots(
         self,
         event_type_id: int,
@@ -162,21 +175,22 @@ class FakeCal:
         *,
         booking_uid_to_reschedule: str | None = None,
         fresh: bool = False,
+        duration: int | None = None,
     ) -> dict[str, list[SlotRange]]:
         """Read the current fixture availability in the requested display zone."""
-        self._event_type(event_type_id)
+        length = self._length(self._event_type(event_type_id), duration)
         begin, until = _slot_edge(start), _slot_edge(end, end=True)
         zone = ZoneInfo(time_zone)
         now = _as_utc(self._clock())
         days: dict[str, list[SlotRange]] = {}
         with self._lock:
             for instant in self._scheduled_starts(begin, until):
-                if instant <= now:
+                if instant <= now or not self._fits(instant, length):
                     continue
-                if self._slot_blocked(instant, booking_uid_to_reschedule):
+                if self._slot_blocked(instant, booking_uid_to_reschedule, length):
                     continue
                 local_start = instant.astimezone(zone)
-                local_end = (instant + self._duration).astimezone(zone)
+                local_end = (instant + length).astimezone(zone)
                 days.setdefault(local_start.date().isoformat(), []).append(
                     {"start": _iso(local_start), "end": _iso(local_end)}
                 )
@@ -258,10 +272,13 @@ class FakeCal:
         with self._lock:
             return deepcopy(self._booking(uid))
 
-    def _require_free(self, start: datetime, now: datetime, uid_to_ignore: str | None = None) -> None:
-        if start <= now or not self._is_scheduled_start(start):
+    def _require_free(
+        self, start: datetime, now: datetime, uid_to_ignore: str | None = None, length: timedelta | None = None,
+    ) -> None:
+        length = length or self._duration
+        if start <= now or not self._is_scheduled_start(start) or not self._fits(start, length):
             raise CalError("invalid", "That time is outside the fixture availability.", status=400)
-        if self._slot_blocked(start, uid_to_ignore):
+        if self._slot_blocked(start, uid_to_ignore, length):
             raise CalError("slot_taken", "That time is no longer available.", status=409)
 
     def create_booking(
@@ -274,12 +291,14 @@ class FakeCal:
         time_zone: str,
         notes: str | None = None,
         notes_field: str | None = None,
+        length_in_minutes: int | None = None,
     ) -> Booking:
         event = self._event_type(event_type_id)
+        length = self._length(event, length_in_minutes)
         instant = _as_utc(start)
         now = _as_utc(self._clock())
         with self._lock:
-            self._require_free(instant, now)
+            self._require_free(instant, now, length=length)
             fault = self._create_faults.pop(instant, None)
             if fault is not None:
                 self._occupied.add(instant)
@@ -290,7 +309,7 @@ class FakeCal:
                 "title": event["title"],
                 "eventTypeId": event_type_id,
                 "start": _iso(instant),
-                "end": _iso(instant + self._duration),
+                "end": _iso(instant + length),
                 "status": "accepted",
                 "attendees": [{"name": name, "email": email, "timeZone": time_zone, "language": "en"}],
             }
@@ -315,13 +334,15 @@ class FakeCal:
             original = self._booking(uid)
             if original["status"] not in self._blocking_statuses:
                 raise CalError("invalid", "The booking cannot be rescheduled.", status=400)
-            self._require_free(instant, now, uid)
+            # Like Cal.com, a move keeps the booking's original length.
+            length = _as_utc(original["end"]) - _as_utc(original["start"])
+            self._require_free(instant, now, uid, length)
             new_uid = f"fixture-created-{next(self._ids)}"
             replacement: _StoredBooking = {
                 **original,
                 "uid": new_uid,
                 "start": _iso(instant),
-                "end": _iso(instant + self._duration),
+                "end": _iso(instant + length),
                 "rescheduledFromUid": uid,
                 "reschedulingReason": reason,
             }

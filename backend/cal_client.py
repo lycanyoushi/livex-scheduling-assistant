@@ -50,9 +50,16 @@ class EventType(TypedDict):
     slug: str
     title: str
     lengthInMinutes: int
+    lengthInMinutesOptions: NotRequired[list[int] | None]
+    slotInterval: NotRequired[int | None]
     hidden: NotRequired[bool]
     bookingUrl: NotRequired[str | None]
     bookingFields: NotRequired[list[JsonObject] | None]
+
+
+def event_lengths(event: EventType) -> tuple[int, ...]:
+    """Every meeting length an event type can book, in minutes."""
+    return tuple(sorted({event["lengthInMinutes"], *(event.get("lengthInMinutesOptions") or ())}))
 
 
 class SlotRange(TypedDict):
@@ -210,24 +217,35 @@ def _parse_profile(value: object) -> Profile:
     return cast(Profile, item)
 
 
+def _parse_event_type(value: object) -> EventType:
+    item = _object(value)
+    if not isinstance(item.get("hidden", False), bool):
+        raise ValueError("Expected an event visibility flag.")
+    _positive_int(item["id"])
+    _positive_int(item["lengthInMinutes"])
+    if item.get("lengthInMinutesOptions") is not None:
+        for length in _array(item["lengthInMinutesOptions"]):
+            _positive_int(length)
+    if item.get("slotInterval") is not None:
+        _positive_int(item["slotInterval"])
+    _string(item["slug"])
+    _string(item["title"])
+    if item.get("bookingUrl") is not None:
+        _string(item["bookingUrl"])
+    if item.get("bookingFields") is not None:
+        for field in _array(item["bookingFields"]):
+            _object(field)
+    return cast(EventType, item)
+
+
 def _parse_event_types(value: object) -> list[EventType]:
     visible = []
     for entry in _array(value):
         item = _object(entry)
         if not isinstance(item.get("hidden", False), bool):
             raise ValueError("Expected an event visibility flag.")
-        if item.get("hidden"):
-            continue
-        _positive_int(item["id"])
-        _positive_int(item["lengthInMinutes"])
-        _string(item["slug"])
-        _string(item["title"])
-        if item.get("bookingUrl") is not None:
-            _string(item["bookingUrl"])
-        if item.get("bookingFields") is not None:
-            for field in _array(item["bookingFields"]):
-                _object(field)
-        visible.append(cast(EventType, item))
+        if not item.get("hidden"):
+            visible.append(_parse_event_type(item))
     return visible
 
 
@@ -431,9 +449,11 @@ class CalClient:
         *,
         booking_uid_to_reschedule: str | None = None,
         fresh: bool = False,
+        duration: int | None = None,
     ) -> dict[str, list[SlotRange]]:
+        """Read openings; `duration` picks one of a multi-length event type's lengths."""
         start_utc, end_utc = _slot_bound(start), _slot_bound(end)
-        key = ("slots", event_type_id, start_utc, end_utc, time_zone, booking_uid_to_reschedule)
+        key = ("slots", event_type_id, start_utc, end_utc, time_zone, booking_uid_to_reschedule, duration)
         query = {
             "eventTypeId": event_type_id,
             "start": start_utc,
@@ -441,6 +461,7 @@ class CalClient:
             "timeZone": time_zone,
             "format": "range",
             "bookingUidToReschedule": booking_uid_to_reschedule,
+            "duration": duration,
         }
         return self._cached(
             key,
@@ -496,6 +517,7 @@ class CalClient:
         time_zone: str,
         notes: str | None = None,
         notes_field: str | None = None,
+        length_in_minutes: int | None = None,
     ) -> Booking:
         start_utc = _utc_iso(start)
         payload = {
@@ -504,26 +526,41 @@ class CalClient:
             "attendee": {"name": name, "email": email, "timeZone": time_zone, "language": "en"},
             "metadata": {"source": "chat-assistant"},
         }
+        if length_in_minutes is not None:
+            payload["lengthInMinutes"] = length_in_minutes
         if notes and notes_field:
             payload["bookingFieldsResponses"] = {notes_field: notes}
         try:
             return self._write("/v2/bookings", payload)
         except CalError as error:
             # Only ambiguous validation/conflict responses warrant a fresh availability check.
-            if error.status in {400, 409, 422} and self._slot_is_gone(event_type_id, start_utc):
+            if error.status in {400, 409, 422} and self._slot_is_gone(event_type_id, start_utc, length_in_minutes):
                 raise CalError(
                     "slot_taken", "That time is no longer available.", status=error.status, body=error.body
                 ) from error
             raise
 
-    def _slot_is_gone(self, event_type_id: int, start_utc: str) -> bool:
+    def _slot_is_gone(self, event_type_id: int, start_utc: str, duration: int | None = None) -> bool:
         instant = _aware_datetime(start_utc)
         day = instant.date()
         try:
-            days = self.slots(event_type_id, day, day, fresh=True)
+            days = self.slots(event_type_id, day, day, fresh=True, duration=duration)
         except CalError:
             return False
         return all(_aware_datetime(slot["start"]) != instant for slots in days.values() for slot in slots)
+
+    def update_event_type(self, event_type_id: int, changes: JsonObject) -> EventType:
+        """Change an event type's settings, such as the lengths it offers."""
+        if type(event_type_id) is not int or event_type_id < 1:
+            raise CalError("invalid", "Choose a valid event type.")
+        try:
+            response = self._request(
+                "PATCH", f"/v2/event-types/{event_type_id}", EVENT_TYPES_VERSION, payload=changes,
+            )
+        finally:
+            with self._lock:
+                self._cache = {key: value for key, value in self._cache.items() if key[0] not in {"event_types", "slots"}}
+        return response.parse(_parse_event_type)
 
     def cancel_booking(self, uid: str, reason: str = "User requested cancellation") -> Booking:
         return self._write(f"{_booking_path(uid)}/cancel", {"cancellationReason": reason})

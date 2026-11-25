@@ -66,6 +66,7 @@ class CalendarWriter(CalendarReader, Protocol):
         time_zone: str,
         notes: str | None = None,
         notes_field: str | None = None,
+        length_in_minutes: int | None = None,
     ) -> Booking: ...
 
     def cancel_booking(self, uid: str, reason: str = "User requested cancellation") -> Booking: ...
@@ -285,15 +286,17 @@ class CalendarActions:
         return ActionOutcome([{"type": "assistant_text", "text": "Okay. The schedule is unchanged."}])
 
     def _fresh_slots(
-        self, event_type_id: int, first: date, last: date, booking: BookingEntry | None
+        self, event_type_id: int, first: date, last: date, booking: BookingEntry | None,
+        duration: int | None = None,
     ) -> list[tuple[datetime, datetime]]:
         try:
             begin, end = local_bounds(first, last, self.state.time_zone)
         except (ValueError, OverflowError):
             raise ActionError("invalid_action", "Choose a valid date range.") from None
+        length = {"duration": duration} if duration is not None else {}
         data = self.calendar.slots(
             event_type_id, begin, end, self.state.time_zone,
-            booking_uid_to_reschedule=booking.uid if booking is not None else None, fresh=True,
+            booking_uid_to_reschedule=booking.uid if booking is not None else None, fresh=True, **length,
         )
         existing_start = parse_instant(booking.start_utc) if booking is not None else None
         options = set()
@@ -345,7 +348,7 @@ class CalendarActions:
         today = self.now.astimezone(self.zone).date()
         first = max(day - timedelta(days=3), today)
         last = max(day, today) + timedelta(days=3)
-        return self._fresh_slots(slot.event_type_id, first, last, booking)
+        return self._fresh_slots(slot.event_type_id, first, last, booking, self.tools.slot_duration(slot))
 
     def _confirm(self, action: ConfirmProposal) -> ActionOutcome:
         if action.proposal_id in self.state.completed:
@@ -593,10 +596,12 @@ class CalendarActions:
         day = start.astimezone(self.zone).date()
         if start <= self.now:
             return self._recover_slot(slot, ref, booking, proposal=proposal)
-        if requested not in self._fresh_slots(slot.event_type_id, day, day, booking):
+        duration = self.tools.slot_duration(slot)
+        if requested not in self._fresh_slots(slot.event_type_id, day, day, booking, duration):
             return self._confirm_taken_slot(proposal, slot, booking, requested, email)
         try:
             if booking is not None:
+                # Cal.com keeps the original booking length on a move.
                 data = self.calendar.reschedule_booking(
                     booking.uid, start, proposal.reason or "User requested reschedule"
                 )
@@ -605,9 +610,10 @@ class CalendarActions:
                     item["slug"] for item in event.get("bookingFields") or ()
                     if item.get("field") == "notes" and item.get("slug") and not item.get("hidden")
                 ), None)
+                length = {"length_in_minutes": duration} if duration is not None else {}
                 data = self.calendar.create_booking(
                     start=start, event_type_id=slot.event_type_id, name=name, email=email,
-                    time_zone=self.state.time_zone, notes=proposal.notes, notes_field=notes_field,
+                    time_zone=self.state.time_zone, notes=proposal.notes, notes_field=notes_field, **length,
                 )
         except CalError as error:
             if error.code == "unavailable":

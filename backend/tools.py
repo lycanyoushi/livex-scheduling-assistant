@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
+import re
 from threading import Lock
 from typing import Annotated, Literal, Protocol, TypeVar
 from urllib.parse import urlsplit
@@ -22,6 +23,7 @@ from backend.cal_client import (
     SlotBound,
     SlotRange,
     Timestamp,
+    event_lengths,
 )
 from backend.prescan import EMAIL, PART_HOURS, DateHint, PartOfDay
 from backend.protocol import (
@@ -76,6 +78,7 @@ class CalendarReader(Protocol):
         *,
         booking_uid_to_reschedule: str | None = None,
         fresh: bool = False,
+        duration: int | None = None,
     ) -> dict[str, list[SlotRange]]: ...
 
     def list_bookings(
@@ -168,6 +171,48 @@ def _iso_utc(value: str | datetime) -> str:
     return parse_instant(value).isoformat().replace("+00:00", "Z")
 
 
+def span_minutes(start_utc: str, end_utc: str) -> int:
+    return int((parse_instant(end_utc) - parse_instant(start_utc)) // timedelta(minutes=1))
+
+
+def length_label(minutes: int) -> str:
+    """A short spoken length, such as "45 minutes" or "1.5 hours"."""
+    if minutes < 60 or minutes % 30:
+        return f"{minutes} minutes"
+    hours = minutes / 60
+    return f"{hours:g} hour" + ("" if hours == 1 else "s")
+
+
+def length_adjective(minutes: int) -> str:
+    """A length before a noun, such as "45-minute" or "2-hour"."""
+    if minutes < 60 or minutes % 30:
+        return f"{minutes}-minute"
+    return f"{minutes / 60:g}-hour"
+
+
+def describe_lengths(lengths: Sequence[int]) -> str:
+    values = sorted(set(lengths))
+    if len(values) > 6:
+        steps = {later - earlier for earlier, later in zip(values, values[1:])}
+        step = f" in {steps.pop()}-minute steps" if len(steps) == 1 else ""
+        return f"{values[0]} to {values[-1]} minutes{step}"
+    if len(values) == 1:
+        return f"{values[0]} minutes"
+    return ", ".join(str(value) for value in values[:-1]) + f" or {values[-1]} minutes"
+
+
+_LENGTH_TITLE = re.compile(r"^\d+[ -]?(?:Minute|Min)\b", re.IGNORECASE)
+
+
+def meeting_title(title: str, minutes: int) -> str:
+    """Keep "30 Minute Meeting" style titles truthful for other lengths."""
+    match = _LENGTH_TITLE.match(title)
+    if match is None:
+        return title
+    label = length_label(minutes).replace(" minutes", " Minute").replace(" hours", " Hour").replace(" hour", " Hour")
+    return label + title[match.end():]
+
+
 def _plain_text(text: str, maximum: int) -> str:
     return " ".join(text.split())[:maximum]
 
@@ -222,7 +267,7 @@ def booking_view(ref: str, entry: BookingEntry, time_zone: str) -> BookingView:
     day, hours = slot_labels(entry.start_utc, entry.end_utc, time_zone)
     view: BookingView = {
         "ref": ref,
-        "title": entry.title,
+        "title": meeting_title(entry.title, span_minutes(entry.start_utc, entry.end_utc)),
         "whenLabel": f"{day}, {hours}",
         "status": entry.status,
         "attendees": list(entry.attendee_emails),
@@ -306,7 +351,7 @@ def proposal_view(
     view: ProposalView = {
         "id": proposal.id,
         "kind": proposal.kind,
-        "title": title,
+        "title": meeting_title(title, int((last - first).total_seconds() // 60)),
         "whenLabel": f"{day}, {hours}",
         "timeZone": state.time_zone,
         "durationMinutes": int((last - first).total_seconds() // 60),
@@ -430,17 +475,33 @@ class CalendarTools:
         if not events:
             raise ToolRejected("There are no available event types.")
         if minutes is not None:
-            matches = [event for event in events if event["lengthInMinutes"] == minutes]
+            matches = [event for event in events if minutes in event_lengths(event)]
             if not matches:
-                lengths = ", ".join(str(value) for value in sorted({event["lengthInMinutes"] for event in events}))
-                raise ToolRejected(f"There is no {minutes}-minute event type. Available meeting lengths are {lengths} minutes.")
-            return next((event for event in matches if event["slug"] == self._default_slug), matches[0])
+                lengths = describe_lengths([length for event in events for length in event_lengths(event)])
+                raise ToolRejected(
+                    f"This calendar can’t book {length_adjective(minutes)} meetings. It offers {lengths}.",
+                    code="length_unavailable",
+                )
+            # Prefer an event type whose default is this length, then the configured default.
+            return min(matches, key=lambda event: (
+                event["lengthInMinutes"] != minutes, event["slug"] != self._default_slug,
+            ))
         if self._default_slug is None:
             return events[0]
         for event in events:
             if event["slug"] == self._default_slug:
                 return event
         raise ToolRejected("The configured event type is unavailable.")
+
+    def query_duration(self, event_type_id: int, minutes: int | None) -> int | None:
+        """The Cal.com `duration` for a length, or None when it is the event type's default."""
+        if minutes is None:
+            return None
+        event = next((event for event in self.event_types() if event["id"] == event_type_id), None)
+        return None if event is None or minutes == event["lengthInMinutes"] else minutes
+
+    def slot_duration(self, slot: SlotEntry) -> int | None:
+        return self.query_duration(slot.event_type_id, span_minutes(slot.start_utc, slot.end_utc))
 
     def schemas(self, *, allow_lazy_catalog: bool = False) -> list[JsonObject]:
         # A timed-out availability read may still be loading the catalog.
@@ -531,26 +592,33 @@ class CalendarTools:
             event = next((event for event in events if event["id"] == booking.event_type_id), None)
             if event is None or (isinstance(args, _FindSlotsWithEvent) and event["slug"] != args.event_type):
                 raise ToolRejected("Choose the event type attached to that booking.")
-            if args.duration_minutes is not None and event["lengthInMinutes"] != args.duration_minutes:
-                raise ToolRejected(f"That booking is {event['lengthInMinutes']} minutes long. A move keeps its duration.")
+            length = span_minutes(booking.start_utc, booking.end_utc)
+            if args.duration_minutes is not None and args.duration_minutes != length:
+                raise ToolRejected(f"That meeting is {length_label(length)} long. A move keeps its length.")
             return event
-        draft = self.state.guest_draft
-        minutes = args.duration_minutes
-        if minutes is None and draft is not None:
-            minutes = draft.duration_minutes
+        minutes = self._requested_minutes(args, None)
         if isinstance(args, _FindSlotsWithEvent):
             if len(events) <= 1:
                 raise ToolRejected("Omit event_type when only one event type is available.")
             event = next((event for event in events if event["slug"] == args.event_type), None)
             if event is None:
                 raise ToolRejected("Choose an available event type.")
-            if minutes is not None and event["lengthInMinutes"] != minutes:
+            if minutes is not None and minutes not in event_lengths(event):
                 self.event_for_duration(minutes)
-                raise ToolRejected(f"Choose a {minutes}-minute event type.")
+                raise ToolRejected(f"Choose an event type that offers {length_adjective(minutes)} meetings.")
             return event
         if minutes is None and len(events) > 1 and not self._default_only_schema:
             raise ToolRejected("Choose an available event type.")
         return self.event_for_duration(minutes)
+
+    def _requested_minutes(self, args: _FindSlots, booking: BookingEntry | None) -> int | None:
+        """The meeting length a search must match: the booking's own, or a requested one."""
+        if booking is not None:
+            return span_minutes(booking.start_utc, booking.end_utc)
+        draft = self.state.guest_draft
+        if args.duration_minutes is not None:
+            return args.duration_minutes
+        return draft.duration_minutes if draft is not None else None
 
     def read_slot_entries(
         self,
@@ -563,15 +631,18 @@ class CalendarTools:
         *,
         fresh: bool = False,
         query_time_zone: str | None = None,
+        duration: int | None = None,
     ) -> list[SlotEntry]:
         zone = ZoneInfo(query_time_zone) if query_time_zone is not None else self._zone
         try:
             begin, end = local_bounds(first, last, zone.key)
         except (ValueError, OverflowError):
             raise ToolRejected("Choose a valid calendar date range.") from None
+        # Only send a length when it differs from the event type's default.
+        length = {"duration": duration} if duration is not None else {}
         data = self.calendar.slots(
             event_type_id, begin, end, zone.key,
-            booking_uid_to_reschedule=booking_uid, fresh=fresh,
+            booking_uid_to_reschedule=booking_uid, fresh=fresh, **length,
         )
         with self._state_lock:
             booking = self.state.bookings.get(booking_ref) if booking_ref is not None else None
@@ -667,22 +738,25 @@ class CalendarTools:
             booking = self._changeable_booking(booking_ref) if booking_ref is not None else None
         event = self._resolve_event(args, booking)
         uid = booking.uid if booking is not None else None
-        event_duration = timedelta(minutes=event["lengthInMinutes"])
+        minutes = self._requested_minutes(args, booking) or event["lengthInMinutes"]
+        event_duration = timedelta(minutes=minutes)
+        duration = self.query_duration(event["id"], minutes)
         if args.start_time is not None and args.end_time is not None and all(
             upper - lower < event_duration for lower, upper in bounds.values()
             if lower is not None and upper is not None
         ):
-            raise ToolRejected(f"Choose a window long enough for a {event['lengthInMinutes']}-minute meeting.")
+            raise ToolRejected(f"Choose a window long enough for a {length_adjective(minutes)} meeting.")
 
         def search(start_date: date, end_date: date) -> list[SlotEntry]:
             matches = []
             for entry in self.read_slot_entries(
                 event["id"], start_date, end_date, args.part_of_day, booking_ref, uid, query_time_zone=zone.key,
+                duration=duration,
             ):
                 start, end = parse_instant(entry.start_utc), parse_instant(entry.end_utc)
                 if self.slots_after is not None and start <= self.slots_after:
                     continue
-                if args.duration_minutes is not None and end - start != event_duration:
+                if (args.duration_minutes is not None or duration is not None) and end - start != event_duration:
                     continue
                 if bounds:
                     lower, upper = bounds[start.astimezone(zone).date()]
@@ -731,7 +805,7 @@ class CalendarTools:
             if upper is not None:
                 result["requestedEndLocalIso"] = upper.astimezone(self._zone).isoformat()
         if args.duration_minutes is not None:
-            result["durationMinutes"] = event["lengthInMinutes"]
+            result["durationMinutes"] = minutes
         if next_open is not None:
             result["nextOpenDate"] = next_open
         return ToolOutcome(result, [{"type": "refs", "slots": refs}] if refs else [])
@@ -869,10 +943,11 @@ class CalendarTools:
         today = self.now.astimezone(self._zone).date()
         last_warm_day = today + timedelta(days=WARM_SLOT_DAYS - 1)
         within_warm_window = today <= day <= last_warm_day
+        duration = self.slot_duration(slot)
         options = self.read_slot_entries(
             slot.event_type_id, today if within_warm_window else day, last_warm_day if within_warm_window else day,
             "any", booking_ref,
-            booking.uid if booking is not None else None, fresh=True,
+            booking.uid if booking is not None else None, fresh=True, duration=duration,
         )
         original_end = parse_instant(slot.end_utc)
         if any(parse_instant(entry.start_utc) == instant and parse_instant(entry.end_utc) == original_end for entry in options):
@@ -885,7 +960,7 @@ class CalendarTools:
         if not within_warm_window:
             options = self.read_slot_entries(
                 slot.event_type_id, today, last_warm_day, "any", booking_ref,
-                booking.uid if booking is not None else None,
+                booking.uid if booking is not None else None, duration=duration,
             )
         nearest = nearest_slots(
             (entry for entry in options if parse_instant(entry.start_utc) != instant),
@@ -957,7 +1032,7 @@ class CalendarTools:
             raise ToolRejected("Use a valid guest email.")
         if minutes is not None and parse_instant(slot.end_utc) - parse_instant(slot.start_utc) != timedelta(minutes=minutes):
             self.event_for_duration(minutes)
-            raise ToolRejected(f"Choose a {minutes}-minute opening for this guest.")
+            raise ToolRejected(f"Choose a {length_adjective(minutes)} opening for this guest.")
         if not name or not email:
             with self._state_lock:
                 if draft is None:

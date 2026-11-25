@@ -221,11 +221,15 @@ class TracedCalendar(FakeCal):
     def fixture_name(self, uid):
         return self.fixture_names.get(uid)
 
-    def slots(self, event_type_id, start, end, time_zone="UTC", *, booking_uid_to_reschedule=None, fresh=False):
+    def slots(self, event_type_id, start, end, time_zone="UTC", *, booking_uid_to_reschedule=None, fresh=False,
+              duration=None):
         uid = booking_uid_to_reschedule
         read = {"operation": "slots", "reschedule_uid": uid, "booking_uid_to_reschedule": self.fixture_name(uid)}
+        if duration is not None:
+            read["duration"] = duration
         self.reads.append(read)
-        result = super().slots(event_type_id, start, end, time_zone, booking_uid_to_reschedule=uid, fresh=fresh)
+        result = super().slots(event_type_id, start, end, time_zone, booking_uid_to_reschedule=uid, fresh=fresh,
+                               duration=duration)
         read["availability"] = {
             "lower": _slot_edge(start), "upper": _slot_edge(end, end=True),
             "starts": {local_iso(slot["start"], self.zone) for day in result.values() for slot in day},
@@ -269,7 +273,9 @@ class TracedCalendar(FakeCal):
         create = super().create_booking
         return self._write("create_booking", lambda: create(**kwargs), start=kwargs["start"],
                            name=kwargs["name"], email=kwargs["email"], notes=kwargs.get("notes"),
-                           event_type_id=kwargs["event_type_id"])
+                           event_type_id=kwargs["event_type_id"],
+                           **({"length_in_minutes": kwargs["length_in_minutes"]}
+                              if kwargs.get("length_in_minutes") is not None else {}))
 
     def cancel_booking(self, uid, *args, **kwargs):
         cancel = super().cancel_booking

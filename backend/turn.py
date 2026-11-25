@@ -24,7 +24,10 @@ from backend.confirmations import ConfirmationLedger
 from backend.limits import RateLimits
 from backend.model import ModelClient, ModelCompletion, ModelError, ModelStreamStart, ModelText, ToolCall
 from backend.prefetch import BookingLookup, PREFETCH_BUDGET_SECONDS, Prefetcher, RescheduleTarget, plan_prefetch, prefer_daytime_for_request
-from backend.prescan import BOOKING_REQUEST, DATED_FOLLOWUP, EMAIL, EXPLANATION, EXISTING_BOOKING, DateHint, PrescanResult, prescan, typed_choice
+from backend.prescan import (
+    BOOKING_REQUEST, DATED_FOLLOWUP, EMAIL, EXPLANATION, EXISTING_BOOKING, DateHint, PrescanResult, TimeWindow,
+    prescan, typed_choice,
+)
 from backend.protocol import (
     CalCallMetrics, ChatRequest, ConfirmProposal, DismissProposal, ErrorEvent, ModelCallMetrics, RefsEvent, ServerEvent,
     PickSlot, RequestCancel, RequestReschedule, SlotView, TextInput, TurnMetrics, UiAction,
@@ -36,7 +39,9 @@ from backend.state import (
     sign_state, verify_state,
 )
 from backend.time import parse_instant, slot_labels, utc_now
-from backend.tools import CalendarTools, InvalidToolArguments, ToolOutcome, ToolRejected, last_bookable_day
+from backend.tools import (
+    CalendarTools, InvalidToolArguments, ToolOutcome, ToolRejected, last_bookable_day, span_minutes,
+)
 
 
 SYSTEM_PROMPT = """You manage the user's own Cal.com calendar.
@@ -183,6 +188,15 @@ def _typed_proposal_action(reply: TextInput, proposal: Proposal | None) -> Confi
     if decision == "dismiss":
         return DismissProposal(type="dismiss_proposal", proposalId=proposal.id)
     return None
+
+
+def _morning_reading(start: time, end: time) -> time | None:
+    """Read a backwards range such as "11pm to 12pm" as its likely morning start, 11:00–12:00."""
+    if start.hour < 12:
+        return None
+    morning = time(start.hour - 12, start.minute)
+    span = (end.hour * 60 + end.minute) - (morning.hour * 60 + morning.minute)
+    return morning if 0 < span <= 240 else None
 
 
 def _redact_contact(value: str) -> str:
@@ -841,6 +855,19 @@ class TurnService:
             state.proposal = None
             yield {"type": "assistant_text", "text": "That date has already passed. What future date should I check?"}
             return
+        if not change and hints.reversed_window is not None:
+            start, end = hints.reversed_window
+            reading = _morning_reading(start, end)
+            if reading is None or not hints.dates:
+                state.clear_time_choices()
+                yield {"type": "assistant_text",
+                       "text": "That time range ends before it starts. What start and end time should I use?"}
+                return
+            # The openings and the confirmation card still show the reading before anything is booked.
+            full_meeting = hints.duration_minutes is None and BOOKING_REQUEST.search(text) is not None
+            hints = replace(hints, reversed_window=None, time_window=TimeWindow(reading, end, full_meeting))
+            yield {"type": "assistant_text",
+                   "text": f"That range ends before it starts, so I read it as {reading:%H:%M}–{end:%H:%M}."}
         if lookup_followup or (hints.needs_interpretation and hints.timing_mentioned and not EXPLANATION.search(text)
                                and not {"list", "cancel", "reschedule"}.intersection(hints.intents)):
             hints = replace(hints, availability_request=True)
@@ -1050,7 +1077,10 @@ class TurnService:
         if selected and plan.move_requested and (plan.days or hints.move_delay_minutes) and fast_path:
             booking = state.bookings[selected]
             if booking.event_type_id is not None:
-                target = RescheduleTarget(selected, booking.uid, booking.event_type_id, parse_instant(booking.start_utc))
+                target = RescheduleTarget(
+                    selected, booking.uid, booking.event_type_id, parse_instant(booking.start_utc),
+                    span_minutes(booking.start_utc, booking.end_utc),
+                )
                 if hints.move_delay_minutes is not None:
                     wanted = (target.start + timedelta(minutes=hints.move_delay_minutes)).astimezone(local_now.tzinfo)
                     dates = (DateHint(wanted.date(), wanted.time()),)

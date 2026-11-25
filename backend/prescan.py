@@ -190,6 +190,7 @@ class PrescanResult:
     past_date_requested: bool = False
     timing_mentioned: bool = False
     date_mentioned: bool = False
+    reversed_window: tuple[time, time] | None = None
 
     @property
     def needs_interpretation(self) -> bool:
@@ -488,12 +489,16 @@ def prescan(text: str, *, now: datetime, time_zone: str) -> PrescanResult:
     if duration is not None and duration_minutes is not None and 0 < duration_minutes <= 1440:
         read.append(duration.span())
     time_window = None
+    reversed_window = None
     if bounds is not None and availability:
         start, end = _window_time(bounds["start"]), _window_time(bounds["end"])
         if start is not None and end is not None and start < end:
             full_meeting = bool(bounds["from"] and len(dates) == 1 and duration_minutes is None
                                 and BOOKING_REQUEST.search(positive) and not AVAILABILITY_REQUEST.search(positive))
             time_window = TimeWindow(start, end, full_meeting)
+        elif start is not None and end is not None:
+            # "11pm to 12pm" ends before it starts; ask instead of guessing.
+            reversed_window = (start, end)
         if dates or time_window is None:
             read_window.append(bounds.span())
     move_delay = _MOVE_DELAY.search(window) if is_move else None
@@ -556,6 +561,7 @@ def prescan(text: str, *, now: datetime, time_zone: str) -> PrescanResult:
         past_date_requested,
         timing_mentioned,
         date_mentioned,
+        reversed_window,
     )
 
 

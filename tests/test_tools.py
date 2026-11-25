@@ -126,7 +126,7 @@ class CalendarToolsTests(unittest.TestCase):
         tools = CalendarTools(calendar, self.state, NOW, default_slug="hour")
         self.assertEqual(tools.event_for_duration(None)["id"], 9002)
         self.assertEqual(tools.event_for_duration(30)["id"], 9001)
-        with self.assertRaisesRegex(ToolRejected, "30, 60 minutes"):
+        with self.assertRaisesRegex(ToolRejected, "can’t book 15-minute meetings. It offers 30 or 60 minutes"):
             tools.event_for_duration(15)
         restricted = CalendarTools(calendar, self.state, NOW, allowed_slugs=("30-minute-meeting",))
         with self.assertRaisesRegex(ToolRejected, "30 minutes"):
@@ -169,7 +169,7 @@ class CalendarToolsTests(unittest.TestCase):
             (slot_args(duration_minutes=0), "whole number of minutes"),
             (slot_args(duration_minutes=True), "whole number of minutes"),
             (slot_args(duration_minutes="30"), "whole number of minutes"),
-            (slot_args(duration_minutes=120), "no 120-minute event type"),
+            (slot_args(duration_minutes=120), "can’t book 2-hour meetings"),
             (slot_args(start_time="11:00", end_time="11:20"), "long enough for a 30-minute meeting"),
         ):
             with self.subTest(args=args), self.assertRaisesRegex(ToolRejected, message):
@@ -285,7 +285,7 @@ class CalendarToolsTests(unittest.TestCase):
         self.assertTrue(outcome.result["slots"])
         self.assertEqual(self.state.guest_draft.duration_minutes, 60)
         booking = self.known_booking()
-        with self.assertRaisesRegex(ToolRejected, "A move keeps its duration"):
+        with self.assertRaisesRegex(ToolRejected, "A move keeps its length"):
             self.tools.execute("find_slots", slot_args(booking_ref=booking, duration_minutes=60))
         outcome = self.tools.execute("find_slots", slot_args(booking_ref=booking, start_time="11:00", duration_minutes=30))
         self.assertEqual(outcome.result["durationMinutes"], 30)

@@ -18,6 +18,8 @@ When the target is missing or ambiguous, the app shows the candidate meetings an
 
 Opening buttons carry the date and time. The assistant gives one short acknowledgment and asks for any missing guest details. For an exact replacement time in a pending booking, the app uses the signed proposal’s local date and offers the model the exact slot, while keeping the prior tool result in the conversation.
 
+A meeting can be any length its event type lists in `lengthInMinutesOptions`. Each opening carries its own start and end. The app passes a non-default length to Cal.com as `duration` when reading slots, including the fresh check before a write, and as `lengthInMinutes` when booking. A move keeps the booking's length, which Cal.com also does when the reschedule omits one. Titles such as “30 Minute Meeting” are shown with the real length, for example “2 Hour Meeting.” A backwards range such as “11pm to 12pm” is read as the morning range when it spans four hours or less, and the reply says so. Otherwise the app asks for the times. The confirmation card still shows the interval before anything is booked.
+
 The single-owner demo opens directly for anyone with the link and uses a test calendar with fictional guests. A real deployment would sit behind the owner’s own login, for example Cal.com OAuth.
 
 The fake calendar and the Cal.com seeder share five fictional bookings in the account's time zone. The live seeder defaults to a read-only check and requires explicit approval for `--write-test`. Its rollback marker comes from the test event's built-in notes field. [Read-only booking range and schedule verification](calcom-notes.md#owner-booking-ranges-and-calendar-time-zone)
