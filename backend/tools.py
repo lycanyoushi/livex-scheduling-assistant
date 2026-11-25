@@ -175,6 +175,12 @@ def span_minutes(start_utc: str, end_utc: str) -> int:
     return int((parse_instant(end_utc) - parse_instant(start_utc)) // timedelta(minutes=1))
 
 
+def slot_matches_booking_length(slot: SlotEntry, booking: BookingEntry) -> bool:
+    slot_length = parse_instant(slot.end_utc) - parse_instant(slot.start_utc)
+    booking_length = parse_instant(booking.end_utc) - parse_instant(booking.start_utc)
+    return slot_length == booking_length
+
+
 def length_label(minutes: int) -> str:
     """A short spoken length, such as "45 minutes" or "1.5 hours"."""
     if minutes < 60 or minutes % 30:
@@ -937,6 +943,8 @@ class CalendarTools:
             raise ToolRejected("Choose a slot offered for this specific booking request.")
         if booking is not None and instant == parse_instant(booking.start_utc):
             raise ToolRejected("Choose a different start time for this booking.")
+        if booking is not None and not slot_matches_booking_length(slot, booking):
+            raise ToolRejected("Choose an opening that keeps the meeting's original length.")
         if self.now.timestamp() - slot.fetched_at <= _STALE_SLOT_SECONDS:
             return slot
 

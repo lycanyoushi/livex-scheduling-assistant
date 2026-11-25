@@ -548,7 +548,7 @@ def _context(
             f"{item.day:%a %d %b %Y}, {item.at:%H:%M}" if item.at is not None else
             f"{item.day:%a %d %b %Y}, {reading if reading != 'any' else 'no time'}"
             for item in hints.dates[:7]
-        ) + ". If these do not match the request, use find_slots with the correct date and times.")
+        ) + ".")
         lines.append("Dates suggested by prescan: " + ", ".join(
             item.day.isoformat() + (f" at {item.at:%H:%M}" if item.at else "") for item in hints.dates[:7]
         ))
@@ -848,7 +848,7 @@ class TurnService:
         lookup_followup = bool(previous_search and not change and "list" not in hints.intents
                                and not EXPLANATION.search(text)
                                and (hints.dates or replacing or _REVISE_TIME.search(text)
-                                    or (DATED_FOLLOWUP.search(text) and hints.needs_interpretation)))
+                                    or (hints.needs_interpretation and (hints.timing_mentioned or DATED_FOLLOWUP.search(text)))))
         date_anchor = previous_search if lookup_followup and not hints.date_mentioned else None
         if not change and "list" not in hints.intents and hints.past_date_requested:
             state.clear_time_choices()
@@ -882,14 +882,16 @@ class TurnService:
         fast_path = hints.date_time_complete
         window = hints.time_window if fast_path else None
         pending = state.pending_change
-        replacement = replacing
-        if replacement and state.proposal is not None and state.proposal.kind == "book":
+        exact_replacement = False
+        if replacing and state.proposal is not None and state.proposal.kind == "book":
             slot = state.slots.get(state.proposal.slot_ref or "")
-            requested_time = typed_choice(replacement[1])
+            requested_time = typed_choice(replacing[1])
             if slot is not None and isinstance(requested_time, time):
                 day = parse_instant(slot.start_utc).astimezone(ZoneInfo(state.time_zone)).date()
-                hints = replace(hints, dates=(DateHint(day, requested_time),), availability_request=True)
+                hints = replace(hints, dates=(DateHint(day, requested_time),), availability_request=True,
+                                date_time_complete=True, duration_minutes=span_minutes(slot.start_utc, slot.end_utc))
                 fast_path = True
+                exact_replacement = True
         if change is None and "cancel" in hints.intents and "reschedule" in hints.intents:
             yield {"type": "assistant_text", "text": "Do you want to move a meeting or cancel it?"}
             return
@@ -927,9 +929,9 @@ class TurnService:
         old_contact = state.guest_draft.model_dump() if state.guest_draft is not None else None
         _update_guest_draft(state, text, hints)
         can_pick = fast_path or typed_choice(text) is not None
-        choices = _match_typed_slot(state, text, now, hints) if pending is None and can_pick else ()
+        choices = _match_typed_slot(state, text, now, hints) if pending is None and can_pick and not exact_replacement else ()
         draft = state.guest_draft
-        contact_only = draft is not None and draft.slot_ref is None and hints.email is not None and not (
+        contact_only = state.proposal is None and draft is not None and draft.slot_ref is None and hints.email is not None and not (
             hints.intents or hints.dates
         )
         finishing_contact = (
@@ -947,7 +949,7 @@ class TurnService:
                 async for event in events:
                     yield event
             return
-        if lookup_followup and (replacement or _REVISE_TIME.search(text)):
+        if exact_replacement or (lookup_followup and (replacing or _REVISE_TIME.search(text))):
             state.last_offered_slots.clear()
             state.slots.clear()
             state.proposal = None
@@ -1211,24 +1213,45 @@ class TurnService:
         choose_move_time = bool(plan.reschedule and displayed and not exact_move)
         exact_booking = bool(
             displayed and len(displayed) == 1 and not checked_empty and len(hints.dates) == 1
-            and hints.dates[0].at is not None and (replacement or BOOKING_REQUEST.search(text))
+            and hints.dates[0].at is not None and (exact_replacement or BOOKING_REQUEST.search(text))
             and not is_change and pending is None
         )
+        editing_book_slot = None
+        if (not listing_only and not is_change and not hints.timing_mentioned and not hints.availability_request
+                and state.proposal is not None and state.proposal.kind == "book"
+                and state.proposal.slot_ref in _visible_slots(state, now)):
+            editing_book_slot = state.proposal.slot_ref
         if exact_move:
             tools.required_change_slot = displayed[0]
         if exact_booking:
             tools.required_book_slot = displayed[0]
+        elif editing_book_slot:
+            tools.required_book_slot = editing_book_slot
         if pending is not None and change is None:
             tools.allowed_booking_refs = frozenset(_pending_candidates(state, pending, now))
-        schemas = [] if listing_response else await asyncio.to_thread(
-            tools.schemas, allow_lazy_catalog=bool(plan.days),
-        )
-        if listing_only:
-            schemas = [schema for schema in schemas if schema["name"] not in PROPOSE_TOOLS]
-        else:
-            schemas.append(_SCOPE_TOOL)
-        schemas = [schema for schema in schemas if schema["name"] not in PROPOSE_TOOLS
-                   or schema["name"] == f"propose_{'booking' if protected_kind == 'book' else protected_kind}"]
+        prefetch_answered = fast_path and plan.show_openings and prefetched.slots_checked
+        if prefetch_answered and grounded_availability and (checked_empty or choose_move_time):
+            # These verified choices belong to the current request. An empty narrower
+            # read cannot invalidate real openings outside that window.
+            state.interaction_id, state.pending_call, state.last_model_input_tokens = original_history
+            yield {"type": "assistant_text", "text": trusted_reply}
+            return
+        choice_only = bool(scheduling and (displayed or (lookup_followup and state.last_offered_slots))
+                           and not (exact_booking or exact_move))
+        schemas = []
+        if not (listing_response or contact_only or (prefetch_answered and not (exact_booking or exact_move))):
+            schemas = await asyncio.to_thread(tools.schemas, allow_lazy_catalog=bool(plan.days))
+            if exact_booking or exact_move or editing_book_slot:
+                proposal_tool = "propose_reschedule" if exact_move else "propose_booking"
+                schemas = [schema for schema in schemas if schema["name"] == proposal_tool]
+            elif choice_only:
+                schemas = [schema for schema in schemas if schema["name"] == "find_slots"]
+            else:
+                schemas = [schema for schema in schemas if schema["name"] not in PROPOSE_TOOLS or (
+                    not listing_only and protected_kind == "cancel" and schema["name"] == "propose_cancel"
+                )]
+                if not listing_only:
+                    schemas.append(_SCOPE_TOOL)
         context, snapshot = _context(
             state, now, hints, prefetched_slots=frozenset(displayed if restrict_slots else slot_refs),
             prefetched_bookings=tuple(booking_refs) if booking_refs is not None else None,
@@ -1243,15 +1266,22 @@ class TurnService:
         )
         instructions = None
         if exact_move:
-            instructions = (f"If the hint matches, use propose_reschedule for {selected} and the exact requested slot {displayed[0]}. "
-                            "Otherwise use find_slots for the correct time.")
+            instructions = f"Use propose_reschedule for {selected} and the exact requested slot {displayed[0]}."
         elif exact_booking:
-            instructions = (f"If the hint matches, use propose_booking for the exact requested slot {displayed[0]}. "
-                            "Otherwise use find_slots for the correct time.")
+            instructions = f"Use propose_booking for the exact requested slot {displayed[0]}."
+            if exact_replacement:
+                instructions += " This replaces the previous unconfirmed proposal."
+        elif editing_book_slot:
+            instructions = (f"The user already selected {editing_book_slot}. If they ask to edit the pending booking, "
+                            "use that same slot. A new time requires a new selection.")
         elif choose_move_time:
             instructions = "Ask which displayed time to move the meeting to."
         elif contact_only:
-            instructions = "The guest email is recorded. Ask which time to use, if a time has not been chosen."
+            instructions = "The guest email is recorded. Ask which time to use. The user has not selected a time."
+        elif prefetch_answered:
+            instructions = "The calendar has already been checked for the complete request. Acknowledge the result briefly."
+        elif choice_only:
+            instructions = "Use find_slots only to correct or complete the timing before asking the user to choose."
         if instructions is not None:
             context = context.removesuffix("</turn_context>") + instructions + "\n</turn_context>"
         steps = _initial_steps(state, context, text)
@@ -1377,7 +1407,7 @@ class TurnService:
                                metrics=metrics, verified_slots=verified_slots,
                                move=protected_kind == "reschedule", date_anchor=date_anchor,
                                allows_time_window=allows_time_window,
-                               needs_selection=grounded_availability and not (tools.required_book_slot or tools.required_change_slot))
+                               needs_selection=not (tools.required_book_slot or tools.required_change_slot))
                 for call in calls
             ))
             steps = []
@@ -1465,7 +1495,8 @@ class TurnService:
                 selected_start = (lookup_count == 1 and len(displayed) == 1 and "requestedStart" in lookup_result
                                   and "requestedEnd" not in lookup_result
                                   and [row["ref"] for row in lookup_result["slots"]] == displayed)
-                if selected_start and protected_kind == "book" and draft is not None and draft.collecting:
+                if (selected_start and hints.exact_clock_mentioned and protected_kind == "book"
+                        and draft is not None and draft.collecting):
                     state.interaction_id, state.pending_call, state.last_model_input_tokens = original_history
                     state.counters.turns += 1
                     async with aclosing(self._action_events(state, now, PickSlot(type="pick_slot", slotRef=displayed[0]), metrics)) as events:

@@ -54,12 +54,15 @@ _RELATIVE_PERIOD = re.compile(
     rf"\b(?:in|after|before|within|next|last|previous|this)\s+(?:[\w-]+\s+){{0,3}}(?:{_TIME_UNITS})\b"
     rf"|\b(?:{_TIME_UNITS})\s+(?:ago|later|earlier|out|from\s+now|(?:after|before)\s+(?:today|tomorrow|next|last))\b"
 )
-_BARE_TIMING_CUE = re.compile(
-    r"\b(?:noon|midnight|tonight|mediodía|medianoche)\b"
+_CLOCK_CUE = re.compile(
+    r"\b(?:noon|midnight|mediodía|medianoche)\b"
     r"|\b\d{1,2}[:.]\d{2}(?!\d)|\b\d{1,2}\s*[ap]\.?\s*m\.?(?!\w)"
-    r"|\b(?:at|before|after|by|a\s+las)\s+\d{1,4}\b|\b\d{1,2}\s+(?:instead|rather)\b"
-    r"|\b[\w-]+\s+(?:hours?|minutes?)\b",
+    r"|\b(?:at|a\s+las)\s+\d{1,4}(?![\d:.])\b|\b\d{1,2}\s+(?:instead|rather)\b",
 )
+_BARE_TIMING_CUE = re.compile(
+    r"\btonight\b|\b(?:before|after|by)\s+\d{1,4}\b|\b[\w-]+\s+(?:hours?|minutes?)\b",
+)
+_APPROXIMATE_CLOCK_PREFIX = re.compile(r"\b(?:after|before|around|about|by|from|between|until|through)\s*$")
 _BARE_DATE_CUE = re.compile(
     r"\b\d{4}[-./]\d{1,2}[-./]\d{1,2}\b|\b\d{1,2}/\d{1,2}(?:/\d{2,4})?\b|\b\d{1,2}\.\d{1,2}\.\d{4}\b"
     rf"|\b(?:in|on|by|next|last|this)\s+(?:{MONTH})\b|\b(?:{_SHORT_WEEKDAY})\b",
@@ -191,6 +194,7 @@ class PrescanResult:
     timing_mentioned: bool = False
     date_mentioned: bool = False
     reversed_window: tuple[time, time] | None = None
+    exact_clock_mentioned: bool = False
 
     @property
     def needs_interpretation(self) -> bool:
@@ -508,6 +512,10 @@ def prescan(text: str, *, now: datetime, time_zone: str) -> PrescanResult:
         move_delay_minutes = amount * (60 if move_delay[2].startswith("hour") else 1)
         read_window.append(move_delay.span())
     unread = list(positive)
+    for booking in BOOKING_REQUEST.finditer(positive):
+        before_verb = positive[:booking.start()].rstrip()
+        if before_verb.split()[-1:] == ["to"]:
+            read.append((len(before_verb) - 2, booking.start()))
     read.extend((offset + first, offset + last) for first, last in read_window)
     for first, last in read:
         unread[first:last] = " " * (last - first)
@@ -532,10 +540,13 @@ def prescan(text: str, *, now: datetime, time_zone: str) -> PrescanResult:
         explicit_date or prior or _BARE_DATE_CUE.search(positive) or _RELATIVE_PERIOD.search(positive)
         or _THIS_PART.search(positive)
     )
-    timing_mentioned = bool(
-        date_mentioned or bounds or part != "any" or duration or named_zone or _BARE_TIMING_CUE.search(positive)
-        or _STANDALONE_COMPACT_CLOCK.fullmatch(positive.strip())
-    )
+    clock_cues = tuple(_CLOCK_CUE.finditer(positive))
+    compact_clock = _STANDALONE_COMPACT_CLOCK.fullmatch(positive.strip())
+    timing_mentioned = bool(date_mentioned or bounds or part != "any" or duration or named_zone or clock_cues
+                            or _BARE_TIMING_CUE.search(positive) or compact_clock)
+    exact_clock_mentioned = bounds is None and bool(compact_clock or (
+        len(clock_cues) == 1 and not _APPROXIMATE_CLOCK_PREFIX.search(positive[:clock_cues[0].start()])
+    ))
     complete = not (
         unresolved or prior or named_zone or _RELATIVE_PERIOD.search(unread_text)
         or _UNREAD_DATE_OR_TIME.search(unread_text)
@@ -562,6 +573,7 @@ def prescan(text: str, *, now: datetime, time_zone: str) -> PrescanResult:
         timing_mentioned,
         date_mentioned,
         reversed_window,
+        exact_clock_mentioned,
     )
 
 

@@ -8,11 +8,11 @@ import unittest
 from unittest import mock
 from zoneinfo import ZoneInfo
 
-from backend.actions import CalendarActions
+from backend.actions import ActionError, CalendarActions
 from backend.cal_client import CalClient, CalError, event_lengths
 from backend.demo_calendar import DEMO_LENGTHS, DemoCalendar
 from backend.protocol import ChatRequest, ConfirmProposal
-from backend.state import GuestDraft, add_booking, new_state
+from backend.state import BookingTarget, GuestDraft, Proposal, add_booking, new_state, sign_state, verify_state
 from backend.time import parse_instant
 from backend.tools import CalendarTools, ToolRejected, booking_entry, describe_lengths, meeting_title
 from backend.turn import TurnService
@@ -152,6 +152,45 @@ class DemoLengthTests(unittest.TestCase):
         self.confirm(outcome.proposal)
         [moved] = self.bookings_on("2026-12-10")
         self.assertEqual(parse_instant(moved["end"]) - parse_instant(moved["start"]), timedelta(hours=1))
+
+    def test_short_signed_move_slot_cannot_propose_or_confirm_a_longer_booking(self):
+        created = self.calendar.create_booking(
+            start="2026-12-09T03:00:00Z", event_type_id=9001, name="Avery Fixture",
+            email="avery@example.com", time_zone=ZONE, length_in_minutes=60,
+        )
+        booking = booking_entry(created)
+        ref = add_booking(self.state, booking)
+        [row] = self.tools.execute("find_slots", find("2026-12-10", start_time="16:00")).result["slots"]
+        slot_ref = row["ref"]
+        self.state.slots[slot_ref] = self.state.slots[slot_ref].model_copy(update={"for_booking_ref": ref})
+        with self.assertRaisesRegex(ToolRejected, "original length"):
+            self.tools.execute("propose_reschedule", {"booking_ref": ref, "slot_ref": slot_ref, "reason": ""})
+        self.assertIsNone(self.state.proposal)
+
+        # Simulate an earlier signed proposal whose opening was only 30 minutes.
+        self.state.counters.p = 1
+        self.state.proposal = Proposal(
+            id="P1", kind="reschedule", slot_ref=slot_ref, booking_ref=ref,
+            booking_target=BookingTarget(
+                uid=booking.uid, event_type_id=booking.event_type_id,
+                start_utc=booking.start_utc, end_utc=booking.end_utc,
+            ),
+            created_at=NOW.timestamp(),
+        )
+        secret = "fixture-signing-key-for-legacy-moves"
+        state = verify_state(sign_state(self.state, secret), secret, NOW)
+        action = ConfirmProposal.model_validate({"type": "confirm_proposal", "proposalId": "P1"})
+        with (
+            mock.patch.object(self.calendar, "slots", wraps=self.calendar.slots) as read_slots,
+            mock.patch.object(self.calendar, "reschedule_booking", wraps=self.calendar.reschedule_booking) as move,
+        ):
+            with self.assertRaisesRegex(ActionError, "original length"):
+                CalendarActions(self.calendar, state, NOW).execute(action)
+            read_slots.assert_not_called()
+            move.assert_not_called()
+
+        self.assertEqual(self.calendar.booking(booking.uid)["status"], "accepted")
+        self.assertEqual(self.bookings_on("2026-12-10"), [])
 
 
 class NoModel:

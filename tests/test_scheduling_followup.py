@@ -107,8 +107,7 @@ class SchedulingFollowupTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(state.proposal)
 
     async def test_time_only_revision_uses_busy_requests_date_and_verifies_new_slot(self):
-        model = FakeModel((ModelText("Let’s choose a time."), ModelCompletion("busy", "completed")),
-                          (self.find("wrong-day", "2026-11-23", "16:00"),),
+        model = FakeModel((self.find("wrong-day", "2026-11-23", "16:00"),),
                           (self.find("right-day", "2026-11-24", "16:00"),))
         service = self.service(model, FakeCal(fixture_overrides={"active_bookings": ["owner_tomorrow_late"]}))
         first = await self.turn(service, "Book tomorrow at 3pm with Avery Example, avery@example.com")

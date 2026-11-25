@@ -103,6 +103,7 @@ class PrefetchTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Openings already on screen", self.model.contexts[0])
         self.assertEqual(len(PREFETCH_REF.findall(self.model.contexts[0])), len(local_times))
         self.assertEqual(self.model.calls, 1)
+        self.assertEqual(self.model.tool_schemas, [[]])
         self.assertEqual(events[-1]["metrics"]["toolCalls"], [])
         self.assertEqual(events[-1]["metrics"]["prefetch"]["slots"], len(local_times))
         self.assertFalse(events[-1]["metrics"]["prefetch"]["timedOut"])
@@ -158,10 +159,12 @@ class PrefetchTests(unittest.IsolatedAsyncioTestCase):
         service = self.service(FakeCal(fixture_overrides={"open_local_starts": []}))
         events = await self.collect(service, "Can I grab 30 minutes Thursday afternoon?")
         self.assertFalse(any(event["type"] == "slot_chips" for event in events))
-        self.assertIn("Availability checked for this request. No matching openings.", self.model.contexts[0])
+        reply = next(event["text"] for event in events if event["type"] == "assistant_text")
+        self.assertIn("No openings Thu 26 Nov afternoon", reply)
+        self.assertEqual(self.model.calls, 0)
         self.assertTrue(events[-1]["metrics"]["prefetch"]["slotsChecked"])
 
-    async def test_closed_window_emits_same_part_then_same_day_alternatives_before_model(self):
+    async def test_closed_window_emits_same_part_then_same_day_alternatives_without_model(self):
         calls = []
 
         class RecordedCalendar(FakeCal):
@@ -186,13 +189,13 @@ class PrefetchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.model.calls, 0)
         events = [event async for event in stream]
         self.assertEqual(calls, [(9001, *warm_slot_bounds(NOW, ZONE), ZONE)])
-        self.assertEqual(self.model.calls, 1)
-        self.assertIn("find_slots", {tool["name"] for tool in self.model.tool_schemas[0]})
+        self.assertEqual(self.model.calls, 0)
         self.assertEqual(events[-1]["metrics"]["toolCalls"], [])
         self.assertEqual(events[-1]["metrics"]["prefetch"]["shownSlots"], 3)
-        self.assertIn(f"Nearest alternatives already on screen: {', '.join(chips['refs'])}", self.model.contexts[0])
+        self.assertIn("alternatives are available", next(event["text"] for event in events if event["type"] == "assistant_text"))
         signed = verify_state(events[-1]["stateToken"], KEY, NOW)
         self.assertEqual(set(signed.slots), set(chips["refs"]))
+        self.assertEqual(signed.last_offered_slots, chips["refs"])
 
     async def test_taken_exact_time_prefers_three_real_openings_on_nearby_days(self):
         calendar = FakeCal(fixture_overrides={"active_bookings": ["sam_intro"]})
@@ -205,9 +208,7 @@ class PrefetchTests(unittest.IsolatedAsyncioTestCase):
             [refs[ref]["startLocalIso"] for ref in chips["refs"]],
             ["2026-11-26T09:00:00+08:00", "2026-11-26T11:00:00+08:00", "2026-11-27T10:30:00+08:00"],
         )
-        self.assertEqual(self.model.calls, 1)
-        self.assertIn("find_slots", {tool["name"] for tool in self.model.tool_schemas[0]})
-        self.assertIn("No matching openings.", self.model.contexts[0])
+        self.assertEqual(self.model.calls, 0)
         self.assertFalse(any(event["type"] in {"proposal", "booking_result"} for event in events))
 
     async def test_compact_booking_window_stays_on_december_second_and_requires_confirmation(self):
@@ -256,7 +257,9 @@ class PrefetchTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertFalse(any(event["type"] in {"slot_chips", "proposal", "booking_result"} for event in events))
         self.assertIn("Wed 02 Dec 2026, 13:00–15:00", next(event["text"] for event in events if event["type"] == "assistant_text"))
-        self.assertFalse(verify_state(events[-1]["stateToken"], KEY, NOW).last_offered_slots)
+        signed = verify_state(events[-1]["stateToken"], KEY, NOW)
+        self.assertFalse(signed.last_offered_slots)
+        self.assertEqual(signed.interaction_id, verify_state(earlier[-1]["stateToken"], KEY, NOW).interaction_id)
         self.assertEqual(self.model.calls, model_calls)
 
     async def test_booking_window_offers_the_full_duration_when_the_calendar_supports_it(self):
@@ -272,13 +275,15 @@ class PrefetchTests(unittest.IsolatedAsyncioTestCase):
         service = self.service(FakeCal())
 
         async def blank(**request):
+            self.assertEqual(request["tools"], [])
             yield ModelCompletion("fixture-blank", "completed")
 
         self.model.stream = blank
-        events = await self.collect(service, "Show me available times on Thursday")
+        events = await self.collect(service, "Book Thursday afternoon")
         chips = next(event for event in events if event["type"] == "slot_chips")
         self.assertFalse(any(event["type"] == "error" for event in events))
         self.assertEqual(events[-1]["metrics"]["outcome"], "ok")
+        self.assertEqual(len(events[-1]["metrics"]["modelCalls"]), 1)
         self.assertEqual(verify_state(events[-1]["stateToken"], KEY, NOW).last_offered_slots, chips["refs"])
 
     async def test_unread_clock_range_waits_for_the_model_lookup_and_uses_verified_results(self):
@@ -293,7 +298,9 @@ class PrefetchTests(unittest.IsolatedAsyncioTestCase):
                 context = request["input_steps"][-1]["content"][0]["text"]
                 self.assertIn("Prescan did not account for every date and time expression", context)
                 self.assertNotIn("Prefetched slot S", context)
-                self.assertTrue({"find_slots", "propose_booking"} <= {tool["name"] for tool in request["tools"]})
+                names = {tool["name"] for tool in request["tools"]}
+                self.assertIn("find_slots", names)
+                self.assertNotIn("propose_booking", names)
                 yield ModelText("The 09:00 slot is definitely free.")
                 yield ModelCompletion("looked-up", "requires_action", (ToolCall("read", "find_slots", {
                     "from_date": "2026-12-02", "part_of_day": "any", "for_booking_ref": "",
@@ -310,30 +317,45 @@ class PrefetchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(model.calls, 1)
         self.assertEqual(events[-1]["metrics"]["prefetch"]["shownSlots"], 0)
 
-    async def test_model_can_correct_prefetched_chips_with_a_structured_read(self):
-        service = self.service(LocalHoursCalendar(
-            "2026-11-26T12:00", "2026-11-26T12:30", "2026-11-26T13:00", "2026-11-26T13:30",
-            "2026-11-27T11:00",
+    async def test_unoffered_lookup_cannot_replace_verified_prefetch_choices(self):
+        reads = []
+
+        class RecordedCalendar(LocalHoursCalendar):
+            def slots(self, *args, **kwargs):
+                reads.append(args)
+                return super().slots(*args, **kwargs)
+
+        service = self.service(RecordedCalendar(
+            "2026-11-26T12:00", "2026-11-26T12:30", "2026-11-26T13:00", "2026-11-26T13:30", "2026-11-27T11:00",
         ))
         model = self.model
 
-        async def correct(**request):
+        async def stray_lookup(**request):
             model.calls += 1
+            self.assertEqual(request["tools"], [])
             if model.calls == 1:
-                self.assertTrue({"find_slots", "propose_booking"} <= {tool["name"] for tool in request["tools"]})
                 yield ModelCompletion("read", "requires_action", (ToolCall("correction", "find_slots", {
                     "from_date": "2026-11-27", "part_of_day": "any", "for_booking_ref": "", "start_time": "11:00",
                 }),))
+            else:
+                self.assertEqual(request["previous_interaction_id"], "read")
+                self.assertIn("unavailable for this request", request["input_steps"][0]["result"]["error"])
+                yield ModelCompletion("acknowledged", "completed")
 
-        model.stream = correct
+        model.stream = stray_lookup
         events = await self.collect(service, "Book Thursday afternoon")
-        early, corrected = [event["refs"] for event in events if event["type"] == "slot_chips"]
-        self.assertEqual(len(early), 4)
-        self.assertEqual(len(corrected), 1)
-        self.assertTrue(any(set(early) == set(event.get("retiredSlots", ())) for event in events))
-        self.assertEqual(verify_state(events[-1]["stateToken"], KEY, NOW).last_offered_slots, corrected)
+        (choices,) = [event["refs"] for event in events if event["type"] == "slot_chips"]
+        self.assertEqual(len(choices), 4)
+        self.assertFalse(any(event.get("retiredSlots") for event in events))
+        state = verify_state(events[-1]["stateToken"], KEY, NOW)
+        self.assertEqual(state.last_offered_slots, choices)
+        self.assertEqual({state.slots[ref].start_utc[:10] for ref in choices}, {"2026-11-26"})
         self.assertFalse(any(event["type"] == "text_delta" for event in events))
-        self.assertEqual(model.calls, 1)
+        self.assertEqual(len(reads), 1)
+        self.assertEqual(
+            [(call["name"], call["ok"]) for call in events[-1]["metrics"]["toolCalls"]], [("find_slots", False)],
+        )
+        self.assertEqual(model.calls, 2)
 
     async def test_closed_sunday_matches_the_nearest_days_in_approved_case_four(self):
         service = self.service(FakeCal())
@@ -344,7 +366,7 @@ class PrefetchTests(unittest.IsolatedAsyncioTestCase):
             [refs[ref]["startLocalIso"] for ref in chips["refs"]],
             [f"2026-11-30T{hour}:00:00+08:00" for hour in ("09", "10", "11")],
         )
-        self.assertEqual(self.model.calls, 1)
+        self.assertEqual(self.model.calls, 0)
 
     async def test_warm_and_prefetch_share_the_exact_cache_key(self):
         calendar = FakeCal()
@@ -514,7 +536,7 @@ class PrefetchTests(unittest.IsolatedAsyncioTestCase):
         previous_refs = next(event["slots"] for event in earlier if event["type"] == "refs")
         for ref in previous_refs:
             self.assertNotIn(f"slot {ref}:", self.model.contexts[-1])
-        self.assertIn("find_slots", {tool["name"] for tool in self.model.tool_schemas[-1]})
+        self.assertEqual(self.model.tool_schemas[-1], [])
         self.assertEqual(events[-1]["metrics"]["toolCalls"], [])
         self.assertEqual(len(events[-1]["metrics"]["modelCalls"]), 1)
 
@@ -553,6 +575,7 @@ class PrefetchTests(unittest.IsolatedAsyncioTestCase):
         foreign = add_booking(state, booking_entry(calendar.booking("fixture-other-intro")))
         duplicate = add_booking(state, booking_entry(calendar.booking("fixture-sam-intro")))
         state.rescheduling_booking_ref = own
+        state.interaction_id = "previous-interaction"
         service = self.service(calendar)
         events = await self.collect(
             service, "Move my meeting to Thursday afternoon", sign_state(state, KEY)
@@ -560,11 +583,18 @@ class PrefetchTests(unittest.IsolatedAsyncioTestCase):
         token_state = verify_state(events[-1]["stateToken"], KEY, NOW)
         self.assertEqual(calendar_reads, ["fixture-sam-intro"])
         self.assertEqual({record.for_booking_ref for record in token_state.slots.values()}, {own})
-        self.assertIn(f"for moving {own}", self.model.contexts[0])
-        self.assertIn(f"Prefetched booking {own}", self.model.contexts[0])
-        self.assertNotIn(f"booking {duplicate}", self.model.contexts[0])
-        self.assertIn(f"booking {foreign}", self.model.contexts[0])
-        self.assertNotIn("fixture-sam-intro", self.model.contexts[0])
+        choices = next(event["refs"] for event in events if event["type"] == "slot_chips")
+        self.assertEqual(token_state.last_offered_slots, choices)
+        self.assertEqual(token_state.interaction_id, state.interaction_id)
+        self.assertEqual(token_state.rescheduling_booking_ref, own)
+        self.assertTrue({own, duplicate, foreign} <= token_state.bookings.keys())
+        booking_views = next(event["bookings"] for event in events if "bookings" in event)
+        self.assertEqual(set(booking_views), {own, foreign})
+        reply = next(event["text"] for event in events if event["type"] == "assistant_text")
+        self.assertIn("Choose one of these times to move the meeting", reply)
+        self.assertNotIn("fixture-sam-intro", json.dumps(events[:-1]))
+        self.assertNotIn("sam@example.com", reply)
+        self.assertEqual(self.model.calls, 0)
 
     async def test_current_prefetched_booking_is_visible_even_if_its_ref_is_old(self):
         calendar = FakeCal(fixture_overrides={"active_bookings": ["sam_intro"]})

@@ -74,6 +74,27 @@ class EvalRunnerTests(TestCase):
         self.assertNotIn("fixture-sam-followup", json.dumps(result))
         self.assertNotIn("cancel-target", json.dumps(result))
 
+    def test_checked_empty_window_keeps_its_verified_alternatives_selectable(self):
+        for case_id, day, start_time, booking_ref, alternatives in (
+            (4, "2026-11-29", "03:00", "", ["2026-11-30T09:00", "2026-11-30T10:00", "2026-11-30T11:00"]),
+            (28, "2026-11-23", "16:00", "B1", ["2026-11-24T10:00", "2026-11-24T14:00", "2026-11-24T15:00"]),
+        ):
+            with self.subTest(case=case_id):
+                async def repeat_empty_window(**_):
+                    yield ModelCompletion("repeat-empty-window", "requires_action", (
+                        ToolCall("lookup", "find_slots", {
+                            "from_date": day, "start_time": start_time, "part_of_day": "any",
+                            "for_booking_ref": booking_ref,
+                        }),
+                    ))
+
+                case = self.cases[case_id]
+                turns = run_case(self.spec, case, self.fixture, SimpleNamespace(stream=repeat_empty_window), None, None,
+                                 model_name=DEFAULT_MODEL)
+                result = case_report(case, 1, turns)
+                self.assertEqual(result["status"], "pass", [row for row in turns[1]["checks"] if row["result"] != "pass"])
+                self.assertEqual(turns[1]["slot_offer_starts"], alternatives)
+
     def test_fixture_only_cases_pass_and_checkpoint_each_turn(self):
         for number in (3, 9, 16, 18, 22, 23, 26, 27):
             with self.subTest(case=number):

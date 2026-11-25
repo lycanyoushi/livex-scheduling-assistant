@@ -44,7 +44,10 @@ from backend.state import (
     add_slot,
 )
 from backend.time import local_bounds, parse_instant
-from backend.tools import CalendarReader, CalendarTools, ToolRejected, booking_entry, booking_view, last_bookable_day, slot_view
+from backend.tools import (
+    CalendarReader, CalendarTools, ToolRejected, booking_entry, booking_view, last_bookable_day,
+    slot_matches_booking_length, slot_view,
+)
 
 
 _UPCOMING_STATUS = {"accepted", "pending"}
@@ -585,6 +588,8 @@ class CalendarActions:
             booking is not None and slot.event_type_id != booking.event_type_id
         ):
             raise ActionError("invalid_action", "Choose a time for this booking from the current slots.")
+        if booking is not None and not slot_matches_booking_length(slot, booking):
+            raise ActionError("invalid_action", "Choose an opening that keeps the meeting's original length.")
         event = self._event(slot.event_type_id)
         name, email = (proposal.name or "").strip(), (proposal.email or "").strip()
         if proposal.kind == "book" and (not name or not EMAIL.fullmatch(email)):
