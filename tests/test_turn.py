@@ -319,6 +319,10 @@ class TurnTests(unittest.IsolatedAsyncioTestCase):
                 self_test.assertEqual(tool_names, ["propose_reschedule"])
                 context = request["input_steps"][0]["content"][0]["text"]
                 ref = re.search(r"exact requested slot (S\d+)", context)[1]
+                fields = request["tools"][0]["parameters"]["properties"]
+                self_test.assertEqual(fields["slot_ref"]["enum"], [ref])
+                self_test.assertEqual(fields["booking_ref"]["enum"], ["B1"])
+                yield ModelText("Okay.")
                 yield ModelCompletion("hour-move", "requires_action", (
                     ToolCall("move", "propose_reschedule", {"booking_ref": "B1", "slot_ref": ref, "reason": ""}),
                 ))
@@ -332,6 +336,7 @@ class TurnTests(unittest.IsolatedAsyncioTestCase):
         events = await collect(turn_service, text("Move it an hour later"), sign_state(state, SECRET))
         card = next(event["proposal"] for event in events if event["type"] == "proposal")
         self.assertIn("11:00", card["whenLabel"])
+        self.assertTrue(any(event["type"] == "assistant_text" and "confirm" in event["text"] for event in events))
         self.assertEqual(calendar.booking("fixture-sam-intro")["status"], "accepted")
 
     async def test_ambiguous_or_unbound_affirmation_cannot_confirm(self):

@@ -100,6 +100,11 @@ _PROPOSAL_LINE = {
     "cancel": "Please confirm that you want to cancel this meeting.",
     "reschedule": "Please confirm that you want to move this meeting.",
 }
+_PROPOSAL_VERB = {
+    "book": re.compile(r"\b(?:book\w*|reserv\w*|schedul\w*)\b", re.I),
+    "cancel": re.compile(r"\bcancel\w*\b", re.I),
+    "reschedule": re.compile(r"\b(?:mov\w*|reschedul\w*|new time)\b", re.I),
+}
 BULK_TARGET = re.compile(
     r"\b(?:everyone(?:'s)?|everybody(?:'s)?|all (?:the |my |our )?(?:bookings|meetings|appointments))\b",
     re.IGNORECASE,
@@ -641,7 +646,7 @@ class TurnService:
         zone = ZoneInfo(request.time_zone)
         starting_slots: set[str] = set()
         starting_proposal = None
-        has_reply = False
+        reply_text: list[str] = []
 
         def earlier_slot_label(ref: str) -> str | None:
             slot = state.slots.get(ref)
@@ -702,10 +707,12 @@ class TurnService:
                 source = self._action_events(state, now, request.input.action, metrics)
             async with aclosing(source) as events:
                 async for event in events:
-                    if event["type"] == "proposal" and not has_reply:
-                        yield {"type": "assistant_text", "text": _PROPOSAL_LINE[event["proposal"]["kind"]]}
+                    if event["type"] == "proposal":
+                        kind = event["proposal"]["kind"]
+                        if not _PROPOSAL_VERB[kind].search("".join(reply_text)):
+                            yield {"type": "assistant_text", "text": _PROPOSAL_LINE[kind]}
                     if event["type"] in {"assistant_text", "text_delta"} and event["text"].strip():
-                        has_reply = True
+                        reply_text.append(event["text"])
                     for display_event in offer_limit.apply(event):
                         yield display_event
         except (TurnError, CalError, ModelError) as error:
@@ -1006,16 +1013,20 @@ class TurnService:
         brief_openings = bool(displayed and not exact_move and not exact_booking and "list" not in hints.intents and (
             hints.availability_request or plan.reschedule is not None
         ))
+        if exact_move:
+            tools.required_change_slot = displayed[0]
+        if exact_booking:
+            tools.required_book_slot = displayed[0]
+        if pending is not None and change is None:
+            tools.allowed_booking_refs = frozenset(_pending_candidates(state, pending, now))
         schemas = [] if checked_empty or listing_response or restrict_slots or brief_openings or contact_only else await asyncio.to_thread(
             tools.schemas, allow_lazy_catalog=bool(plan.days),
         )
         if listing_only:
             schemas = [schema for schema in schemas if schema["name"] not in PROPOSE_TOOLS]
         if exact_move:
-            tools.required_change_slot = displayed[0]
             schemas = [schema for schema in schemas if schema["name"] == "propose_reschedule"]
         if exact_booking:
-            tools.required_book_slot = displayed[0]
             schemas = [schema for schema in schemas if schema["name"] == "propose_booking"]
         protected_kind = change or (pending.kind if pending is not None else None)
         if protected_kind is None:
@@ -1027,8 +1038,6 @@ class TurnService:
                 protected_kind = "book"
         schemas = [schema for schema in schemas if schema["name"] not in PROPOSE_TOOLS
                    or schema["name"] == f"propose_{'booking' if protected_kind == 'book' else protected_kind}"]
-        if pending is not None and change is None:
-            tools.allowed_booking_refs = frozenset(_pending_candidates(state, pending, now))
         context, snapshot = _context(
             state, now, hints, prefetched_slots=frozenset(displayed if restrict_slots else slot_refs),
             prefetched_bookings=tuple(booking_refs) if booking_refs is not None else None,

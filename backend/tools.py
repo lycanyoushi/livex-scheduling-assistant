@@ -421,6 +421,10 @@ class CalendarTools:
         }
         if len(events) > 1:
             slots["event_type"] = _string("The event type slug.", [event["slug"] for event in events])
+        booking_refs = (self.required_booking_ref,) if self.required_booking_ref else sorted(self.allowed_booking_refs or ())
+        booking_ref = _string("A short booking ref returned by list_bookings.", booking_refs)
+        book_slots = (self.required_book_slot,) if self.required_book_slot else ()
+        move_slots = (self.required_change_slot,) if self.required_change_slot else ()
         return [
             _function("find_slots", "Find available calendar slots in the user's time zone.", slots),
             _function("list_bookings", "List the bookings on the user's calendar.", {
@@ -429,17 +433,17 @@ class CalendarTools:
                 "to_date": _string("Last local start date in YYYY-MM-DD form, or an empty string."),
             }),
             _function("propose_booking", "Prepare a new booking for the user to confirm.", {
-                "slot_ref": _string("A short slot ref returned by find_slots."),
+                "slot_ref": _string("A short slot ref returned by find_slots.", book_slots),
                 "name": _string("The guest's name, or an empty string when unknown."),
                 "notes": _string("The stated meeting purpose or other user-provided note, or an empty string."),
             }),
             _function("propose_cancel", "Prepare a cancellation for the user to confirm.", {
-                "booking_ref": _string("A short booking ref returned by list_bookings."),
+                "booking_ref": booking_ref,
                 "reason": _string("The user-provided reason, or an empty string."),
             }),
             _function("propose_reschedule", "Prepare to move a booking for the user to confirm.", {
-                "booking_ref": _string("A short booking ref returned by list_bookings."),
-                "slot_ref": _string("A slot ref returned by find_slots for this booking."),
+                "booking_ref": booking_ref,
+                "slot_ref": _string("A slot ref returned by find_slots for this booking.", move_slots),
                 "reason": _string("The user-provided reason, or an empty string."),
             }),
         ]
