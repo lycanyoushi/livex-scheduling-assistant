@@ -217,11 +217,16 @@ def check_turn(case_id, turn_spec, payload, events, prior, before, after, now, z
     if "proposal_booking_from_turn" in plan:
         matched = same_booking_as_turn(proposal_event.get("bookingRef"), plan["proposal_booking_from_turn"])
         check("proposal_targets_prior_booking", matched, matched)
+    if "proposal_fixture_booking" in plan:
+        target = booking(proposal_event.get("bookingRef"))
+        check("proposal_targets_fixture_booking", target == plan["proposal_fixture_booking"], target)
     if "picked_slot_from_turn" in plan:
         selection = plan["picked_slot_from_turn"]
         offered = prior.get(selection["turn"], {}).get("slots_by_ref", {})
         ordinal = selection["ordinal"]
-        picked = after.guest_draft.slot_ref if after.guest_draft else None
+        picked = proposal_event.get("slotRef")
+        if picked is None and after.guest_draft is not None:
+            picked = after.guest_draft.slot_ref
         matched = 0 < ordinal <= len(offered) and picked == list(offered)[ordinal - 1]
         check("typed_choice_matches_prior_offer", matched, matched)
     if "guest_draft_email" in plan:

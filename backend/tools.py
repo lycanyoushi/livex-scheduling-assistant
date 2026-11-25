@@ -368,6 +368,9 @@ class CalendarTools:
         self._default_only_schema = False
         self.required_booking_ref: str | None = None
         self.required_change_slot: str | None = None
+        self.required_book_slot: str | None = None
+        self.allowed_booking_refs: frozenset[str] | None = None
+        self.slots_after: datetime | None = None
 
     def _excluded_day(self, day: date) -> bool:
         return day in self._excluded_days or day.weekday() in self._excluded_weekdays
@@ -458,6 +461,8 @@ class CalendarTools:
         raise ToolRejected("Unknown scheduling tool.")
 
     def _changeable_booking(self, ref: str) -> BookingEntry:
+        if self.allowed_booking_refs is not None and ref not in self.allowed_booking_refs:
+            raise ToolRejected("Choose a meeting from the current candidates.")
         if self.required_booking_ref is not None and ref != self.required_booking_ref:
             raise ToolRejected("Choose the booking that matches the requested calendar time.")
         booking = self.state.bookings.get(ref)
@@ -566,6 +571,8 @@ class CalendarTools:
         uid = booking.uid if booking is not None else None
         today = self.now.astimezone(self._zone).date()
         entries = self.read_slot_entries(event["id"], max(first, today), last, args.part_of_day, booking_ref, uid) if last >= today else []
+        if self.slots_after is not None:
+            entries = [entry for entry in entries if parse_instant(entry.start_utc) > self.slots_after]
         next_open: str | None = None
         followup_window = not entries
         if followup_window:
@@ -802,6 +809,8 @@ class CalendarTools:
         return ToolOutcome(events=[event], proposal=proposal)
 
     def _propose_booking(self, args: _ProposeBooking) -> ToolOutcome:
+        if self.required_book_slot is not None and args.slot_ref != self.required_book_slot:
+            raise ToolRejected("Use the opening at the requested start.")
         slot = self._check_slot(args.slot_ref)
         with self._state_lock:
             draft = self.state.guest_draft

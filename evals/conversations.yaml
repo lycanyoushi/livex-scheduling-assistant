@@ -819,3 +819,56 @@ cases:
           max_model_calls: 1
           guest_draft_email: updated@example.com
           continue_previous_interaction: true
+
+  - id: 31
+    name: Recover a missed meeting reference and move the selected upcoming meeting
+    clock: "2026-11-23T16:00:00+08:00"
+    fixture_overrides:
+      active_bookings: [owner_today_3pm, owner_tomorrow_early, owner_tomorrow_late]
+      open_local_starts: ["2026-11-24T10:00", "2026-11-24T14:00", "2026-11-24T15:00", "2026-11-24T16:00"]
+    turns:
+      - user: "move my 3pm to later today"
+        checks:
+          forbidden_tools: ["*"]
+          refs_within: {kind: booking, booking_ids_in_order: [owner_tomorrow_early, owner_tomorrow_late]}
+          booking_cards: [owner_tomorrow_early, owner_tomorrow_late]
+          proposal_kind: null
+          max_model_calls: 0
+          cal_reads:
+            - {operation: list_bookings, attendee_email: null, status: upcoming}
+          reply_patterns:
+            - "(?i)past|passed|already (?:started|over)|no longer upcoming"
+            - "(?i)which|choose|select|pick"
+      - user: "the first one"
+        checks:
+          forbidden_tools: ["*"]
+          refs_within:
+            kind: slot
+            local_starts: ["2026-11-24T14:00", "2026-11-24T16:00"]
+            includes_local_starts: ["2026-11-24T14:00", "2026-11-24T16:00"]
+            after_clock: true
+            min: 2
+            max: 2
+          proposal_kind: null
+          max_model_calls: 0
+          cal_reads:
+            - {operation: slots, booking_uid_to_reschedule: {fixture_booking_id: owner_tomorrow_early}}
+      - user: "the first one"
+        checks:
+          forbidden_tools: ["*"]
+          refs_within: {kind: slot, source: offers_or_proposal, local_starts: ["2026-11-24T14:00"], min: 1, max: 1}
+          proposal_kind: reschedule
+          proposal_fixture_booking: owner_tomorrow_early
+          picked_slot_from_turn: {turn: 2, ordinal: 1}
+          max_model_calls: 0
+      - user: "yes"
+        proposal_from_turn: 3
+        checks:
+          forbidden_tools: ["*"]
+          refs_within: null
+          proposal_kind: null
+          max_model_calls: 0
+          cal_writes:
+            - {operation: reschedule_booking, fixture_booking_id: owner_tomorrow_early, local_start: "2026-11-24T14:00", outcome: success}
+          booking_result: {kind: rescheduled, local_start: "2026-11-24T14:00"}
+          template: rescheduled

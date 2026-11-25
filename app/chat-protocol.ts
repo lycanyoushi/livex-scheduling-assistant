@@ -74,7 +74,7 @@ type TurnEnd = {
 
 export type ServerEvent =
   | { type: "status" | "text_delta" | "assistant_text"; text: string }
-  | ({ type: "refs"; retiredBookings?: string[] } & Partial<ReferenceViews>)
+  | ({ type: "refs"; retiredBookings?: string[]; retiredSlots?: string[]; retiredProposal?: string } & Partial<ReferenceViews>)
   | { type: "proposal"; proposal: ProposalView }
   | BookingResult
   | { type: "booking_cards"; refs: string[] }
@@ -123,14 +123,20 @@ export function listedBookingRefs(
   return list?.filter((ref) => Object.hasOwn(bookings, ref)) ?? [];
 }
 
-export function withoutRetiredBookings(
-  bookings: ReferenceViews["bookings"],
+export function withoutRetiredRefs<T>(
+  refs: Record<string, T>,
   retired: ReadonlySet<string>,
-): ReferenceViews["bookings"] {
-  if (!retired.size) return bookings;
-  const remaining = { ...bookings };
+): Record<string, T> {
+  if (!retired.size) return refs;
+  const remaining = { ...refs };
   for (const ref of retired) delete remaining[ref];
   return remaining;
+}
+
+export function proposalWasRetired(
+  proposal: ProposalView, retiredProposals: ReadonlySet<string>, retiredBookings: ReadonlySet<string>,
+): boolean {
+  return retiredProposals.has(proposal.id) || Boolean(proposal.bookingRef && retiredBookings.has(proposal.bookingRef));
 }
 
 export function splitReferenceText(text: string, streaming: boolean): ReferencePart[] {

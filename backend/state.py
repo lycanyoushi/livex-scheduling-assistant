@@ -76,6 +76,7 @@ class GuestDraft(_StateModel):
     notes: ContactNotes | None = None
     duration_minutes: Annotated[int, Field(gt=0, le=1440)] | None = None
     slot_ref: SlotRef | None = None
+    collecting: bool = False
 
 
 class _TimeRange(_StateModel):
@@ -181,12 +182,19 @@ class ModelContext(_StateModel):
     bookings: Annotated[dict[BookingRef, _Fingerprint], Field(max_length=MAX_BOOKINGS)] = Field(default_factory=dict)
 
 
+class PendingChange(_StateModel):
+    kind: Literal["cancel", "reschedule"]
+    refs: Annotated[list[BookingRef], Field(min_length=1, max_length=MAX_BOOKINGS)]
+    later: bool = False
+
+
 class SessionState(_StateModel):
     v: Literal[2]
     session_id: _OpaqueId
     time_zone: TimeZoneName
     expires_at: Annotated[int, Field(gt=0)]
     guest_draft: GuestDraft | None = None
+    pending_change: PendingChange | None = None
     last_offered_slots: Annotated[list[SlotRef], Field(max_length=4)] = Field(default_factory=list)
     slots: Annotated[dict[SlotRef, SlotEntry], Field(max_length=MAX_SLOTS)] = Field(default_factory=dict)
     bookings: Annotated[dict[BookingRef, BookingEntry], Field(max_length=MAX_BOOKINGS)] = Field(default_factory=dict)
@@ -199,6 +207,12 @@ class SessionState(_StateModel):
     pending_call: PendingCall | None = None
     notes: Annotated[list[_Summary], Field(max_length=MAX_NOTES)] = Field(default_factory=list)
     completed: Annotated[dict[ProposalId, _Summary], Field(max_length=MAX_COMPLETED)] = Field(default_factory=dict)
+
+    def clear_time_choices(self, *, keep_proposal: bool = False) -> None:
+        self.guest_draft = None
+        self.last_offered_slots.clear()
+        kept = self.proposal.slot_ref if keep_proposal and self.proposal is not None else None
+        self.slots = {kept: self.slots[kept]} if kept is not None and kept in self.slots else {}
 
     @model_validator(mode="after")
     def _check_counters(self) -> Self:
@@ -252,6 +266,8 @@ def add_booking(state: SessionState, entry: BookingEntry) -> str:
     state.bookings[ref] = entry
     if len(state.bookings) > MAX_BOOKINGS:
         protected = {state.rescheduling_booking_ref, state.proposal.booking_ref if state.proposal is not None else None}
+        if state.pending_change is not None:
+            protected.update(state.pending_change.refs)
         del state.bookings[next(old for old in state.bookings if old not in protected)]
     return ref
 

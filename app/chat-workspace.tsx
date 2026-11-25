@@ -13,11 +13,12 @@ import {
   controlsForTurn,
   listedBookingRefs,
   proposalDecision,
+  proposalWasRetired,
   readChatStream,
   splitReferenceText,
   typedInput,
   unverifiedWrite,
-  withoutRetiredBookings,
+  withoutRetiredRefs,
 } from "./chat-protocol";
 import { BookerFallback } from "./booker-fallback";
 import { BookingAgenda, BookingCard, ConfirmCard, OUTLINE_BUTTON, RefText, SlotChips } from "./chat-cards";
@@ -184,6 +185,8 @@ export default function ChatWorkspace({
     let rejectedBeforeConfirm = false;
     const recoveryRefs = new Set<string>();
     const retiredBookings = new Set<string>();
+    const retiredSlots = new Set<string>();
+    const retiredProposals = new Set<string>();
     const confirmsProposal = decision === "confirm";
     const originalBookingRef = confirmsProposal ? candidate?.bookingRef : undefined;
     const debugEvents: object[] = [];
@@ -251,20 +254,24 @@ export default function ChatWorkspace({
             updateTurn((turn) => ({ ...turn, text: [turn.text, event.text].filter(Boolean).join("\n\n") }));
             break;
           case "refs": {
-            if (event.retiredBookings?.length) {
-              for (const ref of event.retiredBookings) retiredBookings.add(ref);
+            for (const ref of event.retiredBookings ?? []) retiredBookings.add(ref);
+            for (const ref of event.retiredSlots ?? []) retiredSlots.add(ref);
+            if (event.retiredProposal) retiredProposals.add(event.retiredProposal);
+            if (event.retiredBookings?.length || event.retiredSlots?.length) {
               savedViews.current = {
-                ...savedViews.current,
-                bookings: withoutRetiredBookings(savedViews.current.bookings, retiredBookings),
+                slots: withoutRetiredRefs(savedViews.current.slots, retiredSlots),
+                bookings: withoutRetiredRefs(savedViews.current.bookings, retiredBookings),
               };
               setCurrentViews(savedViews.current);
-              setActiveProposal((current) =>
-                current?.value.bookingRef && retiredBookings.has(current.value.bookingRef) ? null : current
-              );
+            }
+            if (event.retiredProposal || event.retiredBookings?.length) {
+              setActiveProposal((current) => current && proposalWasRetired(current.value, retiredProposals, retiredBookings)
+                ? null : current);
             }
             const nextViews = {
+              // Historical references retain their slot labels even after their controls expire.
               slots: { ...views.slots, ...event.slots },
-              bookings: withoutRetiredBookings({ ...views.bookings, ...event.bookings }, retiredBookings),
+              bookings: withoutRetiredRefs({ ...views.bookings, ...event.bookings }, retiredBookings),
             };
             views = nextViews;
             updateTurn((turn) => ({
@@ -322,9 +329,13 @@ export default function ChatWorkspace({
         savedViews.current = EMPTY_VIEWS;
         setSession((previous) => previous + 1);
       } else if (controls === "all") {
-        savedViews.current = { slots: keepLatestReferences(views.slots, 40), bookings: keepLatestReferences(views.bookings, 20) };
+        savedViews.current = {
+          slots: keepLatestReferences(withoutRetiredRefs(views.slots, retiredSlots), 40),
+          bookings: keepLatestReferences(views.bookings, 20),
+        };
       } else if (controls === "alternatives") {
-        const alternatives = Object.fromEntries([...recoveryRefs].flatMap((ref) => views.slots[ref] ? [[ref, views.slots[ref]]] : []));
+        const alternatives = Object.fromEntries([...recoveryRefs].flatMap((ref) =>
+          views.slots[ref] && !retiredSlots.has(ref) ? [[ref, views.slots[ref]]] : []));
         savedViews.current = {
           ...savedViews.current,
           slots: keepLatestReferences({ ...savedViews.current.slots, ...alternatives }, 40),
@@ -333,8 +344,8 @@ export default function ChatWorkspace({
       setCurrentViews(savedViews.current);
 
       const proposalLostItsSlot = controls === "alternatives" && confirmsProposal;
-      const proposalBookingRetired = Boolean(nextProposal?.bookingRef && retiredBookings.has(nextProposal.bookingRef));
-      const committedProposal = controls === "all" && !proposalBookingRetired ? nextProposal : undefined;
+      const proposalRetired = nextProposal && proposalWasRetired(nextProposal, retiredProposals, retiredBookings);
+      const committedProposal = controls === "all" && !proposalRetired ? nextProposal : undefined;
       if (proposalLostItsSlot && activeProposal) {
         setTurns((previous) => previous.map((turn) => turn.id === activeProposal.turnId ? { ...turn, proposal: undefined } : turn));
       }

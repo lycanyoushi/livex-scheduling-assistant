@@ -3,14 +3,15 @@
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from backend.cal_client import EventType, Profile
 from backend.time import local_datetime, parse_instant, utc_now
 from evals.fake_cal import FakeCal
 
 
-_HOST_ZONE = ZoneInfo("America/Los_Angeles")
+DEFAULT_DEMO_TIME_ZONE = "America/Los_Angeles"
+_SEED_CUTOFF = time(14)
 _DEMO_DURATION = timedelta(minutes=30)
 _DEMO_GUESTS = (
     (0, time(15), "Avery Chen"),
@@ -47,12 +48,21 @@ def demo_bookings(first_day: date, time_zone: str) -> tuple[DemoBooking, ...]:
 class DemoCalendar(FakeCal):
     """Rolling demo availability and account-wide booking reads based on FakeCal."""
 
-    def __init__(self, *, clock: Callable[[], datetime] = utc_now) -> None:
+    def __init__(
+        self, *, clock: Callable[[], datetime] = utc_now, time_zone: str = DEFAULT_DEMO_TIME_ZONE,
+    ) -> None:
+        try:
+            self._host_zone = ZoneInfo(time_zone)
+        except (ValueError, ZoneInfoNotFoundError):
+            raise ValueError("DEMO_TIME_ZONE must be a valid IANA time zone.") from None
         super().__init__(clock=clock)
-        self._seed_day = parse_instant(clock()).astimezone(_HOST_ZONE).date()
+        local_now = parse_instant(clock()).astimezone(self._host_zone)
+        self._seed_day = local_now.date()
+        if local_now.time() >= _SEED_CUTOFF:
+            self._seed_day += timedelta(days=1)
         self._last_seed_day = self._seed_day + timedelta(days=2)
         event = self._event_type(self._event_type_id)
-        for index, booking in enumerate(demo_bookings(self._seed_day, _HOST_ZONE.key), start=1):
+        for index, booking in enumerate(demo_bookings(self._seed_day, self._host_zone.key), start=1):
             uid = f"demo-seed-{index}"
             self._bookings[uid] = {
                 "uid": uid,
@@ -61,11 +71,11 @@ class DemoCalendar(FakeCal):
                 "start": booking.start.isoformat(),
                 "end": booking.end.isoformat(),
                 "status": "accepted",
-                "attendees": [{"name": booking.name, "email": booking.email, "timeZone": _HOST_ZONE.key}],
+                "attendees": [{"name": booking.name, "email": booking.email, "timeZone": self._host_zone.key}],
             }
 
     def me(self) -> Profile:
-        return {**super().me(), "name": "Demo Calendar", "timeZone": _HOST_ZONE.key}
+        return {**super().me(), "name": "Demo Calendar", "timeZone": self._host_zone.key}
 
     def event_types(self, username: str) -> list[EventType]:
         events = super().event_types(username)
@@ -76,18 +86,19 @@ class DemoCalendar(FakeCal):
     def _starts_on(self, day: date) -> Iterator[datetime]:
         if day.weekday() >= 5 and not self._seed_day <= day <= self._last_seed_day:
             return
-        start = datetime.combine(day, time(9), _HOST_ZONE).astimezone(timezone.utc)
-        close = datetime.combine(day, time(17), _HOST_ZONE).astimezone(timezone.utc)
+        start = datetime.combine(day, time(9), self._host_zone).astimezone(timezone.utc)
+        close = datetime.combine(day, time(17), self._host_zone).astimezone(timezone.utc)
         while start + self._duration <= close:
             yield start
             start += self._duration
 
     def _scheduled_starts(self, begin: datetime, until: datetime) -> Iterator[datetime]:
-        first, last = begin.astimezone(_HOST_ZONE).date(), until.astimezone(_HOST_ZONE).date()
+        first = begin.astimezone(self._host_zone).date()
+        last = until.astimezone(self._host_zone).date()
         for offset in range((last - first).days + 1):
             for start in self._starts_on(first + timedelta(days=offset)):
                 if begin <= start < until:
                     yield start
 
     def _is_scheduled_start(self, start: datetime) -> bool:
-        return start in self._starts_on(start.astimezone(_HOST_ZONE).date())
+        return start in self._starts_on(start.astimezone(self._host_zone).date())

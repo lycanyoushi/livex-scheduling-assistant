@@ -196,6 +196,20 @@ class EvalRunnerTests(TestCase):
                 if case_id == 29:
                     self.assertTrue(all(turn["kind"] == "text" for turn in result["turns"]))
 
+    def test_missed_move_follows_the_displayed_meeting_through_typed_confirmation(self):
+        case = self.cases[31]
+        first, selection, offer, confirm = case["turns"]
+        for reply in (selection["user"], "the one with Avery"):
+            with self.subTest(reply=reply):
+                scenario = {**case, "turns": [first, {**selection, "user": reply}, offer, confirm]}
+                runs = run_case(self.spec, scenario, self.fixture, None, None, None, model_name=DEFAULT_MODEL)
+                result = case_report(scenario, 1, runs)
+                failures = {number: [check for check in report["checks"] if check["result"] != "pass"]
+                            for number, report in runs.items()}
+                self.assertEqual(result["status"], "pass", failures)
+                self.assertEqual(result["turns"][0]["booking_offer_order"], ["owner_tomorrow_early", "owner_tomorrow_late"])
+                self.assertEqual(result["turns"][2]["proposal_fixture_booking"], "owner_tomorrow_early")
+
     def test_thresholds_and_wording_failures_stay_distinct(self):
         statuses = ["pass", "wording_only_failure", "pass"]
         runs = [{"case": case, "status": status, "checks": {}, "turns": []}

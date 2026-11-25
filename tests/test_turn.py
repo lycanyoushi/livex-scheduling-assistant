@@ -8,10 +8,11 @@ import unittest
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
+from backend.demo_calendar import DemoCalendar
 from backend.model import ModelCompletion, ModelError, ModelText, ToolCall
 from backend.protocol import ChatRequest
 from backend.server import TurnLoop, create_app, load_service
-from backend.state import MAX_SLOTS, GuestDraft, SlotEntry, add_booking, add_slot, new_state, sign_state, verify_state
+from backend.state import MAX_SLOTS, GuestDraft, PendingChange, SlotEntry, add_booking, add_slot, new_state, sign_state, verify_state
 from backend.tools import booking_entry
 from backend.turn import TurnService
 from evals.fake_cal import FakeCal
@@ -57,6 +58,101 @@ def turn_state(reply):
 
 
 class TurnTests(unittest.IsolatedAsyncioTestCase):
+    async def test_confirmed_thursday_booking_retires_choices_and_guest_collection(self):
+        zone = "America/Los_Angeles"
+        now = datetime.fromisoformat("2026-11-25T09:00:00-08:00")
+        model = ScriptedModel(
+            (ModelText("Choose 12pm or [[S2]] at 12:30pm, or later."), ModelCompletion("options", "completed")),
+            (ModelText("Okay."), ModelCompletion("done", "completed")),
+        )
+        calendar = DemoCalendar(clock=lambda: now, time_zone=zone)
+        turn_service = TurnService(model=model, calendar=calendar, secret=SECRET, clock=lambda: now)
+        self.addCleanup(turn_service.close_prefetch)
+        token = None
+
+        async def send(message, proposal_id=None):
+            nonlocal token
+            data = text(message)
+            if proposal_id:
+                data["proposalId"] = proposal_id
+            wire = ChatRequest.model_validate({"stateToken": token, "timeZone": zone, "input": data})
+            events = [event async for event in turn_service.events(wire)]
+            token = events[-1]["stateToken"]
+            return events
+
+        shown = await send("book Nora Vale Thursday afternoon")
+        self.assertEqual([event["text"] for event in shown if event["type"] == "assistant_text"],
+                         ["Here are the available times. What’s the guest’s name and email address?"])
+        offered = next(event["refs"] for event in shown if event["type"] == "slot_chips")
+        await send("the second one")
+        proposed = await send("Nora Vale, nora.vale@example.com")
+        card = next(event["proposal"] for event in proposed if event["type"] == "proposal")
+        self.assertEqual(card["slotRef"], offered[1])
+        booked = await send("yes please", card["id"])
+        self.assertTrue(any(event["type"] == "booking_result" and event["kind"] == "booked" for event in booked))
+        self.assertTrue(any(set(offered) <= set(event.get("retiredSlots", ())) for event in booked))
+
+        for message in ("the first one", "the one with Morgan", "no"):
+            events = await send(message)
+            state = verify_state(token, SECRET, now)
+            self.assertEqual(state.last_offered_slots, [])
+            self.assertIsNone(state.guest_draft)
+            self.assertFalse(any(event["type"] in {"proposal", "booking_result"} for event in events))
+
+        await send("Cancel my meeting")
+        proposed = await send("the one with Morgan")
+        cancel = next(event["proposal"] for event in proposed if event["type"] == "proposal")
+        self.assertEqual(cancel["kind"], "cancel")
+        cancelled = await send("yes", cancel["id"])
+        self.assertTrue(any(event["type"] == "booking_result" and event["booking"].get("guestName") == "Morgan Rivera"
+                            for event in cancelled))
+
+    async def test_pending_move_handles_time_reply_and_explains_confirmation(self):
+        now = datetime.fromisoformat("2026-11-23T16:00:00+08:00")
+        calendar = FakeCal(clock=lambda: now, fixture_overrides={
+            "active_bookings": ["owner_today_3pm", "owner_tomorrow_early", "owner_tomorrow_late"],
+            "open_local_starts": ["2026-11-24T10:00", "2026-11-24T14:00", "2026-11-24T15:00", "2026-11-24T16:00"],
+        })
+        model = ScriptedModel()
+        turn_service = TurnService(model=model, calendar=calendar, secret=SECRET, clock=lambda: now)
+        self.addCleanup(turn_service.close_prefetch)
+        first = await collect(turn_service, text("move my 3pm to later today"))
+        state = verify_state(first[-1]["stateToken"], SECRET, now)
+        pending = state.pending_change
+        self.assertEqual(pending.kind, "reschedule")
+        self.assertEqual([state.bookings[ref].guest_name for ref in pending.refs], ["Avery", "Dana"])
+        self.assertTrue(any("15:00 time today has already passed" in event.get("text", "") for event in first))
+        options = await collect(turn_service, text("the 10am"), first[-1]["stateToken"])
+        ref = next(event["refs"][0] for event in options if event["type"] == "slot_chips")
+        chosen = await collect(turn_service, text("the first one"), options[-1]["stateToken"])
+        proposal_index = next(i for i, event in enumerate(chosen) if event["type"] == "proposal")
+        card = chosen[proposal_index]["proposal"]
+        self.assertEqual((card["kind"], card["bookingRef"], card["slotRef"]), ("reschedule", pending.refs[0], ref))
+        self.assertIn("move this meeting", chosen[proposal_index - 1]["text"])
+        self.assertEqual(len(calendar.list_bookings(status="cancelled")["data"]), 0)
+        done = await collect(turn_service, {**text("yes"), "proposalId": card["id"]}, chosen[-1]["stateToken"])
+        self.assertTrue(any(event["type"] == "booking_result" and event["kind"] == "rescheduled" for event in done))
+        self.assertFalse(model.requests)
+
+    async def test_model_cannot_switch_a_pending_move_to_cancellation(self):
+        calendar = FakeCal(fixture_overrides={"active_bookings": ["sam_intro"]})
+        state = new_state(ZONE, NOW)
+        ref = add_booking(state, booking_entry(calendar.booking("fixture-sam-intro")))
+        state.pending_change = PendingChange(kind="reschedule", refs=[ref])
+        model = ScriptedModel(
+            (ModelCompletion("wrong", "requires_action", (
+                ToolCall("wrong-action", "propose_cancel", {"booking_ref": ref, "reason": ""}),
+            )),),
+            (ModelText("Which meeting should I move?"), ModelCompletion("safe", "completed")),
+        )
+        turn_service = service(model, calendar)
+        self.addCleanup(turn_service.close_prefetch)
+        reply = await collect(turn_service, text("The kickoff, I think"), sign_state(state, SECRET))
+        self.assertEqual(reply[-1]["metrics"]["toolCalls"][0]["ok"], False)
+        self.assertFalse(any(event["type"] in {"proposal", "booking_result"} for event in reply))
+        self.assertEqual(turn_state(reply).pending_change.kind, "reschedule")
+        self.assertIn("Pending request: move", model.requests[0]["input_steps"][0]["content"][0]["text"])
+
     async def open_booking_proposal(self, turn_service, *, name="Sam", email="sam@example.com"):
         state = new_state(ZONE, NOW)
         state.guest_draft = GuestDraft(name=name, email=email)
@@ -258,7 +354,7 @@ class TurnTests(unittest.IsolatedAsyncioTestCase):
                     _, token = await self.open_booking_proposal(turn_service)
                 reply = await collect(turn_service, value, token)
                 self.assertEqual(reply[-1]["metrics"]["path"], "model")
-                self.assertEqual(len(model.requests), 1)
+                self.assertEqual(len(model.requests), 0 if value["text"] == "cancel that" else 1)
                 self.assertEqual(turn_service.calendar.list_bookings()["data"], [])
 
     async def test_model_reuses_an_identical_proposal_and_keeps_its_card_actionable(self):
@@ -678,7 +774,7 @@ class TurnTests(unittest.IsolatedAsyncioTestCase):
             ToolCall("find", "find_slots", FIND),
             ToolCall("list", "list_bookings", {"from_date": "", "to_date": "", "which": "upcoming"}),
         )),), (ModelText("Here are your options."), ModelCompletion("done", "completed")))
-        reply = await collect(service(model), text("Find tomorrow's availability and bookings"))
+        reply = await collect(service(model), text("Could you check both for me?"))
         self.assertEqual(reply[-1]["metrics"]["outcome"], "ok")
         self.assertEqual([item["call_id"] for item in model.requests[1]["input_steps"]], ["find", "list"])
         self.assertEqual(reply[-1]["metrics"]["toolCalls"][0]["ok"], True)

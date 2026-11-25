@@ -1590,6 +1590,139 @@
             "user": "The guest's email is updated@example.com."
           }
         ]
+      },
+      {
+        "clock": "2026-11-23T16:00:00+08:00",
+        "fixture_overrides": {
+          "active_bookings": [
+            "owner_today_3pm",
+            "owner_tomorrow_early",
+            "owner_tomorrow_late"
+          ],
+          "open_local_starts": [
+            "2026-11-24T10:00",
+            "2026-11-24T14:00",
+            "2026-11-24T15:00",
+            "2026-11-24T16:00"
+          ]
+        },
+        "id": 31,
+        "name": "Recover a missed meeting reference and move the selected upcoming meeting",
+        "turns": [
+          {
+            "checks": {
+              "booking_cards": [
+                "owner_tomorrow_early",
+                "owner_tomorrow_late"
+              ],
+              "cal_reads": [
+                {
+                  "attendee_email": null,
+                  "operation": "list_bookings",
+                  "status": "upcoming"
+                }
+              ],
+              "forbidden_tools": [
+                "*"
+              ],
+              "max_model_calls": 0,
+              "proposal_kind": null,
+              "refs_within": {
+                "booking_ids_in_order": [
+                  "owner_tomorrow_early",
+                  "owner_tomorrow_late"
+                ],
+                "kind": "booking"
+              },
+              "reply_patterns": [
+                "(?i)past|passed|already (?:started|over)|no longer upcoming",
+                "(?i)which|choose|select|pick"
+              ]
+            },
+            "user": "move my 3pm to later today"
+          },
+          {
+            "checks": {
+              "cal_reads": [
+                {
+                  "booking_uid_to_reschedule": {
+                    "fixture_booking_id": "owner_tomorrow_early"
+                  },
+                  "operation": "slots"
+                }
+              ],
+              "forbidden_tools": [
+                "*"
+              ],
+              "max_model_calls": 0,
+              "proposal_kind": null,
+              "refs_within": {
+                "after_clock": true,
+                "includes_local_starts": [
+                  "2026-11-24T14:00",
+                  "2026-11-24T16:00"
+                ],
+                "kind": "slot",
+                "local_starts": [
+                  "2026-11-24T14:00",
+                  "2026-11-24T16:00"
+                ],
+                "max": 2,
+                "min": 2
+              }
+            },
+            "user": "the first one"
+          },
+          {
+            "checks": {
+              "forbidden_tools": [
+                "*"
+              ],
+              "max_model_calls": 0,
+              "picked_slot_from_turn": {
+                "ordinal": 1,
+                "turn": 2
+              },
+              "proposal_fixture_booking": "owner_tomorrow_early",
+              "proposal_kind": "reschedule",
+              "refs_within": {
+                "kind": "slot",
+                "local_starts": [
+                  "2026-11-24T14:00"
+                ],
+                "max": 1,
+                "min": 1,
+                "source": "offers_or_proposal"
+              }
+            },
+            "user": "the first one"
+          },
+          {
+            "checks": {
+              "booking_result": {
+                "kind": "rescheduled",
+                "local_start": "2026-11-24T14:00"
+              },
+              "cal_writes": [
+                {
+                  "fixture_booking_id": "owner_tomorrow_early",
+                  "local_start": "2026-11-24T14:00",
+                  "operation": "reschedule_booking",
+                  "outcome": "success"
+                }
+              ],
+              "forbidden_tools": [
+                "*"
+              ],
+              "max_model_calls": 0,
+              "proposal_kind": null,
+              "refs_within": null,
+              "template": "rescheduled"
+            },
+            "proposal_from_turn": 3,
+            "user": "yes"
+          }
+        ]
       }
     ],
     "default_clock": "2026-11-23T10:00:00+08:00",
@@ -1642,5 +1775,5 @@
     },
     "schema_version": 1
   },
-  "yaml_sha256": "26ed1176863c8c9d6d6c19659af9af4d9f623d1be625fa9e3de30bd15d08468b"
+  "yaml_sha256": "86ad78477dc933916abf51641b9842d361f96d16b691c660e8d484149079555e"
 }

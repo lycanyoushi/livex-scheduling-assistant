@@ -235,6 +235,8 @@ class CalendarActionsTests(unittest.TestCase):
         moved_ref = moved["booking"]["ref"]
         self.assertEqual(self.state.bookings[moved_ref].attendee_emails, guest)
         self.assertEqual(calendar.writes[0][:2], ("reschedule", "fixture-other-intro"))
+        self.assertIsNone(self.state.guest_draft)
+        self.assertEqual(self.state.last_offered_slots, [])
 
         cancel = actions.execute(RequestCancel(type="request_cancel", bookingRef=moved_ref))
         cancel_card = event(cancel, "proposal")["proposal"]
@@ -242,7 +244,8 @@ class CalendarActionsTests(unittest.TestCase):
         result = actions.execute(ConfirmProposal(type="confirm_proposal", proposalId=cancel_card["id"]))
         self.assertEqual(event(result, "booking_result")["kind"], "cancelled")
         self.assertEqual(calendar.writes[-1][:2], ("cancel", self.state.bookings[moved_ref].uid))
-        self.assertEqual(self.state.guest_draft.email, "sam@example.com")
+        self.assertIsNone(self.state.guest_draft)
+        self.assertEqual(self.state.last_offered_slots, [])
 
     def test_an_unknown_booking_ref_is_rejected_before_calendar_read(self):
         calendar = Calendar(fixture_overrides={"active_bookings": ["other_intro"]})

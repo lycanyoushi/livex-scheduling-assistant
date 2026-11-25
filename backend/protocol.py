@@ -227,6 +227,8 @@ class StatusEvent(TypedDict):
 class RefsEvent(TypedDict):
     type: Literal["refs"]
     retiredBookings: NotRequired[list[str]]
+    retiredSlots: NotRequired[list[str]]
+    retiredProposal: NotRequired[str]
     slots: NotRequired[dict[str, SlotView]]
     bookings: NotRequired[dict[str, BookingView]]
 

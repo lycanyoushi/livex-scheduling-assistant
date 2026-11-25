@@ -69,7 +69,7 @@ pnpm install --frozen-lockfile
 
 Copy `.env.example` to `.env.local`. Create `GEMINI_API_KEY` in an unbilled Google AI Studio project. Generate `STATE_SIGNING_SECRET` with `python -c "import secrets; print(secrets.token_hex(32))"`. [Google AI Studio key setup](https://ai.google.dev/gemini-api/docs/api-key) · [Gemini free tier and data use](https://ai.google.dev/gemini-api/docs/pricing)
 
-For the demo calendar, set `DEMO_MODE=fake` and leave `CAL_API_KEY` empty. The access code is optional in fake mode. Set the chat time zone to `America/Los_Angeles` to match the seed times. The fake calendar starts with a meeting at 15:00 today, meetings at 10:00 and 14:00 tomorrow, and adjacent meetings at 15:00 and 15:30 on the third day. Restarting the backend restores the fixture relative to the current date.
+For the demo calendar, set `DEMO_MODE=fake` and leave `CAL_API_KEY` empty. The access code is optional in fake mode. `DEMO_TIME_ZONE` defaults to `America/Los_Angeles`. Set it to `Asia/Singapore` for Singapore hours, and use the same zone in the chat picker or terminal `/tz` command. When the backend starts before 14:00 in that zone, the first fictional meeting is at 15:00 today. At 14:00 or later, the whole fixture starts tomorrow. The next two days have meetings at 10:00 and 14:00, then 15:00 and 15:30. Restarting the backend resets the fixture.
 
 For a real calendar, leave `DEMO_MODE` empty. Use an isolated Cal.com test account with a visible 30-minute event and an availability schedule. Generate an API key in **Settings → Developer → API Keys**, save it as `CAL_API_KEY`, and set `CAL_DEFAULT_EVENT_TYPE_SLUG` to the test event's slug. For the web chat, set `OWNER_ACCESS_CODE` to a separate random value generated with `python -c "import secrets; print(secrets.token_urlsafe(24))"`. Share a reviewer's code privately. The terminal reads the local settings directly. [Cal.com event setup](https://next.cal.com/blog/event-types-guide-calcom) · [Cal.com API key setup](https://next.cal.com/blog/where-is-my-api-key-and-what-can-it-do)
 
@@ -90,7 +90,7 @@ A stalled primary model can switch to the free-tier 3.1 Flash-Lite backup. If th
 
 For terminal chat, run `pnpm chat` or `python -m backend.cli` from the activated virtual environment. Use plain text or the optional numbered choices and `y`/`n` confirmations. Use `r` or `c` to move or cancel the latest confirmed booking. `/new` starts a fresh chat, `/tz America/Los_Angeles` changes the time zone, `/debug` shows the last turn's metrics, and `/quit` exits.
 
-In fake mode, try the three prompts above. For the booking request, reply with a time choice and a fictional contact such as `Casey Reader, casey@example.com`, then `yes`. For the move request, try it before 15:00 Pacific while today's demo meeting is still upcoming.
+In fake mode, try the three prompts above. For the booking request, reply with a time choice and a fictional contact such as `Casey Reader, casey@example.com`, then `yes`. If the demo started at 14:00 or later, try “move my 3pm tomorrow to later tomorrow” for the seeded meeting.
 
 ### Preview the test calendar seed
 

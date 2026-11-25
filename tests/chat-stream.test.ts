@@ -1,7 +1,7 @@
 import { expect, it } from "vitest";
 
 import { calendarFile, googleCalendarLink, safeMeetingLink } from "../app/calendar-export";
-import { type BookingView, type ChatInput, type ServerEvent, canRetryTurn, clearsProposalOnSuccess, controlsForTurn, listedBookingRefs, nextSlotDate, proposalDecision, readChatStream, splitReferenceText, typedInput, unverifiedWrite, withoutRetiredBookings } from "../app/chat-protocol";
+import { type BookingView, type ChatInput, type ProposalView, type ServerEvent, canRetryTurn, clearsProposalOnSuccess, controlsForTurn, listedBookingRefs, nextSlotDate, proposalDecision, proposalWasRetired, readChatStream, splitReferenceText, typedInput, unverifiedWrite, withoutRetiredRefs } from "../app/chat-protocol";
 
 const encoder = new TextEncoder();
 
@@ -73,7 +73,7 @@ it("keeps explicit booking cards in order and removes retired references from th
   let current: Record<string, BookingView> = {};
   await readChatStream(body, (event) => {
     if (event.type === "refs") {
-      current = withoutRetiredBookings({ ...current, ...event.bookings }, new Set(event.retiredBookings));
+      current = withoutRetiredRefs({ ...current, ...event.bookings }, new Set(event.retiredBookings));
       if (!refs) expect(listedBookingRefs(refs, current)).toEqual([]);
     }
     if (event.type === "booking_cards") {
@@ -85,6 +85,30 @@ it("keeps explicit booking cards in order and removes retired references from th
   expect(listedBookingRefs(refs, current)).toEqual(["B2"]);
   expect(listedBookingRefs(refs, inventory)).toEqual(["B1", "B2"]);
   expect(listedBookingRefs([], inventory)).toEqual([]);
+});
+
+it("keeps retired slot labels in history and only retires the named proposal", async () => {
+  const slot = { dayLabel: "Thu 26 Nov", timeLabel: "2:30 pm", startLocalIso: "2026-11-26T14:30:00Z" };
+  const history = { S1: slot, S2: { ...slot, timeLabel: "3:30 pm", startLocalIso: "2026-11-26T15:30:00Z" } };
+  const proposal: ProposalView = { id: "P1", kind: "book", title: "Fixture meeting", whenLabel: "Thu 26 Nov, 2:30 pm",
+    timeZone: "UTC", durationMinutes: 30, slotRef: "S1" };
+  const unrelated = { ...proposal, id: "P2", slotRef: "S2" };
+  const retirement: ServerEvent = { type: "refs", retiredSlots: ["S1"], retiredProposal: "P1" };
+  const response = new Response([
+    JSON.stringify(retirement),
+    JSON.stringify({ type: "turn_end", stateToken: "fixture.signature", metrics: { outcome: "ok" } }),
+  ].join("\n"));
+  let received = false;
+  await readChatStream(response.body!, (event) => {
+    if (event.type !== "refs") return;
+    received = true;
+    expect(withoutRetiredRefs(history, new Set(event.retiredSlots))).toEqual({ S2: history.S2 });
+    expect(history.S1.timeLabel).toBe("2:30 pm");
+    const retiredIds = new Set(event.retiredProposal ? [event.retiredProposal] : []);
+    expect(proposalWasRetired(proposal, retiredIds, new Set())).toBe(true);
+    expect(proposalWasRetired(unrelated, retiredIds, new Set())).toBe(false);
+  });
+  expect(received).toBe(true);
 });
 
 it("permits only terminal alternatives after a slot-taken UI action", () => {

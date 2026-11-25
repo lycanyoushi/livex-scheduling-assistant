@@ -66,31 +66,34 @@ class DemoCalendarTests(unittest.TestCase):
         self.assertEqual(parse_instant(restarted[0]["start"]).astimezone(ZoneInfo(ZONE)).date(), now.date())
 
     def test_demo_service_warms_and_books_through_signed_ui_without_real_calendar(self):
-        with configured(**SETTINGS, DEMO_MODE="fake", CAL_EVENT_TYPE_SLUGS="real-only", CAL_DEFAULT_EVENT_TYPE_SLUG="real-only"), \
+        zone = "Asia/Singapore"
+        with configured(**SETTINGS, DEMO_MODE="fake", DEMO_TIME_ZONE=zone,
+                        CAL_EVENT_TYPE_SLUGS="real-only", CAL_DEFAULT_EVENT_TYPE_SLUG="real-only"), \
                 patch("backend.server.CalClient", side_effect=AssertionError("Unexpected real calendar")), \
                 patch("backend.server.DemoCalendar", wraps=DemoCalendar) as demo:
             service = load_service()
         self.addCleanup(service.close_prefetch)
         self.assertIsInstance(service.calendar, DemoCalendar)
-        self.assertEqual(demo.call_count, 1)
+        demo.assert_called_once_with(time_zone=zone)
+        self.assertEqual(service.calendar.me()["timeZone"], zone)
         service.model = Mock()
         client = create_app(service).test_client()
 
-        response = client.get("/api/warm", query_string={"timeZone": ZONE})
+        response = client.get("/api/warm", query_string={"timeZone": zone})
         self.assertEqual(response.status_code, 200)
         self.assertIs(response.json["demoMode"], True)
         self.assertIsNone(response.json["bookingUrl"])
         self.assertEqual(response.json["hostName"], "Demo Calendar")
 
         def send(payload, prior=None):
-            response = client.post("/api/chat", json={"stateToken": prior, "timeZone": ZONE,
+            response = client.post("/api/chat", json={"stateToken": prior, "timeZone": zone,
                                                       "input": payload}, buffered=True)
             self.assertEqual(response.status_code, 200)
             events = [json.loads(line) for line in response.data.splitlines()]
             self.assertEqual(events[-1]["metrics"]["modelCalls"], [])
             return events
 
-        today = service.clock().astimezone(ZoneInfo(ZONE)).date().isoformat()
+        today = service.clock().astimezone(ZoneInfo(zone)).date().isoformat()
         offered = send({"kind": "ui", "action": {"type": "more_slots", "fromDate": today}})
         slot = next(event["refs"][0] for event in offered if event["type"] == "slot_chips")
         selected = send({"kind": "ui", "action": {"type": "pick_slot", "slotRef": slot}}, offered[-1]["stateToken"])

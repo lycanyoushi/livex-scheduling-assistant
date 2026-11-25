@@ -35,7 +35,7 @@ from scripts.local_environment import load_local_environment
 
 SPEC_PATH = Path(__file__).with_name("conversations.yaml")
 HELD_OUT_PATH = SPEC_PATH.with_name("owner_held_out.json")
-APPROVED_CASE_IDS = range(1, 31)
+APPROVED_CASE_IDS = range(1, 32)
 REGRESSION_SPECS = {
     "regression_spec_sha256": (SPEC_PATH.with_name("regressions.yaml"), (32,)),
     "typed_confirmation_variants_sha256": (SPEC_PATH.with_name("typed_confirmation_variants.yaml"), (33, 34)),
@@ -55,6 +55,7 @@ SUPPORTED_CHECKS = {
     "first_model_step", "cal_reads", "cal_writes", "booking_result", "rejected_forbidden_tools",
     "reply_language", "template", "forbidden_cal_calls", "reply_max_lines", "attempted_model_roles", "fallback",
     "booking_cards", "retired_booking_refs", "picked_slot_from_turn", "proposal_name", "proposal_booking_from_turn",
+    "proposal_fixture_booking",
     "guest_draft_email", "continue_previous_interaction", "reply_forbidden_patterns",
 }
 SUPPORTED_TEMPLATES = {None, "booked", "cancelled", "rescheduled", "slot_taken", "model_down_slots"}

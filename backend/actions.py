@@ -119,7 +119,7 @@ class CalendarActions:
         self.ledger = ledger
         self.wait = wait
 
-    def execute(self, action: UiAction) -> ActionOutcome:
+    def execute(self, action: UiAction, *, later: bool = False) -> ActionOutcome:
         try:
             if isinstance(action, PickSlot):
                 return self._pick_slot(action)
@@ -128,7 +128,7 @@ class CalendarActions:
             if isinstance(action, RequestCancel):
                 return self._request_cancel(action)
             if isinstance(action, RequestReschedule):
-                return self._request_reschedule(action)
+                return self._request_reschedule(action, later=later)
             if isinstance(action, ConfirmProposal):
                 return self._confirm(action)
             if isinstance(action, DismissProposal):
@@ -252,10 +252,14 @@ class CalendarActions:
         self.state.rescheduling_booking_ref = None
         return ActionOutcome(outcome.events)
 
-    def _request_reschedule(self, action: RequestReschedule) -> ActionOutcome:
+    def _request_reschedule(self, action: RequestReschedule, *, later: bool = False) -> ActionOutcome:
         booking = self._live_booking(action.booking_ref)
         event = self._event(booking.event_type_id)
-        outcome = self._ask_for_slots(event, self.now.astimezone(self.zone).date(), action.booking_ref, "Pick a new time.")
+        first = self.now.astimezone(self.zone).date()
+        if later:
+            self.tools.slots_after = parse_instant(booking.start_utc)
+            first = max(first, self.tools.slots_after.astimezone(self.zone).date())
+        outcome = self._ask_for_slots(event, first, action.booking_ref, "Pick a new time.")
         if self.state.proposal is not None:
             self._pending(self.state.proposal, NoActionYetOutcome(
                 outcome="no_action_yet", note="The user requested new reschedule options."
@@ -656,7 +660,6 @@ class CalendarActions:
             replacement = booking_view(add_booking(self.state, entry), entry, self.state.time_zone)
             result = self._complete(proposal, "rescheduled", replacement)
             return ActionOutcome([{"type": "refs", "bookings": {ref: old}}, *result.events])
-        self.state.guest_draft = None
         created = booking_view(add_booking(self.state, entry), entry, self.state.time_zone)
         return self._complete(proposal, "booked", created)
 
@@ -673,6 +676,8 @@ class CalendarActions:
             summary = f"Moved {title} to {when} ({self.state.time_zone})."
         self.state.proposal = None
         self.state.rescheduling_booking_ref = None
+        self.state.pending_change = None
+        self.state.clear_time_choices()
         self._note(f"Confirmed {proposal.id}. {summary}")
         self.state.completed[proposal.id] = summary
         if len(self.state.completed) > MAX_COMPLETED:

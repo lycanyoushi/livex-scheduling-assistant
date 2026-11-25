@@ -23,15 +23,15 @@ from backend.cal_client import CalError, CalObservation
 from backend.confirmations import ConfirmationLedger
 from backend.limits import RateLimits
 from backend.model import ModelClient, ModelCompletion, ModelError, ModelStreamStart, ModelText, ToolCall
-from backend.prefetch import PREFETCH_BUDGET_SECONDS, Prefetcher, RescheduleTarget, plan_prefetch, prefer_daytime_for_request
-from backend.prescan import EMAIL, DateHint, PrescanResult, prescan, typed_choice
+from backend.prefetch import BookingLookup, PREFETCH_BUDGET_SECONDS, Prefetcher, RescheduleTarget, plan_prefetch, prefer_daytime_for_request
+from backend.prescan import BOOKING_REQUEST, EMAIL, EXISTING_BOOKING, DateHint, PrescanResult, prescan, typed_choice
 from backend.protocol import (
     CalCallMetrics, ChatRequest, ConfirmProposal, DismissProposal, ErrorEvent, ModelCallMetrics, RefsEvent, ServerEvent,
-    PickSlot, SlotView, TextInput, TurnMetrics, UiAction,
+    PickSlot, RequestCancel, RequestReschedule, SlotView, TextInput, TurnMetrics, UiAction,
 )
 from backend.slot_offers import SlotOfferLimit
 from backend.state import (
-    MAX_NOTES, BookingEntry, GuestDraft, ModelContext, NoActionYetOutcome, PendingCall, Proposal, SessionState, StateError, new_state,
+    MAX_NOTES, BookingEntry, GuestDraft, ModelContext, NoActionYetOutcome, PendingCall, PendingChange, Proposal, SessionState, StateError, new_state,
     sign_state, verify_state,
 )
 from backend.time import parse_instant, slot_labels, utc_now
@@ -45,7 +45,7 @@ Use the supplied local date and time zone. State the explicit date when naming a
 Refer to a specific slot using its [[S1]] marker alone. The app renders the date and time, so do not write them again beside the marker.
 Use [[B1]] by itself for a known booking when possible. Use those markers literally.
 Showing availability does not require a name or email. For a new meeting with no selected start, follow the app's availability result.
-When the app says openings are on screen, acknowledge them in one or two short sentences. Use a shown ref only to recommend that time.
+When opening buttons are on screen, acknowledge them in a short sentence with no refs or clock times. The app asks for missing guest details.
 When an availability check found no openings, say the requested window is unavailable. Point to the alternatives already shown when present.
 Prefer context over a read tool. Call find_slots for missing data or a different requested window, using for_booking_ref="" for ordinary availability.
 Offer at most four times total, counting any options already on screen. If more options exist, say more are available without listing them.
@@ -86,6 +86,20 @@ _GUEST_NAME_END = re.compile(r"\b(?:at|on|today|tomorrow|this|next|morning|after
 _PURPOSE = re.compile(r"\b(?:book|schedule|reserve)\s+(?:an?\s+)?"
                       r"(?:\d+\s*-?\s*(?:min(?:ute)?s?|hours?)\s+)?([^,.!?\n]{1,80}?)\s+with\b", re.I)
 _WITH_GUEST = re.compile(rf"\bwith\s+({_NAME_WORD})\b", re.I)
+_EXISTING_REFERENCE = re.compile(
+    r"^\s*(?:the\s+)?(?:one|meeting|appointment|booking)\s+with\b"
+    r"|^\s*(?:my|our)\s+\d", re.I,
+)
+_GUEST_DETAILS = re.compile(r"\b(?:guest|attendee)(?:['’]s)?\s+(?:name|e-?mail)\b", re.I)
+_NEGATED_CHANGE = re.compile(
+    r"\b(?:don['’]t|do not|never|not)(?:\s+want\s+to)?\s+(cancel|move|reschedule|push)\b", re.I,
+)
+_REPLACEMENT_TIME = re.compile(r"^\s*(?:actually\s+)?(?:make it|change it to|instead at)\s+(.+)$", re.I)
+_PROPOSAL_LINE = {
+    "book": "Please confirm the booking for this guest.",
+    "cancel": "Please confirm that you want to cancel this meeting.",
+    "reschedule": "Please confirm that you want to move this meeting.",
+}
 BULK_TARGET = re.compile(
     r"\b(?:everyone(?:'s)?|everybody(?:'s)?|all (?:the |my |our )?(?:bookings|meetings|appointments))\b",
     re.IGNORECASE,
@@ -200,13 +214,22 @@ def _fingerprint(details: str) -> str:
 
 
 def _update_guest_draft(state: SessionState, text: str, hints: PrescanResult) -> None:
-    if {"list", "cancel", "reschedule"}.intersection(hints.intents):
+    if ({"list", "cancel", "reschedule"}.intersection(hints.intents)
+            or state.pending_change is not None or state.rescheduling_booking_ref is not None
+            or _EXISTING_REFERENCE.search(text) or EXISTING_BOOKING.search(text) or BOOKING_MENTION.search(text)):
         return
+    starts_booking = hints.availability_request and BOOKING_REQUEST.search(text) is not None
     if state.guest_draft is None:
-        if not hints.availability_request and not hints.email:
+        if not hints.availability_request:
             return
         state.guest_draft = GuestDraft()
     draft = state.guest_draft
+    if hints.duration_minutes is not None and 0 < hints.duration_minutes <= 1440:
+        draft.duration_minutes = hints.duration_minutes
+    if starts_booking or (state.last_offered_slots and _GUEST_DETAILS.search(text)):
+        draft.collecting = True
+    if not (draft.collecting or draft.slot_ref is not None or (draft.name or draft.email)):
+        return
     addresses = list(dict.fromkeys(address.casefold() for address in EMAIL.findall(text)))
     if len(addresses) == 1 and len(addresses[0]) <= 254:
         draft.email = addresses[0]
@@ -222,8 +245,6 @@ def _update_guest_draft(state: SessionState, text: str, hints: PrescanResult) ->
         draft.name = name
     if purpose := _PURPOSE.search(text):
         draft.notes = _redact_contact(purpose[1].strip())
-    if hints.duration_minutes is not None and 0 < hints.duration_minutes <= 1440:
-        draft.duration_minutes = hints.duration_minutes
 
 
 def _note_details(lines: list[str], known: dict[str, str], ref: str, label: str, details: str) -> None:
@@ -281,8 +302,6 @@ def _meeting_matches(
             if (local := parse_instant(entry.start_utc).astimezone(zone)).date() == target.day
             and local.time() == target.at
         )
-    if state.rescheduling_booking_ref in active and "reschedule" in hints.intents:
-        return (state.rescheduling_booking_ref,)
     message = re.sub(r"[^\w\s]", " ", _redact_contact(text).casefold())
     guest = _WITH_GUEST.search(message)
     named = tuple(
@@ -293,6 +312,10 @@ def _meeting_matches(
     )
     if named:
         return named
+    if guest:
+        return ()
+    if state.rescheduling_booking_ref in active and "reschedule" in hints.intents:
+        return (state.rescheduling_booking_ref,)
     return tuple(scoped) if len(scoped) == 1 else ()
 
 
@@ -318,6 +341,76 @@ def _match_typed_slot(state: SessionState, text: str, now: datetime, hints: Pres
                  if (local := parse_instant(state.slots[ref].start_utc).astimezone(zone)).time() in hours
                  and (requested_day is None or local.date() == requested_day)
                  and not _excluded_slot(hints, state, ref, zone))
+
+
+def _change_kind(hints: PrescanResult, text: str) -> Literal["cancel", "reschedule"] | None:
+    negated = {match.casefold() for match in _NEGATED_CHANGE.findall(text)}
+    cancel = "cancel" in hints.intents and "cancel" not in negated
+    move = "reschedule" in hints.intents and not negated.intersection({"move", "reschedule", "push"})
+    if cancel and not move:
+        return "cancel"
+    if move and not cancel:
+        return "reschedule"
+    return None
+
+
+def _pending_candidates(state: SessionState, pending: PendingChange, now: datetime) -> dict[str, BookingEntry]:
+    return {ref: state.bookings[ref] for ref in pending.refs
+            if ref in state.bookings and _is_changeable(state.bookings[ref], now)}
+
+
+def _pick_pending_candidate(
+    pending: PendingChange, candidates: dict[str, BookingEntry], text: str, hints: PrescanResult, zone: ZoneInfo,
+) -> tuple[bool, list[str]]:
+    if refs := BOOKING_MENTION.findall(text):
+        return True, [ref for ref in dict.fromkeys(ref.upper() for ref in refs) if ref in candidates]
+    if guest := re.match(r"^\s*(?:the\s+)?(?:one|meeting|booking|appointment)\s+with\s+(.+?)[.!]?\s*$", text, re.I):
+        name = guest[1].strip().casefold()
+        return True, [ref for ref, entry in candidates.items() if entry.guest_name and (
+            entry.guest_name.casefold() == name or entry.guest_name.casefold().startswith(name + " ")
+        )]
+    pick = typed_choice(re.sub(r"^\s*(?:my|our)\s+", "the ", text, flags=re.I))
+    day = None
+    if pick is None and len(hints.dates) == 1:
+        day, pick = hints.dates[0].day, hints.dates[0].at
+    if isinstance(pick, int):
+        return True, [pending.refs[pick]] if pick < len(pending.refs) and pending.refs[pick] in candidates else []
+    if pick is not None:
+        return True, [ref for ref, entry in candidates.items()
+                      if (stamp := parse_instant(entry.start_utc).astimezone(zone)).time() == pick
+                      and (day is None or stamp.date() == day)]
+    return False, []
+
+
+def _brief_openings_reply(
+    text: str, user_text: str, draft: GuestDraft | None, *, move: bool, alternatives: bool,
+) -> str:
+    spanish = re.search(r"\b(?:puedes|puedo|quiero|reservar|horarios|disponibles|mañana|reprogramar)\b", user_text, re.I)
+    if spanish:
+        line = "Estos son los horarios disponibles." if not alternatives else "No hay horarios en esa franja, pero hay estas alternativas."
+    elif alternatives:
+        line = "There are no openings in that window, but these alternatives are available."
+    elif move:
+        line = "Choose one of these times to move the meeting."
+    else:
+        line = "Here are the available times."
+    sentence = text.strip()
+    if (not move and not alternatives and 0 < len(sentence) <= 110
+            and re.fullmatch(r"[^.?!\d\n\[\]*]+\.", sentence)
+            and re.search(r"\b(?:horarios?|disponibles?)\b" if spanish else r"\b(?:openings?|availab\w*)\b", sentence, re.I)
+            and not re.search(r"\b(?:noon|midnight|o'clock|at|for)\b", sentence, re.I)):
+        line = sentence
+    if draft is None or not draft.collecting or move:
+        return line
+    if not draft.name and not draft.email:
+        question = "¿Cuál es el nombre y correo del invitado?" if spanish else "What’s the guest’s name and email address?"
+    elif not draft.name:
+        question = "¿Cuál es el nombre del invitado?" if spanish else "What’s the guest’s name?"
+    elif not draft.email:
+        question = "¿Cuál es el correo del invitado?" if spanish else "What’s the guest’s email address?"
+    else:
+        return line
+    return f"{line} {question}"
 
 
 def _context(
@@ -358,7 +451,7 @@ def _context(
     for ref in unavailable_bookings:
         lines.append(f"{ref} is an unknown or retired calendar booking ref.")
     if listing_response and not prefetched_bookings:
-        lines.append("No meetings in the requested range. Say so briefly.")
+        lines.append("Say there are no meetings in the requested range and offer to help book one.")
     if more_bookings:
         lines.append("More meetings exist in this range. Mention only that the earliest are shown.")
     if prefetched_bookings and listing_response:
@@ -367,6 +460,11 @@ def _context(
             lines.append("Acknowledge the displayed list briefly without repeating the entries or their times.")
     if selected_booking:
         lines.append(f"Existing meeting matched by the app: {selected_booking}. For a change, use only that booking.")
+    if state.pending_change is not None:
+        pending = state.pending_change
+        verb = "move" if pending.kind == "reschedule" else "cancel"
+        lines.append(f"Pending request: {verb} one of these meetings: {', '.join(pending.refs)}. "
+                     "Identify which candidate the user means and preserve the requested action.")
     draft = state.guest_draft
     if draft is not None and hints.availability_request:
         lines.append(f"Guest name for this booking: {json.dumps(_redact_contact(draft.name)) if draft.name else 'missing'}.")
@@ -404,6 +502,8 @@ def _context(
     if restrict_slots:
         lines.append("This list honors the excluded dates. Acknowledge only the openings on screen without adding times.")
     current_bookings = prefetched_bookings if prefetched_bookings is not None else tuple(bookings)[-10:]
+    if state.pending_change is not None:
+        current_bookings = tuple(dict.fromkeys([*state.pending_change.refs, *current_bookings]))
     if selected_booking and selected_booking not in current_bookings:
         current_bookings = (selected_booking, *current_bookings)
     current_slots = [ref for ref in state.slots if ref in prefetched_slots]
@@ -539,6 +639,9 @@ class TurnService:
         previous = state
         hints = None
         zone = ZoneInfo(request.time_zone)
+        starting_slots: set[str] = set()
+        starting_proposal = None
+        has_reply = False
 
         def earlier_slot_label(ref: str) -> str | None:
             slot = state.slots.get(ref)
@@ -558,6 +661,33 @@ class TurnService:
                 except StateError:
                     raise TurnError("interaction_expired", retryable=False) from None
             state.time_zone = request.time_zone
+            starting_slots = set(state.slots)
+            starting_proposal = state.proposal.id if state.proposal is not None else None
+            if isinstance(request.input, TextInput):
+                hints = prescan(request.input.text, now=now, time_zone=request.time_zone)
+                change = _change_kind(hints, request.input.text)
+                listing = "list" in hints.intents
+                if change or listing:
+                    state.clear_time_choices(keep_proposal=not change)
+                    if change != "reschedule":
+                        state.rescheduling_booking_ref = None
+                    if listing or (state.pending_change is not None and state.pending_change.kind != change):
+                        state.pending_change = None
+                    if change:
+                        state.proposal = None
+                elif hints.availability_request and BOOKING_REQUEST.search(request.input.text) and (
+                    state.pending_change is not None or state.rescheduling_booking_ref is not None
+                    or (state.proposal is not None and state.proposal.kind != "book")
+                ):
+                    state.clear_time_choices()
+                    state.pending_change = None
+                    state.rescheduling_booking_ref = None
+                    state.proposal = None
+            elif isinstance(request.input.action, (RequestCancel, RequestReschedule)):
+                state.clear_time_choices()
+                state.pending_change = None
+                state.rescheduling_booking_ref = None
+                state.proposal = None
             previous = deepcopy(state)
             if isinstance(request.input, TextInput):
                 action = _typed_proposal_action(request.input, state.proposal)
@@ -567,12 +697,15 @@ class TurnService:
                 else:
                     if state.counters.turns >= 40:
                         raise TurnError("session_limit", "Start a new chat to continue.", retryable=False)
-                    hints = prescan(request.input.text, now=now, time_zone=request.time_zone)
                     source = self._text_events(state, now, request.input.text, hints, metrics)
             else:
                 source = self._action_events(state, now, request.input.action, metrics)
             async with aclosing(source) as events:
                 async for event in events:
+                    if event["type"] == "proposal" and not has_reply:
+                        yield {"type": "assistant_text", "text": _PROPOSAL_LINE[event["proposal"]["kind"]]}
+                    if event["type"] in {"assistant_text", "text_delta"} and event["text"].strip():
+                        has_reply = True
                     for display_event in offer_limit.apply(event):
                         yield display_event
         except (TurnError, CalError, ModelError) as error:
@@ -598,6 +731,13 @@ class TurnService:
             or metrics.get("errorCode") == "slot_taken"
         ):
             state.last_offered_slots = [ref for ref in offer_limit.offered if ref in state.slots]
+        retired: RefsEvent = {"type": "refs"}
+        if cleared := starting_slots.difference(state.slots):
+            retired["retiredSlots"] = sorted(cleared)
+        if starting_proposal and (state.proposal is None or state.proposal.id != starting_proposal):
+            retired["retiredProposal"] = starting_proposal
+        if len(retired) > 1:
+            yield retired
         metrics["totalMs"] = (perf_counter() - began) * 1000
         LOGGER.info("chat_turn %s", json.dumps(metrics, separators=(",", ":")))
         yield {"type": "turn_end", "stateToken": sign_state(state, self.secret), "metrics": metrics}
@@ -611,14 +751,52 @@ class TurnService:
             "availabilityRequest": hints.availability_request,
             "exactTimes": [f"{hint.day.isoformat()}T{hint.at:%H:%M}" for hint in hints.dates if hint.at is not None],
         }
+        change = _change_kind(hints, text)
+        pending = state.pending_change
+        replacement = _REPLACEMENT_TIME.fullmatch(text.strip())
+        if replacement and state.proposal is not None and state.proposal.kind == "book":
+            slot = state.slots.get(state.proposal.slot_ref or "")
+            requested_time = typed_choice(replacement[1])
+            if slot is not None and isinstance(requested_time, time):
+                day = parse_instant(slot.start_utc).astimezone(ZoneInfo(state.time_zone)).date()
+                hints = replace(hints, dates=(DateHint(day, requested_time),), availability_request=True)
+        if change is None and "cancel" in hints.intents and "reschedule" in hints.intents:
+            yield {"type": "assistant_text", "text": "Do you want to move a meeting or cancel it?"}
+            return
+        if pending is not None and change is None:
+            if proposal_reply(text) == "dismiss":
+                state.pending_change = None
+                yield {"type": "assistant_text", "text": "Okay. I’ve dropped that change request."}
+                return
+            candidates = _pending_candidates(state, pending, now)
+            recognized, matches = _pick_pending_candidate(pending, candidates, text, hints, ZoneInfo(state.time_zone))
+            if recognized and len(matches) == 1:
+                state.pending_change = None
+                metrics["path"] = "ui_action"
+                action = (RequestCancel(type="request_cancel", bookingRef=matches[0]) if pending.kind == "cancel"
+                          else RequestReschedule(type="request_reschedule", bookingRef=matches[0]))
+                async with aclosing(self._action_events(state, now, action, metrics, later=pending.later)) as events:
+                    async for event in events:
+                        yield event
+                return
+            if recognized:
+                yield {"type": "booking_cards", "refs": list(candidates)}
+                verb = "move" if pending.kind == "reschedule" else "cancel"
+                yield {"type": "assistant_text", "text": (
+                    f"I couldn’t identify one match. Which meeting should I {verb}?"
+                    if candidates else f"Those meetings have passed. Tell me which upcoming meeting to {verb}."
+                )}
+                if not candidates:
+                    state.pending_change = None
+                return
         if state.proposal is None and state.guest_draft is not None and proposal_reply(text) == "dismiss":
-            state.guest_draft = None
+            state.clear_time_choices()
             metrics["path"] = "ui_action"
             yield {"type": "assistant_text", "text": "Okay. I’ve dropped that booking request."}
             return
         old_contact = state.guest_draft.model_dump() if state.guest_draft is not None else None
         _update_guest_draft(state, text, hints)
-        choices = _match_typed_slot(state, text, now, hints)
+        choices = _match_typed_slot(state, text, now, hints) if pending is None else ()
         draft = state.guest_draft
         contact_only = draft is not None and draft.slot_ref is None and hints.email is not None and not (
             hints.intents or hints.dates
@@ -638,7 +816,14 @@ class TurnService:
                 async for event in events:
                     yield event
             return
-        is_change = bool({"cancel", "reschedule"}.intersection(hints.intents))
+        if pending is None and change is None and not hints.availability_request:
+            if isinstance(typed_choice(text), int) and not state.last_offered_slots:
+                yield {"type": "assistant_text", "text": "There are no active choices. Which meeting or time do you mean?"}
+                return
+            if _EXISTING_REFERENCE.search(text) and state.rescheduling_booking_ref is None and state.proposal is None:
+                yield {"type": "assistant_text", "text": "Do you want to move that meeting or cancel it?"}
+                return
+        is_change = change is not None
         listing_only = "list" in hints.intents and not is_change and not hints.availability_request
         bulk = is_change and BULK_TARGET.search(text) is not None
         requested_bookings = tuple(dict.fromkeys(BOOKING_MENTION.findall(_redact_contact(text).upper())))
@@ -660,6 +845,12 @@ class TurnService:
         tools = self._tools(state, now, hints=hints, deny_mutations=bulk or listing_only)
         plan = plan_prefetch(state, now, hints, text=text)
         local_now = now.astimezone(ZoneInfo(state.time_zone))
+        meeting = hints.existing_meeting
+        past_meeting = bool(meeting and (meeting.day < local_now.date() or (
+            meeting.day == local_now.date() and meeting.at is not None and meeting.at <= local_now.time()
+        )))
+        if is_change and past_meeting and not bulk:
+            plan = replace(plan, booking_lookup=BookingLookup("upcoming"))
         past_request = hints.availability_request and bool(hints.dates) and all(
             hint.day < local_now.date() or (
                 hint.day == local_now.date() and hint.at is not None and hint.at <= local_now.time()
@@ -689,10 +880,20 @@ class TurnService:
         ) if is_change and not bulk else ()
         ambiguous = (
             len(matches) > 1
-            or hints.existing_meeting is not None and prefetched.more_bookings
+            or not past_meeting and hints.existing_meeting is not None and prefetched.more_bookings
             or is_change and not bulk and not matches and hints.existing_meeting is None
             and booking_refs is not None and len(booking_refs) > 1
         )
+        missed = is_change and not bulk and not matches and booking_refs is not None and (
+            hints.existing_meeting is not None or not booking_refs or _WITH_GUEST.search(text) is not None
+        )
+        if missed and not past_meeting and plan.booking_lookup != BookingLookup("upcoming"):
+            fallback = await self._prefetch.fetch(tools, replace(
+                plan, days=(), booking_lookup=BookingLookup("upcoming"), show_openings=False,
+            ))
+            metrics["calCalls"].extend(fallback.cal_calls)
+            if fallback.bookings is not None:
+                booking_refs = tools.register_bookings(fallback.bookings, reuse_known=True)
         selected = matches[0] if len(matches) == 1 and not ambiguous else None
         tools.required_booking_ref = selected
         metrics["calCalls"].extend(prefetched.cal_calls)
@@ -737,21 +938,26 @@ class TurnService:
             if booking_refs is not None:
                 event["bookings"] = booking_refs
             yield event
-        if booking_refs is not None and ("list" in hints.intents or bulk or ambiguous):
+        if booking_refs is not None and ("list" in hints.intents or bulk or ambiguous or missed):
             state.last_offered_slots = []
             yield {"type": "booking_cards", "refs": list(booking_refs)}
         if prefetched.more_bookings and (listing_only or bulk):
             yield {"type": "assistant_text", "text": "I’m showing the earliest meetings. More are on your calendar."}
-        if bulk:
-            yield {"type": "assistant_text", "text": "I can’t change multiple meetings at once. Which meeting should I change first?"}
-            state.interaction_id, state.pending_call, state.last_model_input_tokens = original_history
-            return
-        if ambiguous:
-            yield {"type": "assistant_text", "text": "More than one meeting may match. Which meeting did you mean?"}
-            state.interaction_id, state.pending_call, state.last_model_input_tokens = original_history
-            return
-        if hints.existing_meeting and not selected and prefetched.bookings is not None:
-            yield {"type": "assistant_text", "text": "I couldn’t find an upcoming meeting at that time. Which meeting did you mean?"}
+        if change is not None and (bulk or ambiguous or missed):
+            verb = "move" if change == "reschedule" else "cancel"
+            if bulk:
+                reason = "I can’t change multiple meetings at once."
+            elif past_meeting and meeting is not None and meeting.at is not None:
+                when = "today" if meeting.day == local_now.date() else f"on {meeting.day:%a %d %b}"
+                reason = f"That {meeting.at:%H:%M} time {when} has already passed."
+            elif missed:
+                reason = "I couldn’t find an upcoming meeting matching that request."
+            else:
+                reason = "More than one meeting may match."
+            candidates = [ref for ref in (booking_refs or {}) if _is_changeable(state.bookings[ref], now)]
+            state.pending_change = PendingChange(kind=change, refs=candidates, later=hints.move_later) if candidates else None
+            followup = f"Which meeting should I {verb}?" if candidates else "There are no upcoming meetings to choose from."
+            yield {"type": "assistant_text", "text": f"{reason} {followup}"}
             state.interaction_id, state.pending_call, state.last_model_input_tokens = original_history
             return
         if past_request:
@@ -792,7 +998,15 @@ class TurnService:
             and len(hints.dates) == 1 and hints.dates[0].at is not None
         )
         choose_move_time = bool(plan.reschedule and displayed and not exact_move)
-        schemas = [] if checked_empty or listing_response or restrict_slots or choose_move_time or contact_only else await asyncio.to_thread(
+        exact_booking = bool(
+            displayed and len(displayed) == 1 and not checked_empty and len(hints.dates) == 1
+            and hints.dates[0].at is not None and (replacement or BOOKING_REQUEST.search(text))
+            and not is_change and pending is None
+        )
+        brief_openings = bool(displayed and not exact_move and not exact_booking and "list" not in hints.intents and (
+            hints.availability_request or plan.reschedule is not None
+        ))
+        schemas = [] if checked_empty or listing_response or restrict_slots or brief_openings or contact_only else await asyncio.to_thread(
             tools.schemas, allow_lazy_catalog=bool(plan.days),
         )
         if listing_only:
@@ -800,13 +1014,28 @@ class TurnService:
         if exact_move:
             tools.required_change_slot = displayed[0]
             schemas = [schema for schema in schemas if schema["name"] == "propose_reschedule"]
+        if exact_booking:
+            tools.required_book_slot = displayed[0]
+            schemas = [schema for schema in schemas if schema["name"] == "propose_booking"]
+        protected_kind = change or (pending.kind if pending is not None else None)
+        if protected_kind is None:
+            if state.rescheduling_booking_ref is not None:
+                protected_kind = "reschedule"
+            elif state.proposal is not None:
+                protected_kind = state.proposal.kind
+            elif state.guest_draft is not None:
+                protected_kind = "book"
+        schemas = [schema for schema in schemas if schema["name"] not in PROPOSE_TOOLS
+                   or schema["name"] == f"propose_{'booking' if protected_kind == 'book' else protected_kind}"]
+        if pending is not None and change is None:
+            tools.allowed_booking_refs = frozenset(_pending_candidates(state, pending, now))
         context, snapshot = _context(
             state, now, hints, prefetched_slots=frozenset(displayed if restrict_slots else slot_refs),
             prefetched_bookings=tuple(booking_refs) if booking_refs is not None else None,
             listing_response=listing_response,
             more_bookings=prefetched.more_bookings,
             selected_booking=selected,
-            displayed=tuple(displayed),
+            displayed=() if exact_booking or exact_move else tuple(displayed),
             checked_empty=checked_empty,
             restrict_slots=restrict_slots,
             rotated=rotated,
@@ -814,6 +1043,8 @@ class TurnService:
         instructions = None
         if exact_move:
             instructions = f"Use propose_reschedule for {selected} and the exact requested slot {displayed[0]}."
+        elif exact_booking:
+            instructions = f"Use propose_booking for the exact requested slot {displayed[0]}."
         elif choose_move_time:
             instructions = "Ask which displayed time to move the meeting to."
         elif contact_only:
@@ -853,7 +1084,8 @@ class TurnService:
                             if not metric["ttftMs"]:
                                 metric["ttftMs"] = (perf_counter() - began) * 1000
                             text_parts.append(chunk.text)
-                            yield {"type": "text_delta", "text": chunk.text}
+                            if not brief_openings:
+                                yield {"type": "text_delta", "text": chunk.text}
                         elif isinstance(chunk, ModelCompletion):
                             completion = chunk
                 if completion is None:
@@ -901,14 +1133,25 @@ class TurnService:
                     state.interaction_id, state.pending_call, state.last_model_input_tokens = original_history
                     state.counters.turns += 1
                     self._count_unknown_refs(state, now, text_parts, metrics)
-                yield {"type": "text_delta", "text": "\n\n(reply cut short)"}
+                if brief_openings:
+                    yield {"type": "assistant_text", "text": _brief_openings_reply(
+                        "", text, draft, move=choose_move_time, alternatives=checked_empty,
+                    )}
+                else:
+                    yield {"type": "text_delta", "text": "\n\n(reply cut short)"}
                 return
             previous_id = completion.interaction_id
             state.last_model_input_tokens = completion.input_tokens
             if not completion.tool_calls:
                 if not "".join(text_parts).strip():
                     raise TurnError("empty")
-                self._complete_text(state, previous_id, None, snapshot, now, text_parts, metrics)
+                reply = text_parts
+                if brief_openings:
+                    reply = [_brief_openings_reply(
+                        "".join(text_parts), text, draft, move=choose_move_time, alternatives=checked_empty,
+                    )]
+                    yield {"type": "assistant_text", "text": reply[0]}
+                self._complete_text(state, previous_id, None, snapshot, now, reply, metrics)
                 return
 
             calls = completion.tool_calls
@@ -923,13 +1166,19 @@ class TurnService:
                 for event in outcome.events:
                     yield event
                 if outcome.proposal:
-                    pending = PendingCall(id=call.id, name=call.name, proposal_id=outcome.proposal.id)
-                    self._complete_text(state, previous_id, pending, snapshot, now, text_parts, metrics)
+                    state.pending_change = None
+                    pending_call = PendingCall(id=call.id, name=call.name, proposal_id=outcome.proposal.id)
+                    self._complete_text(state, previous_id, pending_call, snapshot, now, text_parts, metrics)
                     return
                 if outcome.result.get("needsGuest"):
                     state.interaction_id, state.pending_call, state.last_model_input_tokens = original_history
                     return
                 _remember_tool_refs(snapshot, state, outcome.result)
+                if state.pending_change is not None and call.name == "find_slots" and outcome.result.get("slots"):
+                    selected_ref = call.arguments.get("for_booking_ref")
+                    if selected_ref in state.pending_change.refs:
+                        state.rescheduling_booking_ref = selected_ref
+                        state.pending_change = None
                 steps.append(_function_result(call.id, call.name, outcome.result))
         if failure is not None:
             if failure.code == "interaction_expired":
@@ -1002,6 +1251,7 @@ class TurnService:
 
     async def _action_events(
         self, state: SessionState, now: datetime, action: UiAction, metrics: TurnMetrics,
+        *, later: bool = False,
     ) -> AsyncIterator[ServerEvent]:
         status = {
             "confirm_proposal": "Confirming the change…",
@@ -1016,7 +1266,7 @@ class TurnService:
             ledger=self.confirmations,
         )
         try:
-            result = await asyncio.to_thread(actions.execute, action)
+            result = await asyncio.to_thread(actions.execute, action, later=later)
         except ActionError as error:
             raise TurnError(error.code, str(error), retryable=error.retryable) from None
         if result.error_code:

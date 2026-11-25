@@ -18,7 +18,7 @@ from flask import Flask, Response, jsonify, request, session, stream_with_contex
 from pydantic import TypeAdapter, ValidationError
 
 from backend.cal_client import CalClient, CalError
-from backend.demo_calendar import DemoCalendar
+from backend.demo_calendar import DEFAULT_DEMO_TIME_ZONE, DemoCalendar
 from backend.gemini import GeminiClient
 from backend.limits import RateLimits
 from backend.owner_auth import OwnerAccess
@@ -227,9 +227,13 @@ def load_service(*, persistent_model: bool = False, settings: dict[str, str] | N
         backup = GeminiClient(settings["GEMINI_API_KEY"], model=backup_name,
                               thinking_level="low" if backup_name == "gemini-3.8-flash" else "minimal",
                               persistent=persistent_model, first_event_timeout=None)
-    calendar = DemoCalendar() if demo_mode else CalClient(
-        settings["CAL_API_KEY"], settings.get("CAL_API_BASE_URL") or "https://api.cal.com", observer=observe_cal,
-    )
+    if demo_mode:
+        demo_zone = settings.get("DEMO_TIME_ZONE", "").strip() or DEFAULT_DEMO_TIME_ZONE
+        calendar = DemoCalendar(time_zone=demo_zone)
+    else:
+        calendar = CalClient(
+            settings["CAL_API_KEY"], settings.get("CAL_API_BASE_URL") or "https://api.cal.com", observer=observe_cal,
+        )
     warm_prescan()
     return TurnService(
         model=GeminiClient(settings["GEMINI_API_KEY"], model=model_name, thinking_level=thinking, persistent=persistent_model),
