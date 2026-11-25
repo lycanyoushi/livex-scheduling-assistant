@@ -77,6 +77,10 @@ Availability replies come from validated calendar results. Gemini can use `find_
 
 A typed or clicked selection can start guest collection or open a proposal. A model proposal for an exact start or a change to an open booking card is bound to the verified slot ref. An exact time correction to an open booking uses a fresh lookup for the same date and meeting length, then binds the replacement card to that result. An email by itself updates an unselected guest draft and leaves the time choice open. Calendar changes still require confirming the signed card.
 
+The start and end of a new meeting determine its length when the owner specifies the whole interval. A search for openings within a window uses the requested duration or the event type's default. When a checked window is closed, Python explains the result. It shows same-length openings on the requested day if available. Otherwise it looks up to seven days on either side, within the booking horizon, and prefers openings in the same local clock window.
+
+The fake calendar can offer **Book it anyway** for a specific future meeting outside the host's working hours. That selection and the signed confirmation are separate steps. The card labels the date and warns that it is outside working hours. The fake calendar checks for existing overlapping bookings before offering and again when confirming, rejects concurrent overlaps, and verifies the stored start and end. The Cal.com adapter keeps real overrides disabled pending an approved live test of `allowBookingOutOfBounds`. Normal booking and rescheduling follow the existing availability checks. [Cal.com create booking API](https://cal.com/docs/api-reference/v2/bookings/create-a-booking)
+
 The demo books one guest and one occurrence per confirmation. A request for multiple guests asks the owner to choose one. A recurring request can lead to a separate first-occurrence booking. Personal busy blocks belong in the user's calendar app. The demo opens Monday to Friday, 09:00–17:00 in its calendar zone. [Cal.com booking scope](calcom-notes.md#guest-invitations-and-booking-scope)
 
 ### Validation and signed state
