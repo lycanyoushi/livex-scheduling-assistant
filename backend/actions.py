@@ -30,6 +30,7 @@ from backend.state import (
     MAX_COMPLETED,
     MAX_NOTES,
     BookingEntry,
+    BookingTarget,
     ConfirmedOutcome,
     DismissedOutcome,
     GuestDraft,
@@ -136,7 +137,7 @@ class CalendarActions:
             raise ActionError("invalid_action", str(error)) from None
         raise ActionError("invalid_action", "Choose a scheduling action from the chat.")
 
-    def _live_booking(self, ref: str, *, same_time: bool = False) -> BookingEntry:
+    def _live_booking(self, ref: str, *, target: BookingTarget | None = None) -> BookingEntry:
         saved = self.state.bookings.get(ref)
         if saved is None:
             raise ActionError("invalid_action", "Choose a booking from your calendar results.")
@@ -145,10 +146,11 @@ class CalendarActions:
             raise ActionError("invalid_action", "I couldn't verify that booking. List your calendar again.")
         if live.status not in _UPCOMING_STATUS or parse_instant(live.start_utc) <= self.now:
             raise ActionError("invalid_action", "Only upcoming bookings can be changed.")
-        if same_time and (
-            parse_instant(live.start_utc) != parse_instant(saved.start_utc)
-            or parse_instant(live.end_utc) != parse_instant(saved.end_utc)
-            or live.event_type_id != saved.event_type_id
+        if target is not None and (
+            live.uid != target.uid
+            or parse_instant(live.start_utc) != parse_instant(target.start_utc)
+            or parse_instant(live.end_utc) != parse_instant(target.end_utc)
+            or live.event_type_id != target.event_type_id
         ):
             raise ActionError("invalid_action", "That booking changed. Open it again to make a new confirmation.")
         self.state.bookings[ref] = live
@@ -289,11 +291,12 @@ class CalendarActions:
             event_type_id, begin, end, self.state.time_zone,
             booking_uid_to_reschedule=booking.uid if booking is not None else None, fresh=True,
         )
+        existing_start = parse_instant(booking.start_utc) if booking is not None else None
         options = set()
         for ranges in data.values():
             for item in ranges:
                 start, finish = parse_instant(item["start"]), parse_instant(item["end"])
-                if start > self.now and begin <= start < end:
+                if start > self.now and begin <= start < end and start != existing_start:
                     options.add((start, finish))
         return sorted(options)
 
@@ -355,7 +358,7 @@ class CalendarActions:
 
     def _confirm_once(self, proposal: Proposal) -> ActionOutcome:
         ref = proposal.booking_ref
-        booking = self._live_booking(ref, same_time=True) if ref is not None else None
+        booking = self._live_booking(ref, target=proposal.booking_target) if ref is not None else None
         if proposal.kind == "cancel" and booking is not None and ref is not None:
             return self._confirm_cancel(proposal, ref, booking)
         return self._confirm_slot(proposal, booking)
@@ -580,6 +583,8 @@ class CalendarActions:
         if proposal.kind == "book" and (not name or not EMAIL.fullmatch(email)):
             raise ActionError("invalid_contact", "I need the guest's name and email before booking.")
         start = parse_instant(slot.start_utc)
+        if booking is not None and start == parse_instant(booking.start_utc):
+            raise ActionError("invalid_action", "Choose a different start time for this booking.")
         requested = (start, parse_instant(slot.end_utc))
         day = start.astimezone(self.zone).date()
         if start <= self.now:

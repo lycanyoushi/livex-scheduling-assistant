@@ -24,7 +24,7 @@ from backend.confirmations import ConfirmationLedger
 from backend.limits import RateLimits
 from backend.model import ModelClient, ModelCompletion, ModelError, ModelStreamStart, ModelText, ToolCall
 from backend.prefetch import PREFETCH_BUDGET_SECONDS, Prefetcher, RescheduleTarget, plan_prefetch, prefer_daytime_for_request
-from backend.prescan import EMAIL, PrescanResult, prescan, typed_choice
+from backend.prescan import EMAIL, DateHint, PrescanResult, prescan, typed_choice
 from backend.protocol import (
     CalCallMetrics, ChatRequest, ConfirmProposal, DismissProposal, ErrorEvent, ModelCallMetrics, RefsEvent, ServerEvent,
     PickSlot, SlotView, TextInput, TurnMetrics, UiAction,
@@ -593,7 +593,10 @@ class TurnService:
             yield event
         for display_event in offer_limit.finish():
             yield display_event
-        if metrics["outcome"] == "ok" and offer_limit.offered:
+        if offer_limit.offered and (
+            metrics["outcome"] == "ok" or metrics.get("fallback") == "code_only"
+            or metrics.get("errorCode") == "slot_taken"
+        ):
             state.last_offered_slots = [ref for ref in offer_limit.offered if ref in state.slots]
         metrics["totalMs"] = (perf_counter() - began) * 1000
         LOGGER.info("chat_turn %s", json.dumps(metrics, separators=(",", ":")))
@@ -617,6 +620,9 @@ class TurnService:
         _update_guest_draft(state, text, hints)
         choices = _match_typed_slot(state, text, now, hints)
         draft = state.guest_draft
+        contact_only = draft is not None and draft.slot_ref is None and hints.email is not None and not (
+            hints.intents or hints.dates
+        )
         finishing_contact = (
             draft is not None and draft.slot_ref in _visible_slots(state, now)
             and old_contact != draft.model_dump() and state.proposal is None
@@ -653,6 +659,17 @@ class TurnService:
             state.pending_call = None
         tools = self._tools(state, now, hints=hints, deny_mutations=bulk or listing_only)
         plan = plan_prefetch(state, now, hints, text=text)
+        local_now = now.astimezone(ZoneInfo(state.time_zone))
+        past_request = hints.availability_request and bool(hints.dates) and all(
+            hint.day < local_now.date() or (
+                hint.day == local_now.date() and hint.at is not None and hint.at <= local_now.time()
+            )
+            for hint in hints.dates
+        )
+        if past_request and not plan.days:
+            dates = (local_now.date() + timedelta(days=offset) for offset in range(7))
+            days = tuple(day for day in dates if not hints.excludes(day))
+            plan = replace(plan, days=days, times=(), part_of_day="any", spread_slots=True, show_openings=bool(days))
         yield {"type": "status", "text": plan.status()}
         prefetched = await self._prefetch.fetch(tools, plan)
         if prefetched.unavailable_event is not None and plan.show_openings:
@@ -679,10 +696,15 @@ class TurnService:
         selected = matches[0] if len(matches) == 1 and not ambiguous else None
         tools.required_booking_ref = selected
         metrics["calCalls"].extend(prefetched.cal_calls)
-        if selected and plan.move_requested and plan.days:
+        if selected and plan.move_requested and (plan.days or hints.move_delay_minutes):
             booking = state.bookings[selected]
             if booking.event_type_id is not None:
                 target = RescheduleTarget(selected, booking.uid, booking.event_type_id, parse_instant(booking.start_utc))
+                if hints.move_delay_minutes is not None:
+                    wanted = (target.start + timedelta(minutes=hints.move_delay_minutes)).astimezone(local_now.tzinfo)
+                    dates = (DateHint(wanted.date(), wanted.time()),)
+                    hints = replace(hints, dates=dates)
+                    plan = replace(plan, days=(wanted.date(),), times=dates, part_of_day="any", move_later=False)
                 plan = replace(plan, booking_lookup=None, reschedule=target, show_openings=True)
                 move_slots = await self._prefetch.fetch(tools, plan)
                 metrics["calCalls"].extend(move_slots.cal_calls)
@@ -732,6 +754,15 @@ class TurnService:
             yield {"type": "assistant_text", "text": "I couldn’t find an upcoming meeting at that time. Which meeting did you mean?"}
             state.interaction_id, state.pending_call, state.last_model_input_tokens = original_history
             return
+        if past_request:
+            note = "That time has passed. Here are upcoming openings." if displayed else (
+                "That time has passed. Tell me another day or time to check."
+            )
+            yield {"type": "assistant_text", "text": note}
+            if displayed:
+                yield {"type": "slot_chips", "refs": displayed}
+            state.interaction_id, state.pending_call, state.last_model_input_tokens = original_history
+            return
         if displayed:
             if checked_empty:
                 note = "No later openings that day. Nearest:" if plan.reschedule is not None else _alternatives_note(hints)
@@ -756,11 +787,19 @@ class TurnService:
                     yield event
             return
         listing_response = listing_only and booking_refs is not None
-        schemas = [] if checked_empty or listing_response or restrict_slots else await asyncio.to_thread(
+        exact_move = bool(
+            plan.reschedule and len(displayed) == 1 and not checked_empty
+            and len(hints.dates) == 1 and hints.dates[0].at is not None
+        )
+        choose_move_time = bool(plan.reschedule and displayed and not exact_move)
+        schemas = [] if checked_empty or listing_response or restrict_slots or choose_move_time or contact_only else await asyncio.to_thread(
             tools.schemas, allow_lazy_catalog=bool(plan.days),
         )
         if listing_only:
             schemas = [schema for schema in schemas if schema["name"] not in PROPOSE_TOOLS]
+        if exact_move:
+            tools.required_change_slot = displayed[0]
+            schemas = [schema for schema in schemas if schema["name"] == "propose_reschedule"]
         context, snapshot = _context(
             state, now, hints, prefetched_slots=frozenset(displayed if restrict_slots else slot_refs),
             prefetched_bookings=tuple(booking_refs) if booking_refs is not None else None,
@@ -772,6 +811,15 @@ class TurnService:
             restrict_slots=restrict_slots,
             rotated=rotated,
         )
+        instructions = None
+        if exact_move:
+            instructions = f"Use propose_reschedule for {selected} and the exact requested slot {displayed[0]}."
+        elif choose_move_time:
+            instructions = "Ask which displayed time to move the meeting to."
+        elif contact_only:
+            instructions = "The guest email is recorded. Ask which time to use, if a time has not been chosen."
+        if instructions is not None:
+            context = context.removesuffix("</turn_context>") + instructions + "\n</turn_context>"
         steps = _initial_steps(state, context, text)
         previous_id = state.interaction_id
         text_parts: list[str] = []

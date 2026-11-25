@@ -112,11 +112,19 @@ class Counters(_StateModel):
     turns: _Counter = 0
 
 
+class BookingTarget(_TimeRange):
+    model_config = ConfigDict(frozen=True)
+
+    uid: _OpaqueId
+    event_type_id: _EventTypeId | None = None
+
+
 class Proposal(_StateModel):
     id: ProposalId
     kind: Literal["book", "cancel", "reschedule"]
     slot_ref: SlotRef | None = None
     booking_ref: BookingRef | None = None
+    booking_target: BookingTarget | None = Field(default=None, frozen=True)
     name: ContactName | None = None
     email: ContactEmail | None = None
     notes: ContactNotes | None = None
@@ -129,6 +137,8 @@ class Proposal(_StateModel):
             raise ValueError("The proposal has an invalid slot reference.")
         if (self.booking_ref is not None) != (self.kind in ("cancel", "reschedule")):
             raise ValueError("The proposal has an invalid booking reference.")
+        if (self.booking_target is None) != (self.booking_ref is None):
+            raise ValueError("The proposal has an invalid booking target.")
         return self
 
 

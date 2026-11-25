@@ -390,6 +390,31 @@ class CalendarActionsTests(unittest.TestCase):
         self.assertEqual(len(chips), 3)
         self.assertTrue(all(self.state.slots[item].for_booking_ref == ref for item in chips))
 
+    def test_reschedule_excludes_the_current_start_and_refuses_a_same_time_move(self):
+        calendar = Calendar(fixture_overrides={
+            "active_bookings": ["owner_today_3pm"],
+            "open_local_starts": ["2026-11-23T15:00", "2026-11-23T16:00"],
+        })
+        ref = self.record(calendar, "fixture-owner-today-3pm")
+        actions = self.actions(calendar)
+        options = actions.execute(RequestReschedule(type="request_reschedule", bookingRef=ref))
+        views = event(options, "refs")["slots"]
+        self.assertEqual([view["startLocalIso"] for view in views.values()], ["2026-11-23T16:00:00+08:00"])
+        original = self.state.bookings[ref]
+        same_start = add_slot(self.state, SlotEntry(
+            start_utc=original.start_utc, end_utc=original.end_utc, event_type_id=original.event_type_id,
+            fetched_at=NOW.timestamp(), for_booking_ref=ref,
+        ))
+        with self.assertRaisesRegex(ActionError, "different start time"):
+            actions.execute(PickSlot(type="pick_slot", slotRef=same_start))
+
+        opened = actions.execute(PickSlot(type="pick_slot", slotRef=next(iter(views))))
+        card = event(opened, "proposal")["proposal"]
+        self.state.proposal.slot_ref = same_start
+        with self.assertRaisesRegex(ActionError, "different start time"):
+            actions.execute(ConfirmProposal(type="confirm_proposal", proposalId=card["id"]))
+        self.assertEqual(calendar.writes, [])
+
     def test_reschedule_cannot_confirm_with_an_ordinary_slot_ref(self):
         calendar = Calendar(fixture_overrides={"active_bookings": ["sam_intro"]})
         booking_ref = self.record(calendar)

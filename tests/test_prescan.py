@@ -71,6 +71,21 @@ class PrescanTests(unittest.TestCase):
         self.assertEqual(self.scan("tomorrow 9am", ZONES[0], instant).dates, (DateHint(date(2026, 11, 24), time(9)),))
         self.assertEqual(self.scan("tomorrow 9am", ZONES[1], instant).dates, (DateHint(date(2026, 11, 23), time(9)),))
 
+    def test_move_without_a_destination_date_keeps_the_booking_day(self):
+        today, tomorrow = date(2026, 11, 23), date(2026, 11, 24)
+        expectations = {
+            "move my 3pm tomorrow to after 4": (tomorrow, time(16)),
+            "move my 3pm tomorrow to later": (tomorrow, None),
+            "move my 3pm tomorrow to after 4 today": (today, time(16)),
+            "move my 3pm tomorrow to this afternoon": (today, None),
+        }
+        for message, (destination, after) in expectations.items():
+            with self.subTest(message=message):
+                hints = self.scan(message, ZONES[0])
+                self.assertEqual(hints.existing_meeting, DateHint(tomorrow, time(15)))
+                self.assertEqual(hints.dates, (DateHint(destination),))
+                self.assertEqual(hints.move_after, after)
+
     def test_week_range_and_explicit_past(self):
         self.assertEqual(
             self.scan("sometime next week", ZONES[0]).dates,

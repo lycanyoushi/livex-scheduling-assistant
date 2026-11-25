@@ -12,6 +12,7 @@ from backend.state import (
     MAX_SLOTS,
     SESSION_TTL,
     BookingEntry,
+    BookingTarget,
     ConfirmedOutcome,
     GuestDraft,
     PendingCall,
@@ -65,8 +66,13 @@ class StateTests(unittest.TestCase):
         booking_ref = add_booking(state, sample_booking())
         slot_ref = add_slot(state, sample_slot(for_booking_ref=booking_ref))
         state.counters.p = 1
+        booking = state.bookings[booking_ref]
         state.proposal = Proposal(
             id="P1", kind="reschedule", slot_ref=slot_ref, booking_ref=booking_ref,
+            booking_target=BookingTarget(
+                uid=booking.uid, start_utc=booking.start_utc, end_utc=booking.end_utc,
+                event_type_id=booking.event_type_id,
+            ),
             created_at=NOW.timestamp(),
         )
         state.interaction_id = "test-interaction"

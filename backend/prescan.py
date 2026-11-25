@@ -75,6 +75,7 @@ EXISTING_BOOKING = re.compile(
 _MOVE_DESTINATION = re.compile(r"\b(?:reschedule|move|push|change the time)\b[^.!?\n]*?\bto\s+", re.I)
 _MEETING_TIME = re.compile(r"\b(?:my|the|our)\s+" + CLOCK, re.I)
 _AFTER_TIME = re.compile(r"\bafter\s+" + CLOCK, re.I)
+_MOVE_DELAY = re.compile(r"\b(an?|one|[1-9]\d{0,2})\s*-?\s*(hours?|minutes?|mins?)\s+later\b", re.I)
 _DURATION = re.compile(r"\b(\d{1,4})\s*[- ]?\s*(min(?:ute)?s?|h(?:ou)?rs?)\b", re.I)
 _THIS_PART = re.compile(r"\bthis\s+(?:morning|afternoon|evening)\b", re.I)
 _WEEKDAY_TOKEN = re.compile(rf"\b(?P<weekday>{'|'.join(WEEKDAYS)})(?:s)?\b")
@@ -121,6 +122,7 @@ class PrescanResult:
     move_after: time | None = None
     move_later: bool = False
     duration_minutes: int | None = None
+    move_delay_minutes: int | None = None
 
     def excludes(self, day: date) -> bool:
         return day in self.excluded_days or day.weekday() in self.excluded_weekdays
@@ -354,10 +356,11 @@ def prescan(text: str, *, now: datetime, time_zone: str) -> PrescanResult:
                       if hint.day not in excluded and hint.day.weekday() not in weekdays)
         if is_move and existing and not destination:
             dates = ()
-        if not dates and (move_after or move_later or _THIS_PART.search(window)) and (
-            reference.date() not in excluded and reference.weekday() not in weekdays
-        ):
-            dates = (DateHint(reference.date()),)
+        this_part = _THIS_PART.search(window)
+        if not dates and (move_after or move_later or this_part):
+            day = reference.date() if this_part or existing is None else existing.day
+            if day not in excluded and day.weekday() not in weekdays:
+                dates = (DateHint(day),)
         if destination and dates and move_after:
             dates = tuple(DateHint(hint.day) for hint in dates)
         if destination and not dates and not move_after:
@@ -371,6 +374,11 @@ def prescan(text: str, *, now: datetime, time_zone: str) -> PrescanResult:
         availability |= not EXPLANATION.search(text_without_email) and not EXISTING_BOOKING.search(text_without_email)
     duration = _DURATION.search(positive)
     duration_minutes = int(duration[1]) * (60 if duration[2].startswith("h") else 1) if duration else None
+    move_delay = _MOVE_DELAY.search(window) if is_move else None
+    move_delay_minutes = None
+    if move_delay:
+        amount = int(move_delay[1]) if move_delay[1].isdigit() else 1
+        move_delay_minutes = amount * (60 if move_delay[2].startswith("hour") else 1)
     return PrescanResult(
         match.group().casefold() if match else None,
         dates,
@@ -384,6 +392,7 @@ def prescan(text: str, *, now: datetime, time_zone: str) -> PrescanResult:
         move_after,
         move_later,
         duration_minutes,
+        move_delay_minutes,
     )
 
 

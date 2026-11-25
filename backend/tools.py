@@ -38,7 +38,7 @@ from backend.protocol import (
     SlotRef,
     SlotView,
 )
-from backend.state import MAX_SLOTS, BookingEntry, GuestDraft, Proposal, SessionState, SlotEntry, add_booking, add_slot
+from backend.state import MAX_SLOTS, BookingEntry, BookingTarget, GuestDraft, Proposal, SessionState, SlotEntry, add_booking, add_slot
 from backend.time import local_bounds, parse_instant, slot_labels
 
 
@@ -273,7 +273,7 @@ def proposal_view(
 ) -> ProposalView:
     booking = state.bookings.get(proposal.booking_ref) if proposal.booking_ref is not None else None
     slot = state.slots.get(proposal.slot_ref) if proposal.slot_ref is not None else None
-    selected_time = slot if slot is not None else booking
+    selected_time = slot if slot is not None else proposal.booking_target
     if selected_time is None or (proposal.slot_ref is not None and slot is None):
         raise ToolRejected("The proposal time is no longer available in this chat.")
     if proposal.booking_ref is not None and booking is None:
@@ -367,6 +367,7 @@ class CalendarTools:
         self._event_types: list[EventType] | None = None
         self._default_only_schema = False
         self.required_booking_ref: str | None = None
+        self.required_change_slot: str | None = None
 
     def _excluded_day(self, day: date) -> bool:
         return day in self._excluded_days or day.weekday() in self._excluded_weekdays
@@ -508,12 +509,15 @@ class CalendarTools:
             event_type_id, begin, end, self.time_zone,
             booking_uid_to_reschedule=booking_uid, fresh=fresh,
         )
+        with self._state_lock:
+            booking = self.state.bookings.get(booking_ref) if booking_ref is not None else None
+        existing_start = parse_instant(booking.start_utc) if booking is not None else None
         hours = PART_HOURS.get(part)
         matches = {}
         for slots in data.values():
             for slot in slots:
                 start = parse_instant(slot["start"])
-                if start <= self.now or not begin <= start < end:
+                if start <= self.now or not begin <= start < end or start == existing_start:
                     continue
                 local = start.astimezone(self._zone)
                 if self._excluded_day(local.date()) or (hours is not None and not hours[0] <= local.hour < hours[1]):
@@ -715,6 +719,8 @@ class CalendarTools:
             booking is not None and slot.event_type_id != booking.event_type_id
         ):
             raise ToolRejected("Choose a slot offered for this specific booking request.")
+        if booking is not None and instant == parse_instant(booking.start_utc):
+            raise ToolRejected("Choose a different start time for this booking.")
         if self.now.timestamp() - slot.fetched_at <= _STALE_SLOT_SECONDS:
             return slot
 
@@ -754,10 +760,9 @@ class CalendarTools:
 
     def _proposal_target(self, proposal: Proposal) -> tuple[object, ...]:
         slot = self.state.slots.get(proposal.slot_ref or "")
-        booking = self.state.bookings.get(proposal.booking_ref or "")
         return (
             (slot.event_type_id, parse_instant(slot.start_utc), parse_instant(slot.end_utc)) if slot else None,
-            booking.uid if booking else None,
+            proposal.booking_target,
             proposal.kind, proposal.name, proposal.email, proposal.notes, proposal.reason,
         )
 
@@ -775,9 +780,15 @@ class CalendarTools:
         events = self.event_types() if kind == "book" else []
         with self._state_lock:
             count = self.state.counters.p + 1
+            booking = self._changeable_booking(booking_ref) if booking_ref is not None else None
+            target = None if booking is None else BookingTarget(
+                uid=booking.uid, start_utc=booking.start_utc, end_utc=booking.end_utc,
+                event_type_id=booking.event_type_id,
+            )
             proposal = Proposal(
                 id=f"P{count}", kind=kind, slot_ref=slot_ref, booking_ref=booking_ref,
-                name=name, email=email, notes=notes, reason=reason, created_at=self.now.timestamp(),
+                booking_target=target, name=name, email=email, notes=notes, reason=reason,
+                created_at=self.now.timestamp(),
             )
             pending = self.state.proposal
             if self._reuse_pending_proposal and pending and self._proposal_target(proposal) == self._proposal_target(pending):
@@ -822,6 +833,8 @@ class CalendarTools:
         return self._propose("cancel", booking_ref=args.booking_ref, reason=args.reason.strip() or None)
 
     def _propose_reschedule(self, args: _ProposeReschedule) -> ToolOutcome:
+        if self.required_change_slot is not None and args.slot_ref != self.required_change_slot:
+            raise ToolRejected("Use the opening at the requested new start.")
         with self._state_lock:
             booking = self._changeable_booking(args.booking_ref)
         self._check_slot(args.slot_ref, args.booking_ref, booking)

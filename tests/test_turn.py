@@ -2,6 +2,7 @@ import asyncio
 from datetime import datetime, timedelta
 import json
 import os
+import re
 from threading import Event, current_thread
 import unittest
 from unittest.mock import patch
@@ -87,6 +88,36 @@ class TurnTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIsNone(turn_state(reply).proposal)
                 self.assertEqual(len(turn_service.calendar.list_bookings()["data"]), 1)
 
+    async def test_calendar_refresh_does_not_retarget_an_open_cancel_proposal(self):
+        calendar = FakeCal(fixture_overrides={"active_bookings": ["sam_intro"]}, clock=lambda: NOW)
+        model = ScriptedModel((ModelText("Here is your calendar."), ModelCompletion("fixture-list", "completed")))
+        turn_service = service(model, calendar)
+        self.addCleanup(turn_service.close_prefetch)
+        state = new_state(ZONE, NOW)
+        uid = "fixture-sam-intro"
+        ref = add_booking(state, booking_entry(calendar.booking(uid)))
+        request_cancel = {"kind": "ui", "action": {"type": "request_cancel", "bookingRef": ref}}
+        opened = await collect(turn_service, request_cancel, sign_state(state, SECRET))
+        first = next(event["proposal"] for event in opened if event["type"] == "proposal")
+
+        # Simulate a change made to the same booking directly in the calendar.
+        for key in ("start", "end"):
+            value = datetime.fromisoformat(calendar._bookings[uid][key])
+            calendar._bookings[uid][key] = (value + timedelta(minutes=30)).isoformat()
+        listed = await collect(turn_service, text("what's on my calendar?"), opened[-1]["stateToken"])
+        self.assertEqual(turn_state(listed).proposal.id, first["id"])
+        self.assertNotEqual(turn_state(listed).bookings[ref].start_utc, state.bookings[ref].start_utc)
+
+        rejected = await collect(turn_service, {**text("yes"), "proposalId": first["id"]}, listed[-1]["stateToken"])
+        self.assertEqual([event["code"] for event in rejected if event["type"] == "error"], ["invalid_action"])
+        self.assertFalse(any(event["type"] == "booking_result" for event in rejected))
+        self.assertEqual(calendar.booking(uid)["status"], "accepted")
+
+        reopened = await collect(turn_service, request_cancel, rejected[-1]["stateToken"])
+        updated = next(event["proposal"] for event in reopened if event["type"] == "proposal")
+        self.assertNotEqual(updated["id"], first["id"])
+        self.assertNotEqual(updated["whenLabel"], first["whenLabel"])
+
     async def test_typed_dismissal_retires_the_proposal_without_model_or_write(self):
         for phrase in ("no", "nope", "no thanks", "No, thanks!", "never mind", "Don’t!"):
             with self.subTest(phrase=phrase):
@@ -156,6 +187,56 @@ class TurnTests(unittest.IsolatedAsyncioTestCase):
         confirmed = await collect(turn_service, {**text("yes"), "proposalId": card["id"]}, proposed[-1]["stateToken"])
         self.assertEqual(next(event["kind"] for event in confirmed if event["type"] == "booking_result"), "rescheduled")
         self.assertEqual(calendar.booking(existing["uid"])["status"], "cancelled")
+
+    async def test_guest_email_without_a_chosen_time_cannot_create_a_proposal(self):
+        model = ScriptedModel(
+            (ModelText("Here are the openings."), ModelCompletion("options", "completed")),
+            (ModelText("Which time should I use?"), ModelCompletion("contact", "completed")),
+        )
+        turn_service = service(model)
+        self.addCleanup(turn_service.close_prefetch)
+        before = await collect(turn_service, text("Could you show available times Thursday afternoon?"))
+        after = await collect(turn_service, text("The guest's email is updated@example.com."), before[-1]["stateToken"])
+        self.assertEqual(model.requests[-1]["previous_interaction_id"], "options")
+        self.assertEqual(model.requests[-1]["tools"], [])
+        self.assertEqual(turn_state(after).guest_draft.email, "updated@example.com")
+        self.assertIsNone(turn_state(after).proposal)
+        self.assertNotIn("updated@example.com", json.dumps(model.requests))
+
+    async def test_past_time_shows_only_future_choices_without_a_proposal(self):
+        turn_service = service(ScriptedModel())
+        self.addCleanup(turn_service.close_prefetch)
+        events = await collect(turn_service, text("yesterday at 3"))
+        refs = next(event["refs"] for event in events if event["type"] == "slot_chips")
+        self.assertIn("has passed", next(event["text"] for event in events if event["type"] == "assistant_text"))
+        state = turn_state(events)
+        self.assertLessEqual(1, len(refs))
+        self.assertLessEqual(len(refs), 4)
+        self.assertTrue(all(datetime.fromisoformat(state.slots[ref].start_utc) > NOW for ref in refs))
+        self.assertIsNone(state.proposal)
+        self.assertFalse(events[-1]["metrics"]["modelCalls"])
+
+    async def test_relative_move_offers_only_the_exact_target_to_the_model(self):
+        class RelativeModel:
+            async def stream(self, **request):
+                tool_names = [tool["name"] for tool in request["tools"]]
+                self_test.assertEqual(tool_names, ["propose_reschedule"])
+                context = request["input_steps"][0]["content"][0]["text"]
+                ref = re.search(r"exact requested slot (S\d+)", context)[1]
+                yield ModelCompletion("hour-move", "requires_action", (
+                    ToolCall("move", "propose_reschedule", {"booking_ref": "B1", "slot_ref": ref, "reason": ""}),
+                ))
+
+        self_test = self
+        calendar = FakeCal(clock=lambda: NOW, fixture_overrides={"active_bookings": ["sam_intro"]})
+        turn_service = service(RelativeModel(), calendar)
+        self.addCleanup(turn_service.close_prefetch)
+        state = new_state(ZONE, NOW)
+        add_booking(state, booking_entry(calendar.booking("fixture-sam-intro")))
+        events = await collect(turn_service, text("Move it an hour later"), sign_state(state, SECRET))
+        card = next(event["proposal"] for event in events if event["type"] == "proposal")
+        self.assertIn("11:00", card["whenLabel"])
+        self.assertEqual(calendar.booking("fixture-sam-intro")["status"], "accepted")
 
     async def test_ambiguous_or_unbound_affirmation_cannot_confirm(self):
         cases = (

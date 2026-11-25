@@ -214,11 +214,12 @@ def _prefetch_slots(tools: CalendarTools, plan: PrefetchPlan) -> _SlotResults:
         if offer_alternatives and is_warm_range:
             warm_entries = entries
         for entry in entries:
-            local = parse_instant(entry.start_utc).astimezone(zone)
+            instant = parse_instant(entry.start_utc)
+            local = instant.astimezone(zone)
             if local.date() in wanted_days and (hours is None or hours[0] <= local.hour < hours[1]):
                 if target is not None and (
-                    local == target.start
-                    or (plan.move_later and local <= target.start)
+                    instant == target.start
+                    or (plan.move_later and instant <= target.start)
                     or (plan.move_after is not None and local.time() <= plan.move_after)
                 ):
                     continue
