@@ -2,7 +2,7 @@
 
 A conversational Python assistant for managing your own Cal.com calendar. Book with a guest, see your agenda, and move or cancel a meeting by typing in the terminal or the streaming web chat. Every calendar change requires a separate confirmation.
 
-[Vercel Preview](https://livex-scheduling-assistant-exu6du3cy-zenith-dbf8.vercel.app) · [Local web chat](http://localhost:3000) · [Deployment plan](docs/deploy-plan.md)
+[Vercel Preview](https://livex-scheduling-assistant-42s14zt22-zenith-dbf8.vercel.app) · [Local web chat](http://localhost:3000) · [Deployment plan](docs/deploy-plan.md)
 
 The chat opens directly on a single-owner test calendar with fictional guests. The hosted Preview still requires Vercel project access while its domain exception is pending. A deployment connected to a private calendar would use the owner's own login, such as Cal.com OAuth.
 

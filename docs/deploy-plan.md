@@ -6,6 +6,10 @@
 
 The reviewer deployment is a single-owner test demo with fictional guests. The app has no sign-in by design. A deployment connected to a private calendar would require the owner's own login, such as Cal.com OAuth. Production promotion requires separate approval.
 
+Revision `838f062` is ready on Vercel Preview with the fictional Singapore calendar. The hosted Chromium check opened to the composer, returned one matching meeting card for the named agenda request, explained the personal-block limit, and used live Gemini to resolve `1430 on Friday` to 14:30. These checks made zero calendar writes. Signed-out requests still redirect to Vercel Authentication. [Current Preview](https://livex-scheduling-assistant-42s14zt22-zenith-dbf8.vercel.app) · [Vercel Deployment Protection Exceptions](https://vercel.com/docs/deployment-protection/methods-to-bypass-deployment-protection/deployment-protection-exceptions)
+
+### Earlier open-chat Preview
+
 Revision `03d20da` is ready on Preview with `DEMO_MODE=fake` and `DEMO_TIME_ZONE=Asia/Singapore`. Chromium with Vercel project access opened directly to the composer. Warm-up identified the demo calendar, the retired app auth route returned 404, and the app issued no session cookie. A cross-origin chat request returned HTTP 403. All 281 Python tests, 28 frontend tests, ESLint, TypeScript, and the Next.js build passed. [Vercel Preview](https://livex-scheduling-assistant-exu6du3cy-zenith-dbf8.vercel.app)
 
 The hosted browser check passed all three brief prompts. It showed two fictional meetings for tomorrow, moved the seeded 15:00 meeting to 15:30 with `yes please`, and booked a fictional guest from the Thursday afternoon openings with typed `yes`. The check restored the moved meeting and cancelled the new booking. Chat returned NDJSON with a signed conversation state token.
