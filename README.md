@@ -6,6 +6,40 @@ A conversational Python assistant for managing your own Cal.com calendar. Book w
 
 The chat opens directly on a single-owner test calendar with fictional guests. The hosted Preview still requires Vercel project access while its domain exception is pending. A deployment connected to a private calendar would use the owner's own login, such as Cal.com OAuth.
 
+## Demo
+
+[Two-minute walkthrough](docs/demo/walkthrough.webm) of the web chat on the fictional demo calendar. It shows tomorrow's agenda, a 30-minute booking, a move, a cancellation, a two-hour meeting typed as a time range, and the calendar after those changes. The recording script added the step captions and the cursor marker.
+
+## Quick start
+
+This runs the chat on an in-memory demo calendar with fictional guests, so you don't need a Cal.com account. You need Python 3.12, Node.js 22, pnpm, and a free Gemini API key. [Google AI Studio key setup](https://ai.google.dev/gemini-api/docs/api-key)
+
+```sh
+python -m venv .venv
+.venv\Scripts\Activate.ps1    # macOS or Linux: source .venv/bin/activate
+python -m pip install -r requirements.txt
+pnpm install --frozen-lockfile
+cp .env.example .env.local
+```
+
+Set these values in `.env.local`.
+
+| Setting | Value |
+| --- | --- |
+| `GEMINI_API_KEY` | Your AI Studio key. |
+| `STATE_SIGNING_SECRET` | The output of `python -c "import secrets; print(secrets.token_hex(32))"`. |
+| `DEMO_MODE` | `fake` |
+| `DEMO_TIME_ZONE` | Optional. Your own zone, such as `Asia/Singapore`, so the demo's 09:00–17:00 weekday hours match the chat. The default is `America/Los_Angeles`. |
+
+Start the backend and the web app in two terminals, then open `http://localhost:3000`.
+
+```sh
+pnpm dev:api
+pnpm dev
+```
+
+`pnpm chat` runs the same assistant in the terminal. To connect a Cal.com test account, see [Local development](#local-development).
+
 ## Requirements
 
 > Meet your user: a busy founder who lives in their inbox and runs their day out of cal.com. They don't want forms or menus — they just want to type things like "book a 30-min intro with a candidate Thursday afternoon", "what's on my calendar tomorrow?", or "move my 3pm to later today" and have it handled. Your task is to build an interactive chatbot that lets this user manage their cal.com account through plain conversation. How you build the conversational layer is up to you. You are free to use any LLM provider.
@@ -148,5 +182,6 @@ The Python mapping, state signing, model fallback, and hosting choices are recor
 - Browser history can contain calendar details. The readable, HMAC-signed chat token can contain booking IDs and guest contacts.
 - Per-IP turn limits, the daily model-call budget, and duplicate-confirm protection are held in process memory. They reset on restart and apply separately across instances.
 - Stop ends the stream in the browser, but the server may finish the current Gemini call. Calendar changes require explicit confirmation.
+- **Book it anyway** is available on the fictional calendar. Real Cal.com overrides are pending a live test of the working-hours flag.
 - When Cal.com times out on a confirmed change, the app checks the booking records and reports what it can verify. If the records are inconclusive, check the calendar before submitting another change.
 - Relevant calendar titles and guest names are sent to Gemini's free tier. Python redacts email addresses from model input. Google can use free-tier prompts and responses to improve its products. Use fictional guests for demonstrations. [Gemini API data use](https://ai.google.dev/gemini-api/docs/pricing)
