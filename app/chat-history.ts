@@ -32,18 +32,8 @@ export type ChatHistory = {
 
 type BrowserStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 
-export function ownerHistoryKey(codeRequired: boolean): string {
-  return codeRequired ? "livex.owner.chat.v1" : "livex.owner.demo.chat.v1";
-}
-
-export function clearOwnerHistory(): void {
-  const storage = browserStorage();
-  if (!storage) return;
-  for (const key of [
-    ownerHistoryKey(true), ownerHistoryKey(false),
-    "livex.owner.widget.v1", "livex.owner.demo.widget.v1", "livex.chat.v1", "livex.widget.v1",
-  ]) clearHistory(storage, key);
-}
+// Keep open chat history separate from the earlier protected sessions.
+export const CHAT_HISTORY_KEY = "livex.chat.v2";
 
 export function browserStorage(): Storage | null {
   try {

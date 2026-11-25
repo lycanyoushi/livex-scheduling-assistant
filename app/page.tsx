@@ -1,5 +1,5 @@
-import OwnerAccess from "./owner-access";
+import ChatWorkspace from "./chat-workspace";
 
 export default function Home() {
-  return <OwnerAccess />;
+  return <ChatWorkspace />;
 }

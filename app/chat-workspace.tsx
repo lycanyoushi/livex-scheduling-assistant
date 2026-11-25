@@ -26,7 +26,7 @@ import { ChatDebug, type DebugSnapshot } from "./chat-debug";
 import { AssistantAvatar, ChatHeader } from "./chat-header";
 import {
   type ActiveProposal, type TurnError, type TurnRecord,
-  browserStorage, clearHistory, loadHistory, ownerHistoryKey, saveHistory, validTimeZone,
+  CHAT_HISTORY_KEY, browserStorage, clearHistory, loadHistory, saveHistory, validTimeZone,
 } from "./chat-history";
 
 const EMPTY_VIEWS: ReferenceViews = { slots: {}, bookings: {} };
@@ -58,14 +58,7 @@ function AssistantRow({ children }: { children: ReactNode }) {
   );
 }
 
-export default function ChatWorkspace({
-  onAccessExpired, onSignOut, historyKey,
-}: {
-  onAccessExpired?: () => void;
-  onSignOut?: () => void;
-  historyKey?: string;
-}) {
-  const storageKey = historyKey ?? ownerHistoryKey(true);
+export default function ChatWorkspace() {
   const titleId = "chat-title";
   const messageId = "chat-message";
   const [draft, setDraft] = useState("");
@@ -95,7 +88,7 @@ export default function ChatWorkspace({
   useEffect(() => {
     const timer = window.setTimeout(() => {
       const storage = browserStorage();
-      const saved = storage && loadHistory(storage, storageKey);
+      const saved = storage && loadHistory(storage, CHAT_HISTORY_KEY);
       setTimeZone(saved?.timeZone ?? browserTimeZone());
       setDebugEnabled(new URLSearchParams(window.location.search).get("debug") === "1");
       if (saved) {
@@ -110,16 +103,16 @@ export default function ChatWorkspace({
       setReady(true);
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [storageKey]);
+  }, []);
 
   useEffect(() => {
     if (!ready || sending) return;
     const storage = browserStorage();
-    if (storage) saveHistory(storage, storageKey, {
+    if (storage) saveHistory(storage, CHAT_HISTORY_KEY, {
       version: 1, timeZone, stateToken: token.current, session, nextTurnId: nextTurnId.current,
       views: savedViews.current, turns, activeProposal,
     });
-  }, [activeProposal, ready, sending, session, storageKey, timeZone, turns]);
+  }, [activeProposal, ready, sending, session, timeZone, turns]);
 
   useEffect(() => {
     if (!ready) return;
@@ -128,10 +121,7 @@ export default function ChatWorkspace({
       const query = new URLSearchParams({ timeZone });
       // Warming up the calendar is independent of the chat turn.
       void fetch(`/api/warm?${query}`, { cache: "no-store", signal: controller.signal })
-        .then((response) => {
-          if (response.status === 401) onAccessExpired?.();
-          return response.ok ? response.json() as Promise<{ hostName?: string; demoMode?: boolean }> : null;
-        })
+        .then((response) => response.ok ? response.json() as Promise<{ hostName?: string; demoMode?: boolean }> : null)
         .then((metadata) => {
           if (!controller.signal.aborted && metadata) {
             setHost({ hostName: metadata.hostName, demoMode: metadata.demoMode === true });
@@ -143,7 +133,7 @@ export default function ChatWorkspace({
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [ready, timeZone, onAccessExpired]);
+  }, [ready, timeZone]);
 
   useEffect(() => {
     const log = transcript.current;
@@ -194,7 +184,7 @@ export default function ChatWorkspace({
     if (confirmsProposal) {
       // A reload during a possible write must leave its confirmation inactive.
       const storage = browserStorage();
-      if (storage) saveHistory(storage, storageKey, {
+      if (storage) saveHistory(storage, CHAT_HISTORY_KEY, {
         version: 1, timeZone, stateToken: token.current, session, nextTurnId: nextTurnId.current,
         views: savedViews.current, turns, activeProposal: null,
       });
@@ -220,10 +210,6 @@ export default function ChatWorkspace({
           input,
         }),
       });
-      if (response.status === 401 && onAccessExpired) {
-        onAccessExpired();
-        return;
-      }
       if (response.status === 429) {
         if (debugEnabled) setDebug({ metrics: null, events: [{ type: "http_error", status: 429 }], omittedEvents: 0 });
         updateTurn((turn) => ({ ...turn, error: {
@@ -406,7 +392,7 @@ export default function ChatWorkspace({
   function newChat() {
     if (!ready || request.current) return;
     const storage = browserStorage();
-    if (storage) clearHistory(storage, storageKey);
+    if (storage) clearHistory(storage, CHAT_HISTORY_KEY);
     token.current = null;
     savedViews.current = EMPTY_VIEWS;
     nextTurnId.current = 1;
@@ -435,7 +421,7 @@ export default function ChatWorkspace({
     <main className="relative flex h-dvh min-h-0 flex-col overflow-hidden bg-background">
       <ChatHeader {...host} timeZone={timeZone} onTimeZoneChange={changeTimeZone} onNewChat={newChat}
         busy={sending} debugEnabled={debugEnabled} debugOpen={debugOpen}
-        onDebugToggle={() => setDebugOpen((visible) => !visible)} onSignOut={onSignOut} />
+        onDebugToggle={() => setDebugOpen((visible) => !visible)} />
 
       <section
         ref={transcript}

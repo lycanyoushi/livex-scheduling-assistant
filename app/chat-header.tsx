@@ -1,6 +1,6 @@
 "use client";
 
-import { Bug, CalendarDays, Check, Globe, LogOut, Search, SquarePen, X } from "lucide-react";
+import { Bug, CalendarDays, Check, Globe, Search, SquarePen, X } from "lucide-react";
 import { useId, useRef, useState } from "react";
 
 import { OUTLINE_BUTTON } from "./chat-cards";
@@ -35,7 +35,7 @@ function exactZone(query: string): string | undefined {
 
 export function ChatHeader({
   hostName, demoMode, timeZone, onTimeZoneChange, onNewChat, busy,
-  debugEnabled, debugOpen, onDebugToggle, onSignOut,
+  debugEnabled, debugOpen, onDebugToggle,
 }: {
   hostName?: string;
   demoMode: boolean;
@@ -46,7 +46,6 @@ export function ChatHeader({
   debugEnabled: boolean;
   debugOpen: boolean;
   onDebugToggle: () => void;
-  onSignOut?: () => void;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
@@ -114,9 +113,6 @@ export function ChatHeader({
               <Bug className="size-[18px]" aria-hidden="true" />
             </button>
           )}
-          {onSignOut && <button type="button" className={ICON_BUTTON} aria-label="Sign out" title="Sign out" onClick={onSignOut}>
-            <LogOut className="size-[18px]" aria-hidden="true" />
-          </button>}
         </div>
       </div>
       <dialog ref={dialog} aria-labelledby={titleId} onClose={() => {

@@ -1,7 +1,8 @@
 from datetime import datetime, timezone
 import json
+import os
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 from urllib.parse import parse_qs, urlsplit
 
 from backend.cal_client import CalClient
@@ -53,6 +54,7 @@ class WarmRouteTests(unittest.TestCase):
 
         self.assertEqual(result.status_code, 200)
         self.assertEqual(result.headers["Cache-Control"], "no-store")
+        self.assertNotIn("Set-Cookie", result.headers)
         self.assertEqual(result.json, {
             "hostName": "Test Host",
             "avatarUrl": "https://example.com/test-avatar.png",
@@ -105,6 +107,43 @@ class WarmRouteTests(unittest.TestCase):
         elapsed = 600.0
         self.assertEqual(self.client.get("/api/warm").status_code, 200)
         self.assertEqual(self.model.mock_calls, [])
+
+    def test_chat_enforces_same_origin_without_a_session_cookie(self):
+        chat = {
+            "timeZone": "UTC", "stateToken": None,
+            "input": {"kind": "ui", "action": {"type": "more_slots", "fromDate": "2026-11-24"}},
+        }
+        with patch.dict(os.environ, {"VERCEL": "1"}):
+            app = create_app(self.service)
+        client = app.test_client()
+        origin = "https://preview.example.test"
+        for headers in (
+            {"Origin": "https://other.example.test"},
+            {"Sec-Fetch-Site": "same-site"},
+            {"Sec-Fetch-Site": "cross-site"},
+        ):
+            with self.subTest(headers=headers):
+                response = client.post("/api/chat", base_url=origin, json=chat, headers=headers)
+                self.assertEqual(response.status_code, 403)
+                self.assertEqual(response.json["code"], "invalid_origin")
+        self.transport.assert_not_called()
+
+        response = client.post("/api/chat", base_url=origin, json=chat, headers={"Origin": origin}, buffered=True)
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(app.secret_key)
+        self.assertNotIn("Set-Cookie", response.headers)
+        self.assertEqual(json.loads(response.data.splitlines()[-1])["type"], "turn_end")
+
+    def test_chat_accepts_the_local_next_proxy_origin(self):
+        chat = {
+            "timeZone": "UTC", "stateToken": None,
+            "input": {"kind": "ui", "action": {"type": "more_slots"}},
+        }
+        with patch.dict(os.environ, {"VERCEL": "0"}):
+            client = create_app(self.service).test_client()
+        headers = {"Origin": "http://localhost:3000", "X-Forwarded-Host": "localhost:3000"}
+        response = client.post("/api/chat", json=chat, headers=headers, buffered=True)
+        self.assertEqual(response.status_code, 200)
 
     def test_defaults_to_utc_and_excludes_unsafe_links(self):
         self.data["/v2/me"]["avatarUrl"] = "javascript:alert(1)"

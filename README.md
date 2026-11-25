@@ -2,9 +2,9 @@
 
 A conversational Python assistant for managing your own Cal.com calendar. Book with a guest, see your agenda, and move or cancel a meeting by typing in the terminal or the streaming web chat. Every calendar change requires a separate confirmation.
 
-[Owner Preview](https://livex-scheduling-assistant-rafkbwm8m-zenith-dbf8.vercel.app) · [Local web chat](http://localhost:3000) · [Deployment plan](docs/deploy-plan.md)
+[Local web chat](http://localhost:3000) · [Deployment plan](docs/deploy-plan.md)
 
-Preview uses fictional meetings in `Asia/Singapore` and a shared owner access code. Vercel may also prompt you to sign in.
+Anyone with the link can use this single-owner test demo. Use fictional guests and meetings. A deployment connected to a private calendar would use the owner's own login, such as Cal.com OAuth.
 
 ## Requirements
 
@@ -24,7 +24,7 @@ Type an offered time or say “the second one.” The booking summary shows the 
 ## Features
 
 - **Owner agenda** · View meetings by date, with compact rows grouped by day for lists longer than three. Cards and agenda rows show the guest and offer optional move and cancel shortcuts.
-- **Web chat** · Streaming replies, a time-zone picker, system dark mode, a shared access code for real calendars, and a diagnostics drawer at `/?debug=1`.
+- **Web chat** · Streaming replies, a time-zone picker, system dark mode, and a diagnostics drawer at `/?debug=1`.
 - **Demo calendar** · `DEMO_MODE=fake` starts with five fictional bookings over three dates. All four flows work in memory with a Gemini key and signing secret.
 
 ## How it works
@@ -53,7 +53,7 @@ Python parses dates and prefetches available slots or the owner's bookings befor
 | [backend/state.py](backend/state.py) | Signs the guest draft, proposed action, and the mappings for slot and booking refs. |
 | [backend/actions.py](backend/actions.py) | Rechecks signed proposals and executes confirmed booking, move, and cancellation actions. |
 | [backend/cal_client.py](backend/cal_client.py) | Calls the Cal.com REST endpoints with per-endpoint versions and parses responses. |
-| [backend/server.py](backend/server.py) | Serves owner sign-in, warm-up, and streaming chat through Flask. |
+| [backend/server.py](backend/server.py) | Serves calendar warm-up and streaming chat through Flask. |
 | [app/chat-workspace.tsx](app/chat-workspace.tsx) and [app/chat-cards.tsx](app/chat-cards.tsx) | Render streamed messages, time choices, the agenda, and confirmation summaries. |
 | [scripts/seed_demo.py](scripts/seed_demo.py) | Checks the five-slot demo plan and supports explicitly approved writes to an isolated Cal.com test event. |
 
@@ -69,22 +69,21 @@ pnpm install --frozen-lockfile
 
 Copy `.env.example` to `.env.local`. Create `GEMINI_API_KEY` in an unbilled Google AI Studio project. Generate `STATE_SIGNING_SECRET` with `python -c "import secrets; print(secrets.token_hex(32))"`. [Google AI Studio key setup](https://ai.google.dev/gemini-api/docs/api-key) · [Gemini free tier and data use](https://ai.google.dev/gemini-api/docs/pricing)
 
-For the demo calendar, set `DEMO_MODE=fake` and leave `CAL_API_KEY` empty. The access code is optional in fake mode. `DEMO_TIME_ZONE` defaults to `America/Los_Angeles`. Set it to `Asia/Singapore` for Singapore hours, and use the same zone in the chat picker or terminal `/tz` command. When the backend starts before 14:00 in that zone, the first fictional meeting is at 15:00 today. At 14:00 or later, the whole fixture starts tomorrow. The next two days have meetings at 10:00 and 14:00, then 15:00 and 15:30. Restarting the backend resets the fixture.
+For the demo calendar, set `DEMO_MODE=fake` and leave `CAL_API_KEY` empty. `DEMO_TIME_ZONE` defaults to `America/Los_Angeles`. Set it to `Asia/Singapore` for Singapore hours, and use the same zone in the chat picker or terminal `/tz` command. When the backend starts before 14:00 in that zone, the first fictional meeting is at 15:00 today. At 14:00 or later, the whole fixture starts tomorrow. The next two days have meetings at 10:00 and 14:00, then 15:00 and 15:30. Restarting the backend resets the fixture.
 
-For a real calendar, leave `DEMO_MODE` empty. Use an isolated Cal.com test account with a visible 30-minute event and an availability schedule. Generate an API key in **Settings → Developer → API Keys**, save it as `CAL_API_KEY`, and set `CAL_DEFAULT_EVENT_TYPE_SLUG` to the test event's slug. For the web chat, set `OWNER_ACCESS_CODE` to a separate random value generated with `python -c "import secrets; print(secrets.token_urlsafe(24))"`. Share a reviewer's code privately. The terminal reads the local settings directly. [Cal.com event setup](https://next.cal.com/blog/event-types-guide-calcom) · [Cal.com API key setup](https://next.cal.com/blog/where-is-my-api-key-and-what-can-it-do)
+For local Cal.com testing in the terminal, leave `DEMO_MODE` empty and use an isolated test account with a visible 30-minute event and an availability schedule. Generate an API key in **Settings → Developer → API Keys**, save it as `CAL_API_KEY`, and set `CAL_DEFAULT_EVENT_TYPE_SLUG` to the test event's slug. [Cal.com event setup](https://next.cal.com/blog/event-types-guide-calcom) · [Cal.com API key setup](https://next.cal.com/blog/where-is-my-api-key-and-what-can-it-do)
 
 | Setting | Purpose |
 | --- | --- |
 | `GEMINI_MODEL`, `GEMINI_THINKING_LEVEL` | Default to 3.5 Flash-Lite with minimal thinking. |
 | `GEMINI_FALLBACK_MODEL` | Defaults to 3.1 Flash-Lite. An explicit empty value disables backup calls. |
 | `CAL_EVENT_TYPE_SLUGS`, `CAL_DEFAULT_EVENT_TYPE_SLUG` | Optional event allowlist and default. |
-| `OWNER_ACCESS_CODE` | Shared web access code. Required when using a real calendar. |
 | `RATE_LIMIT_TURNS_PER_10MIN`, `DAILY_MODEL_CALL_CAP` | Per-IP throttle and process-local model-call budget. Set the budget below the project's AI Studio quota. |
 | `FLASK_ORIGIN` | Optional loopback API origin for Next.js development. |
 
 Run `pnpm check` to validate the environment. It reads Gemini model metadata and Cal.com's `/v2/me` in real mode, or Gemini metadata alone in fake mode. It prints setting names and failure classes without credential values.
 
-Run `pnpm dev:api` and `pnpm dev` in separate terminals, then open `http://localhost:3000`. When the access prompt appears, enter your code. **Sign out** clears the browser's chat history and access cookie.
+With the demo calendar configured, run `pnpm dev:api` and `pnpm dev` in separate terminals, then open `http://localhost:3000`.
 
 A stalled primary model can switch to the free-tier 3.1 Flash-Lite backup. If the assistant cannot answer and has no scheduling data to use, it can link to the owner's Cal.com bookings page.
 
@@ -135,9 +134,8 @@ The Python mapping, state signing, model fallback, and hosting choices are recor
 
 ## Known limitations
 
-- The web app uses one shared access code for the calendar. The signed cookie is HttpOnly, uses SameSite=Strict, and expires after 12 hours. Anyone with the code can use that calendar, so use a test account and give authorized reviewers the code privately.
-- Browser history can contain calendar details. The readable, HMAC-signed chat token can contain booking IDs and guest contacts. Sign out after using a shared device.
-- Failed access attempts, per-IP turn limits, the daily model-call budget, and duplicate-confirm protection are held in process memory. They reset on restart and apply separately across instances.
+- Browser history can contain calendar details. The readable, HMAC-signed chat token can contain booking IDs and guest contacts.
+- Per-IP turn limits, the daily model-call budget, and duplicate-confirm protection are held in process memory. They reset on restart and apply separately across instances.
 - Stop ends the stream in the browser, but the server may finish the current Gemini call. Calendar changes require explicit confirmation.
 - When Cal.com times out on a confirmed change, the app checks the booking records and reports what it can verify. If the records are inconclusive, check the calendar before submitting another change.
 - Relevant calendar titles and guest names are sent to Gemini's free tier. Python redacts email addresses from model input. Google can use free-tier prompts and responses to improve its products. Use fictional guests for demonstrations. [Gemini API data use](https://ai.google.dev/gemini-api/docs/pricing)

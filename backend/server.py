@@ -4,7 +4,6 @@ import asyncio
 import atexit
 from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine, Iterator
 from concurrent.futures import CancelledError, Future
-from datetime import timedelta
 from ipaddress import ip_address
 import json
 import logging
@@ -14,14 +13,13 @@ from threading import Event, Lock, Thread
 from typing import Any
 from urllib.parse import urlsplit
 
-from flask import Flask, Response, jsonify, request, session, stream_with_context
+from flask import Flask, Response, jsonify, request, stream_with_context
 from pydantic import TypeAdapter, ValidationError
 
 from backend.cal_client import CalClient, CalError
 from backend.demo_calendar import DEFAULT_DEMO_TIME_ZONE, DemoCalendar
 from backend.gemini import GeminiClient
 from backend.limits import RateLimits
-from backend.owner_auth import OwnerAccess
 from backend.prefetch import warm_slot_bounds
 from backend.prescan import EMAIL, warm_prescan
 from backend.protocol import ChatRequest, ServerEvent, TimeZoneName
@@ -32,7 +30,6 @@ from scripts.local_environment import ENV_FILE, load_local_environment
 
 
 _WARM_TIME_ZONE = TypeAdapter(TimeZoneName)
-_OWNER_COOKIE = "livex_owner"
 
 
 def _public_url(value: str | None) -> str | None:
@@ -279,73 +276,15 @@ def create_app(
     service: TurnService | None = None,
     *,
     turn_loop: TurnLoop | None = None,
-    owner_access_code: str | None = None,
 ) -> Flask:
     app = Flask(__name__)
     app.config["MAX_CONTENT_LENGTH"] = 300 * 1024
-    if service is None:
-        if owner_access_code is not None:
-            raise ValueError("Use OWNER_ACCESS_CODE from the environment for a web deployment.")
-        settings = _service_settings()
-        owner_access_code = settings.get("OWNER_ACCESS_CODE", "").strip()
-        if not owner_access_code and settings.get("DEMO_MODE", "").strip() != "fake":
-            raise ValueError("Set OWNER_ACCESS_CODE to serve the real calendar on the web.")
-        turn_service = load_service(persistent_model=True, settings=settings)
-    else:
-        # In-process test fixtures and the isolated eval driver explicitly inject a service.
-        turn_service = service
-    access = OwnerAccess(owner_access_code, turn_service.secret) if owner_access_code else None
+    turn_service = load_service(persistent_model=True) if service is None else service
     hosted = os.environ.get("VERCEL") == "1"
-    if access is not None:
-        app.secret_key = access.cookie_key
-        app.config.update(
-            SESSION_COOKIE_NAME=_OWNER_COOKIE,
-            SESSION_COOKIE_PATH="/api",
-            SESSION_COOKIE_HTTPONLY=True,
-            SESSION_COOKIE_SECURE=hosted,
-            SESSION_COOKIE_SAMESITE="Strict",
-            SESSION_REFRESH_EACH_REQUEST=False,
-            PERMANENT_SESSION_LIFETIME=timedelta(hours=12),
-        )
     if service is None and turn_loop is None:
         turn_loop = TurnLoop(turn_service.close_models)
         atexit.register(turn_service.close_prefetch)
         atexit.register(turn_loop.close)
-
-    @app.before_request
-    def protect_owner_routes() -> Response | None:
-        if access is None:
-            return None
-        if request.endpoint in {"warm", "chat"} and session.get("owner") is not True:
-            return _api_json(401, code="owner_auth_required", error="Sign in to use the calendar.")
-        if (request.endpoint in {"chat", "owner_auth"} and request.method in {"POST", "DELETE"}
-                and not _same_origin_request(hosted=hosted)):
-            return _api_json(403, code="invalid_origin", error="This request must come from the scheduling app.")
-        return None
-
-    @app.route("/api/auth", methods=["GET", "POST", "DELETE"])
-    def owner_auth() -> Response:
-        if access is None:
-            result = _api_json(200, authenticated=True, required=False)
-            if request.method == "DELETE":
-                result.delete_cookie(_OWNER_COOKIE, path="/api", secure=hosted, httponly=True, samesite="Strict")
-            return result
-        if request.method == "POST":
-            payload = request.get_json(silent=True) if request.is_json else None
-            code = payload["code"] if isinstance(payload, dict) and set(payload) == {"code"} else None
-            verified, retry_after = access.attempt(_client_address(), code)
-            if retry_after:
-                result = _api_json(429, code="rate_limited", error="Too many access attempts. Try again later.")
-                result.headers["Retry-After"] = str(retry_after)
-                return result
-            if not verified:
-                return _api_json(401, code="invalid_access_code", error="Invalid access code.")
-            session.clear()
-            session.permanent = True
-            session["owner"] = True
-        elif request.method == "DELETE":
-            session.clear()
-        return _api_json(200, authenticated=session.get("owner") is True, required=True)
 
     def rate_limit_response(*, warm: bool = False) -> Response | None:
         limits = turn_service.rate_limits
@@ -404,6 +343,8 @@ def create_app(
 
     @app.post("/api/chat")
     def chat() -> Response:
+        if not _same_origin_request(hosted=hosted):
+            return _api_json(403, code="invalid_origin", error="This request must come from the scheduling app.")
         try:
             chat_request = ChatRequest.model_validate(request.get_json(silent=True))
         except ValidationError:

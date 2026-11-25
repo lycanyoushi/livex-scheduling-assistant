@@ -18,7 +18,7 @@ When the target is missing or ambiguous, the app shows the candidate meetings an
 
 Opening buttons carry the date and time. The assistant gives one short acknowledgment and asks for any missing guest details. For an exact replacement time in a pending booking, the app uses the signed proposal’s local date and offers the model the exact slot, while keeping the prior tool result in the conversation.
 
-The web app verifies a shared `OWNER_ACCESS_CODE` with a constant-time comparison and rate-limits failed attempts by IP. A signed HttpOnly, SameSite=Strict cookie gates `/api/warm` and `/api/chat` and expires after 12 hours. Vercel sets the cookie's Secure attribute. Sign-out clears the cookie and browser chat history. The code is optional in fake mode, and the locally configured terminal runs directly.
+The single-owner demo opens directly for anyone with the link and uses a test calendar with fictional guests. A real deployment would sit behind the owner’s own login, for example Cal.com OAuth.
 
 The fake calendar and the Cal.com seeder share five fictional bookings in the account's time zone. The live seeder defaults to a read-only check and requires explicit approval for `--write-test`. Its rollback marker comes from the test event's built-in notes field. [Read-only booking range and schedule verification](calcom-notes.md#owner-booking-ranges-and-calendar-time-zone)
 
@@ -79,7 +79,7 @@ Route schedule and calendar questions to the owner's booking list. When the requ
 
 Validate a request before opening the stream. Flask returns a generator-backed `Response` with `Content-Type: application/x-ndjson; charset=utf-8` and `Cache-Control: no-store`. Serialize each event as one UTF-8 JSON line and yield it as it arrives. A single async turn task keeps the SDK stream and its deadline in one task. A bounded queue lets the synchronous Flask iterator yield events and signal cancellation on close. Test a client disconnect with an in-flight model stream, verify cancellation, and assert that its thread and task have exited. The terminal consumes the same async events directly. On a failed turn, preserve the last good interaction ID and pending call in `turn_end` as specified by the protocol. [Flask streaming](https://flask.palletsprojects.com/en/stable/patterns/streaming/)
 
-Run Next.js on `localhost:3000` and Flask on `127.0.0.1:5000` during development. A development-only Next.js rewrite forwards `/api/auth`, `/api/chat`, and `/api/warm` to Flask. The browser uses relative same-origin URLs, and the Python process reads the private settings. Test that the first NDJSON event reaches the Next.js client before the final line. [Next.js rewrites](https://nextjs.org/docs/app/api-reference/config/next-config-js/rewrites)
+Run Next.js on `localhost:3000` and Flask on `127.0.0.1:5000` during development. A development-only Next.js rewrite forwards `/api/chat` and `/api/warm` to Flask. The browser uses relative same-origin URLs, and the Python process reads the private settings. Test that the first NDJSON event reaches the Next.js client before the final line. [Next.js rewrites](https://nextjs.org/docs/app/api-reference/config/next-config-js/rewrites)
 
 ### Hosting the live link
 

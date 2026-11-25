@@ -8,8 +8,8 @@ import { ChatHeader } from "../app/chat-header";
 import ChatWorkspace from "../app/chat-workspace";
 import Home from "../app/page";
 
-it("renders the chat with an enabled, labeled composer and an empty draft", () => {
-  const html = renderToStaticMarkup(createElement(ChatWorkspace));
+it("opens the chat directly with an enabled, labeled composer and an empty draft", () => {
+  const html = renderToStaticMarkup(createElement(Home));
 
   expect(html).toContain("<main ");
   expect(html).toContain('id="chat-title"');
@@ -18,6 +18,8 @@ it("renders the chat with an enabled, labeled composer and an empty draft", () =
   expect(html).toMatch(/<textarea\b[^>]*\bid="chat-message"[^>]*>/);
   expect(html).not.toMatch(/<textarea\b[^>]*\bdisabled=""/);
   expect(html).toMatch(/<button\b(?=[^>]*\btype="submit")(?=[^>]*\baria-label="Send")(?=[^>]*\bdisabled="")[^>]*>/);
+  expect(html).not.toMatch(/<input\b[^>]*\btype="password"/);
+  expect(html).not.toContain('aria-label="Sign out"');
 });
 
 it("shows the owner's calendar subtitle and the four example requests", () => {
@@ -33,14 +35,6 @@ it("shows the owner's calendar subtitle and the four example requests", () => {
     expect(html).toContain(`aria-label="${prompt}"`);
     expect(html).toContain(`>${prompt}</span>`);
   }
-});
-
-it("shows only the access gate while checking for a signed-in owner", () => {
-  const html = renderToStaticMarkup(createElement(Home));
-  expect(html).toContain("Owner access</h1>");
-  expect(html).toMatch(/role="status"[^>]*>Checking access…/);
-  expect(html).not.toContain('role="log"');
-  expect(html).not.toContain("<textarea");
 });
 
 it("renders grouped date-labeled chips and greys out unavailable references", () => {

@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { type ChatHistory, clearHistory, loadHistory, ownerHistoryKey, saveHistory } from "../app/chat-history";
+import { CHAT_HISTORY_KEY, type ChatHistory, clearHistory, loadHistory, saveHistory } from "../app/chat-history";
 
 function storage() {
   const values = new Map<string, string>();
@@ -18,14 +18,16 @@ const history: ChatHistory = {
     text: "No upcoming meetings.", controls: "all", views, groups: [], results: [] }],
 };
 
-it("restores the zone, token, transcript and refs without crossing owner and demo storage", () => {
+it("restores open chat history in its own namespace", () => {
   const store = storage();
-  const owner = ownerHistoryKey(true);
-  saveHistory(store, owner, history);
-  expect(loadHistory(store, owner)).toEqual(history);
-  expect(loadHistory(store, ownerHistoryKey(false))).toBeNull();
-  clearHistory(store, owner);
-  expect(loadHistory(store, owner)).toBeNull();
+  const formerProtectedKey = "livex.owner.chat.v1";
+  saveHistory(store, formerProtectedKey, history);
+  expect(loadHistory(store, CHAT_HISTORY_KEY)).toBeNull();
+  saveHistory(store, CHAT_HISTORY_KEY, history);
+  expect(loadHistory(store, CHAT_HISTORY_KEY)).toEqual(history);
+  clearHistory(store, CHAT_HISTORY_KEY);
+  expect(loadHistory(store, CHAT_HISTORY_KEY)).toBeNull();
+  expect(loadHistory(store, formerProtectedKey)).toEqual(history);
 });
 
 it("ignores malformed history and never revives a confirmation whose active record was cleared", () => {
