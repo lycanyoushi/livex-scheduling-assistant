@@ -13,6 +13,7 @@ from backend.state import (
     SESSION_TTL,
     BookingEntry,
     ConfirmedOutcome,
+    GuestDraft,
     PendingCall,
     Proposal,
     SlotEntry,
@@ -60,8 +61,7 @@ def encode_signed_fixture(document: dict) -> str:
 class StateTests(unittest.TestCase):
     def test_signed_round_trip_includes_mutable_state(self):
         state = new_state("America/New_York", NOW)
-        state.user.name = "Sam Test"
-        state.user.email = "sam@example.com"
+        state.guest_draft = GuestDraft(name="Sam Test", email="sam@example.com")
         booking_ref = add_booking(state, sample_booking())
         slot_ref = add_slot(state, sample_slot(for_booking_ref=booking_ref))
         state.counters.p = 1
@@ -100,7 +100,7 @@ class StateTests(unittest.TestCase):
     def test_invalid_envelopes_and_verified_invalid_json_state_are_rejected(self):
         signed_state = new_state("UTC", NOW).model_dump(by_alias=True)
         for document in (
-            {**signed_state, "v": 2},
+            {**signed_state, "v": 1},
             {**signed_state, "v": True},
             {**signed_state, "slots": []},
             {**signed_state, "unrecognizedField": "value"},

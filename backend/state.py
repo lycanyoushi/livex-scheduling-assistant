@@ -178,12 +178,13 @@ class ModelContext(_StateModel):
 
 
 class SessionState(_StateModel):
-    v: Annotated[int, Field(ge=1, le=1)]
+    v: Literal[2]
     session_id: _OpaqueId
     time_zone: TimeZoneName
     expires_at: Annotated[int, Field(gt=0)]
     user: UserState = Field(default_factory=UserState)
     guest_draft: GuestDraft | None = None
+    last_offered_slots: Annotated[list[SlotRef], Field(max_length=4)] = Field(default_factory=list)
     slots: Annotated[dict[SlotRef, SlotEntry], Field(max_length=MAX_SLOTS)] = Field(default_factory=dict)
     bookings: Annotated[dict[BookingRef, BookingEntry], Field(max_length=MAX_BOOKINGS)] = Field(default_factory=dict)
     counters: Counters = Field(default_factory=Counters)
@@ -193,7 +194,6 @@ class SessionState(_StateModel):
     model_context: ModelContext | None = None
     last_model_input_tokens: Annotated[int, Field(ge=0)] = 0
     pending_call: PendingCall | None = None
-    awaiting_booking_email: bool = Field(default=False, exclude_if=lambda pending: not pending)
     notes: Annotated[list[_Summary], Field(max_length=MAX_NOTES)] = Field(default_factory=list)
     completed: Annotated[dict[ProposalId, _Summary], Field(max_length=MAX_COMPLETED)] = Field(default_factory=dict)
 
@@ -223,7 +223,7 @@ def _timestamp(now: datetime) -> float:
 
 def new_state(time_zone: str, now: datetime) -> SessionState:
     return SessionState(
-        v=1,
+        v=2,
         session_id=uuid4().hex,
         time_zone=time_zone,
         expires_at=int(_timestamp(now) + SESSION_TTL.total_seconds()),
@@ -235,8 +235,11 @@ def add_slot(state: SessionState, entry: SlotEntry) -> str:
     ref = f"S{state.counters.s}"
     state.slots[ref] = entry
     if len(state.slots) > MAX_SLOTS:
-        protected = state.proposal.slot_ref if state.proposal is not None else None
-        del state.slots[next(old for old in state.slots if old != protected)]
+        protected = {
+            state.proposal.slot_ref if state.proposal is not None else None,
+            state.guest_draft.slot_ref if state.guest_draft is not None else None,
+        }
+        del state.slots[next(old for old in state.slots if old not in protected)]
     return ref
 
 

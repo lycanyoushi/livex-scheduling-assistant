@@ -17,8 +17,8 @@ from zoneinfo import ZoneInfo
 
 from pydantic import ValidationError
 
-from backend.cal_client import CalError
-from backend.prescan import EMAIL, PART_HOURS, DateHint, PartOfDay, PrescanResult
+from backend.cal_client import BookingFilter, CalError
+from backend.prescan import PART_HOURS, DateHint, PartOfDay, PrescanResult
 from backend.protocol import CalCallMetrics
 from backend.state import BookingEntry, SessionState, SlotEntry
 from backend.time import local_bounds, parse_instant
@@ -30,7 +30,9 @@ _MAX_HINT_DAYS = 7
 _MAX_DATED_SLOTS = 16
 _UNDATED_SLOTS = 6
 _CONSTRAINED_WEEK_SLOTS = 4
-_BOOKING_REFERENCE = re.compile(r"\bB[0-9]+\b", re.IGNORECASE)
+_WEEK_SCOPE = re.compile(r"\b(this|next)\s+week\b", re.I)
+_PAST_SCOPE = re.compile(r"\b(?:past|previous|earlier|history|last (?:week|month|year)|pasad[oa]s?|anteriores?)\b", re.I)
+_CANCELLED_SCOPE = re.compile(r"\b(?:cancelled|canceled)\b", re.I)
 
 
 def warm_slot_bounds(now: datetime, time_zone: str) -> tuple[datetime, datetime]:
@@ -44,10 +46,19 @@ def _warm_dates(now: datetime, zone: ZoneInfo) -> tuple[date, date]:
 
 
 @dataclass(frozen=True)
-class _Reschedule:
+class RescheduleTarget:
     ref: str
     uid: str
     event_type_id: int
+    start: datetime
+
+
+@dataclass(frozen=True)
+class BookingLookup:
+    status: BookingFilter | None
+    first: date | None = None
+    last: date | None = None
+    at: time | None = None
 
 
 @dataclass(frozen=True)
@@ -56,22 +67,23 @@ class PrefetchPlan:
     times: tuple[DateHint, ...]
     part_of_day: PartOfDay
     spread_slots: bool
-    attendee_email: str | None
-    reschedule: _Reschedule | None
+    booking_lookup: BookingLookup | None
+    reschedule: RescheduleTarget | None
     show_openings: bool = False
     excluded_days: frozenset[date] = frozenset()
     excluded_weekdays: frozenset[int] = frozenset()
     exclusion_unresolved: bool = False
     prefer_daytime: bool = False
+    move_requested: bool = False
+    move_after: time | None = None
+    move_later: bool = False
 
     def excludes(self, day: date) -> bool:
         return day in self.excluded_days or day.weekday() in self.excluded_weekdays
 
     def status(self) -> str:
-        if self.days and self.attendee_email is not None:
-            return "Checking availability and your bookings…"
-        if self.attendee_email is not None:
-            return "Checking your bookings…"
+        if self.booking_lookup is not None:
+            return "Checking your calendar…"
         if self.days:
             if len(self.days) == 1:
                 day = self.days[0]
@@ -97,40 +109,40 @@ def plan_prefetch(state: SessionState, now: datetime, hints: PrescanResult, *, t
         hint.day for hint in hints.dates if hint.day >= today and not hints.excludes(hint.day)
     })[:_MAX_HINT_DAYS])
     spread = (not hints.exclusion_unresolved and not hints.dates and not hints.excluded_days
-              and not hints.excluded_weekdays and ("book" in intents or hints.availability_request))
+              and not hints.excluded_weekdays and hints.availability_request)
     if spread:
         days = tuple(today + timedelta(days=offset) for offset in range(_MAX_HINT_DAYS))
-    email = state.user.email
-    known_email = email if email and EMAIL.fullmatch(email) else None
-    lookup_email = known_email if intents & {"list", "cancel", "reschedule"} else None
-    target = None
-    if days and "reschedule" in intents and known_email is not None:
-        owned: dict[str, _Reschedule] = {}
-        for ref, booking in state.bookings.items():
-            if (
-                booking.event_type_id is not None
-                and booking.status in {"accepted", "pending"}
-                and parse_instant(booking.start_utc) > instant
-                and any(address.casefold() == known_email.casefold() for address in booking.attendee_emails)
-            ):
-                owned[ref] = _Reschedule(ref, booking.uid, booking.event_type_id)
-        requested_refs = {ref.upper() for ref in _BOOKING_REFERENCE.findall(text)}
-        if requested_refs:
-            if len(requested_refs) == 1:
-                target = owned.get(next(iter(requested_refs)))
-        else:
-            target = owned.get(state.rescheduling_booking_ref or "")
-            if target is None and len({booking.uid for booking in owned.values()}) == 1:
-                target = next(reversed(owned.values()))
+    lookup = None
+    if intents & {"list", "cancel", "reschedule"}:
+        change = bool(intents & {"cancel", "reschedule"})
+        meeting = hints.existing_meeting
+        scope = sorted({hint.day for hint in hints.dates}) if "reschedule" not in intents else []
+        if meeting is not None:
+            scope = [meeting.day]
+        elif "reschedule" not in intents and (week := _WEEK_SCOPE.search(text)):
+            first = today - timedelta(days=today.weekday()) + timedelta(days=7 if week[1].lower() == "next" else 0)
+            scope = [first, first + timedelta(days=6)]
+        status: BookingFilter | None = "upcoming"
+        if not change:
+            if _CANCELLED_SCOPE.search(text):
+                status = "cancelled"
+            elif _PAST_SCOPE.search(text):
+                status = "past"
+            elif scope:
+                status = None
+        lookup = BookingLookup(status, scope[0] if scope else None, scope[-1] if scope else None, meeting.at if meeting else None)
+    if lookup is not None and "reschedule" not in intents and not hints.availability_request:
+        days = ()
     has_pending_change = state.rescheduling_booking_ref is not None or (
         state.proposal is not None and state.proposal.kind in {"cancel", "reschedule"}
     )
     return PrefetchPlan(
-        days, hints.dates, hints.part_of_day, spread, lookup_email, target,
+        days, hints.dates, hints.part_of_day, spread, lookup, None,
         show_openings=bool(days and hints.availability_request and not has_pending_change),
         excluded_days=hints.excluded_days, excluded_weekdays=hints.excluded_weekdays,
         exclusion_unresolved=hints.exclusion_unresolved,
         prefer_daytime=prefer_daytime_for_request(state, hints),
+        move_requested="reschedule" in intents, move_after=hints.move_after, move_later=hints.move_later,
     )
 
 
@@ -162,6 +174,7 @@ def _spread_slots(day_slots: dict[date, list[SlotEntry]]) -> list[SlotEntry]:
 class _SlotResults:
     slots: list[SlotEntry] = field(default_factory=list)
     alternatives: list[SlotEntry] = field(default_factory=list)
+    unavailable_event: str | None = None
 
 
 def _prefetch_slots(tools: CalendarTools, plan: PrefetchPlan) -> _SlotResults:
@@ -171,7 +184,11 @@ def _prefetch_slots(tools: CalendarTools, plan: PrefetchPlan) -> _SlotResults:
         if not any(event["id"] == event_id for event in tools.event_types()):
             return _SlotResults()
     else:
-        event_id = tools.default_event()["id"]
+        draft = tools.state.guest_draft
+        try:
+            event_id = tools.event_for_duration(draft.duration_minutes if draft else None)["id"]
+        except ToolRejected as error:
+            return _SlotResults(unavailable_event=str(error))
     zone = ZoneInfo(tools.time_zone)
     first_warm_date, last_warm_date = _warm_dates(tools.now, zone)
     other_days = plan.days
@@ -199,6 +216,12 @@ def _prefetch_slots(tools: CalendarTools, plan: PrefetchPlan) -> _SlotResults:
         for entry in entries:
             local = parse_instant(entry.start_utc).astimezone(zone)
             if local.date() in wanted_days and (hours is None or hours[0] <= local.hour < hours[1]):
+                if target is not None and (
+                    local == target.start
+                    or (plan.move_later and local <= target.start)
+                    or (plan.move_after is not None and local.time() <= plan.move_after)
+                ):
+                    continue
                 day_slots[local.date()].append(entry)
                 if plan.prefer_daytime and is_daytime(local):
                     daytime_slots[local.date()].append(entry)
@@ -235,6 +258,15 @@ def _prefetch_slots(tools: CalendarTools, plan: PrefetchPlan) -> _SlotResults:
                 warm_entries = preferred_daytime_slots(matching_part or warm_entries, zone)
             return _SlotResults(alternatives=nearest_slots(warm_entries, anchors, plan.part_of_day, tools.time_zone))
 
+    if target is not None and not day_slots and (plan.move_later or plan.move_after or plan.part_of_day != "any"):
+        first = max(wanted_days) + timedelta(days=1)
+        if first <= last_warm_date:
+            later = tools.read_slot_entries(event_id, first, last_warm_date, "any", target.ref, target.uid)
+            return _SlotResults(alternatives=[
+                entry for entry in later
+                if not plan.excludes(parse_instant(entry.start_utc).astimezone(zone).date())
+            ][:3])
+
     if plan.spread_slots:
         return _SlotResults(slots=_spread_slots(day_slots))
 
@@ -261,17 +293,15 @@ class PrefetchResult:
     cal_calls: list[CalCallMetrics] = field(default_factory=list)
     slots_checked: bool = False
     alternatives: list[SlotEntry] = field(default_factory=list)
+    more_bookings: bool = False
+    unavailable_event: str | None = None
 
 
-_Entries = _SlotResults | list[BookingEntry]
+_Entries = _SlotResults | tuple[list[BookingEntry], bool]
 
 
-def _prefetch_bookings(tools: CalendarTools, email: str) -> list[BookingEntry]:
-    entries, _ = tools.read_booking_entries("upcoming", attendee_email=email)
-    return [
-        entry for entry in entries
-        if entry.status in {"accepted", "pending"} and parse_instant(entry.start_utc) > tools.now
-    ]
+def _prefetch_bookings(tools: CalendarTools, lookup: BookingLookup) -> tuple[list[BookingEntry], bool]:
+    return tools.read_booking_entries(lookup.status, from_date=lookup.first, to_date=lookup.last, at=lookup.at)
 
 
 @dataclass(frozen=True)
@@ -322,21 +352,22 @@ class Prefetcher:
         return asyncio.wrap_future(future)
 
     async def fetch(self, tools: CalendarTools, plan: PrefetchPlan) -> PrefetchResult:
-        if not plan.days and plan.attendee_email is None:
+        lookup = plan.booking_lookup
+        fetch_slots = bool(plan.days and (not plan.move_requested or plan.reschedule is not None))
+        if not fetch_slots and lookup is None:
             return PrefetchResult()
         began = perf_counter()
         deadline = began + self._budget
         jobs = {}
         missing_admission = False
-        if plan.days:
+        if fetch_slots:
             future = self._start(lambda: _prefetch_slots(tools, plan))
             if future is not None:
                 jobs["slots"] = future
             else:
                 missing_admission = True
-        email = plan.attendee_email
-        if email is not None:
-            future = self._start(lambda: _prefetch_bookings(tools, email))
+        if lookup is not None:
+            future = self._start(lambda: _prefetch_bookings(tools, lookup))
             if future is not None:
                 jobs["bookings"] = future
             else:
@@ -364,12 +395,15 @@ class Prefetcher:
                     future.cancel()
 
         availability = cast(_SlotResults | None, ready.get("slots"))
+        bookings = cast(tuple[list[BookingEntry], bool] | None, ready.get("bookings"))
         return PrefetchResult(
             slots=availability.slots if availability is not None else [],
-            bookings=cast(list[BookingEntry] | None, ready.get("bookings")),
+            bookings=bookings[0] if bookings is not None else None,
             elapsed_ms=(perf_counter() - began) * 1000,
             timed_out=timed_out,
             cal_calls=calls,
             slots_checked=availability is not None,
             alternatives=availability.alternatives if availability is not None else [],
+            more_bookings=bookings[1] if bookings is not None else False,
+            unavailable_event=availability.unavailable_event if availability is not None else None,
         )

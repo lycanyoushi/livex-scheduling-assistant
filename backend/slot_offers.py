@@ -18,7 +18,7 @@ class SlotOfferLimit:
         self.earlier_label = earlier_label
         self.excluded_ref = excluded_ref
         self.slots: dict[str, SlotView] = {}
-        self.offered: set[str] = set()
+        self.offered: list[str] = []
         self.text = ReferenceText(self._replace_marker)
 
     def _label(self, ref: str) -> str | None:
@@ -28,7 +28,7 @@ class SlotOfferLimit:
     def _offer(self, ref: str) -> bool:
         if ref in self.offered or len(self.offered) >= _MAX_OFFERS:
             return False
-        self.offered.add(ref)
+        self.offered.append(ref)
         return True
 
     def _replace_marker(self, ref: str, preceding: str) -> ReferenceLabel | None:

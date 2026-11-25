@@ -29,7 +29,6 @@ from backend.protocol import (
     BookingRef,
     BookingView,
     CalendarDate,
-    ContactEmail,
     ContactName,
     ContactNotes,
     ProposalEvent,
@@ -39,7 +38,7 @@ from backend.protocol import (
     SlotRef,
     SlotView,
 )
-from backend.state import MAX_SLOTS, BookingEntry, Proposal, SessionState, SlotEntry, add_booking, add_slot
+from backend.state import MAX_SLOTS, BookingEntry, GuestDraft, Proposal, SessionState, SlotEntry, add_booking, add_slot
 from backend.time import local_bounds, parse_instant, slot_labels
 
 
@@ -135,8 +134,7 @@ class _ProposeBooking(_ToolArgs):
     slot_ref: SlotRef
     name: ContactName
     notes: ContactNotes
-    # Older local UI action callers may still send this empty field.
-    email: ContactEmail | None = None
+    email: str | None = None
 
 
 class _ProposeCancel(_ToolArgs):
@@ -161,11 +159,6 @@ def _plain_text(text: str, maximum: int) -> str:
 
 def _valid_email(value: str) -> bool:
     return EMAIL.fullmatch(value) is not None
-
-
-def _includes_attendee(entry: BookingEntry, email: str) -> bool:
-    normalized = email.casefold()
-    return any(value.casefold() == normalized for value in entry.attendee_emails)
 
 
 def _meeting_url(data: Booking) -> str | None:
@@ -633,7 +626,6 @@ class CalendarTools:
         from_date: date | None = None,
         to_date: date | None = None,
         at: time | None = None,
-        attendee_email: str | None = None,
     ) -> tuple[list[BookingEntry], bool]:
         if from_date is not None and to_date is not None and from_date > to_date:
             raise ToolRejected("Choose a valid calendar date range.")
@@ -664,7 +656,6 @@ class CalendarTools:
             page = self.calendar.list_bookings(
                 status=status, limit=_MAX_BOOKING_CHOICES + 1, cursor=cursor,
                 **({"after_start": begin} if begin is not None else {}),
-                **({"attendee_email": attendee_email} if attendee_email else {}),
             )
             for booking in sorted(page["data"], key=lambda row: (parse_instant(row["start"]), row["uid"])):
                 start = parse_instant(booking["start"])
@@ -677,8 +668,6 @@ class CalendarTools:
                 if clock is not None and start.astimezone(self._zone).time() != clock:
                     continue
                 entry = booking_entry(booking)
-                if attendee_email is not None and not _includes_attendee(entry, attendee_email):
-                    continue
                 entries.setdefault(entry.uid, entry)
                 if len(entries) > _MAX_BOOKING_CHOICES:
                     return list(entries.values())[:_MAX_BOOKING_CHOICES], True
@@ -815,6 +804,17 @@ class CalendarTools:
         if minutes is not None and parse_instant(slot.end_utc) - parse_instant(slot.start_utc) != timedelta(minutes=minutes):
             self.event_for_duration(minutes)
             raise ToolRejected(f"Choose a {minutes}-minute opening for this guest.")
+        if not name or not email:
+            with self._state_lock:
+                if draft is None:
+                    draft = GuestDraft()
+                    self.state.guest_draft = draft
+                draft.name, draft.notes, draft.slot_ref = name, notes, args.slot_ref
+            fields = "name and email address" if not name and not email else "name" if not name else "email address"
+            return ToolOutcome(
+                result={"needsGuest": True},
+                events=[{"type": "assistant_text", "text": f"What’s the guest’s {fields}?"}],
+            )
         return self._propose("book", slot_ref=args.slot_ref, name=name, email=email, notes=notes)
 
     def _propose_cancel(self, args: _ProposeCancel) -> ToolOutcome:

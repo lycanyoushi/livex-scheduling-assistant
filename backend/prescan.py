@@ -72,6 +72,11 @@ EXISTING_BOOKING = re.compile(
     r"\b(?:my|our)\s+(?:(?:existing|current|upcoming|scheduled)\s+)?(?:bookings?|meetings?|appointments?|calendar)\b",
     re.I,
 )
+_MOVE_DESTINATION = re.compile(r"\b(?:reschedule|move|push|change the time)\b[^.!?\n]*?\bto\s+", re.I)
+_MEETING_TIME = re.compile(r"\b(?:my|the|our)\s+" + CLOCK, re.I)
+_AFTER_TIME = re.compile(r"\bafter\s+" + CLOCK, re.I)
+_DURATION = re.compile(r"\b(\d{1,4})\s*[- ]?\s*(min(?:ute)?s?|h(?:ou)?rs?)\b", re.I)
+_THIS_PART = re.compile(r"\bthis\s+(?:morning|afternoon|evening)\b", re.I)
 _WEEKDAY_TOKEN = re.compile(rf"\b(?P<weekday>{'|'.join(WEEKDAYS)})(?:s)?\b")
 _EXCLUSION_PREFIX = re.compile(
     r"\b(?:(?P<short>no|not)|except(?:\s+for)?|excluding|other than|anything but|besides|"
@@ -112,13 +117,17 @@ class PrescanResult:
     excluded_days: frozenset[date] = frozenset()
     excluded_weekdays: frozenset[int] = frozenset()
     exclusion_unresolved: bool = False
+    existing_meeting: DateHint | None = None
+    move_after: time | None = None
+    move_later: bool = False
+    duration_minutes: int | None = None
 
     def excludes(self, day: date) -> bool:
         return day in self.excluded_days or day.weekday() in self.excluded_weekdays
 
 
-def _requested_time(match: re.Match[str] | None) -> time | None:
-    if not match or not any(match[name] for name in ("marker", "minute", "period")):
+def _requested_time(match: re.Match[str] | None, *, bare: bool = False) -> time | None:
+    if not match or (not bare and not any(match[name] for name in ("marker", "minute", "period"))):
         return None
     hour, minute = int(match["hour"]), int(match["minute"] or 0)
     period = match["period"]
@@ -129,6 +138,21 @@ def _requested_time(match: re.Match[str] | None) -> time | None:
     elif match["minute"] is None and 1 <= hour <= 7:
         hour += 12
     return time(hour, minute) if hour < 24 else None
+
+
+_TYPED_TIME = re.compile(
+    r"\s*(?:the\s+)?" + CLOCK + r"(?:\s+(?:one|works|is good|please))?[.!]?\s*", re.I,
+)
+_TYPED_ORDINAL = re.compile(
+    r"(?:the\s+)?(first|second|third|fourth|1st|2nd|3rd|4th)(?:\s+(?:one|option|works|please))?[.!]?", re.I,
+)
+_ORDINAL_OPTIONS = {"first": 0, "1st": 0, "second": 1, "2nd": 1, "third": 2, "3rd": 2, "fourth": 3, "4th": 3}
+
+
+def typed_choice(text: str) -> time | int | None:
+    if ordinal := _TYPED_ORDINAL.fullmatch(text.strip()):
+        return _ORDINAL_OPTIONS[ordinal[1].lower()]
+    return _requested_time(_TYPED_TIME.fullmatch(text))
 
 
 def _ordinal_day(today: date, number: int) -> date | None:
@@ -274,8 +298,14 @@ def _exclusions(text: str, reference: datetime) -> tuple[str, frozenset[date], f
 def _availability_request(
     text: str, dates: tuple[DateHint, ...], part: PartOfDay, intents: tuple[str, ...],
 ) -> bool:
-    if any(intent in intents for intent in ("list", "cancel", "reschedule")):
+    if any(intent in intents for intent in ("cancel", "reschedule")):
         return False
+    if "list" in intents:
+        clauses = re.split(r"\band\b", text, maxsplit=1)
+        return len(clauses) == 2 and any(
+            not INTENTS["list"].search(clause) and _availability_request(clause, dates, part, ("book",))
+            for clause in clauses
+        )
     if EXPLANATION.search(text) or EXISTING_BOOKING.search(text):
         return False
     if (BOOKING_REQUEST.search(_PERSONAL_SCHEDULE.sub(" ", text)) or AVAILABILITY_REQUEST.search(text)
@@ -301,20 +331,46 @@ def prescan(text: str, *, now: datetime, time_zone: str) -> PrescanResult:
     match = EMAIL.search(text)
     text_without_email = EMAIL.sub(" ", text.casefold())
     positive, excluded, weekdays, unresolved = _exclusions(text_without_email, reference)
-    part: PartOfDay = "any"
-    dates: tuple[DateHint, ...] = ()
-    if not unresolved:
-        part = next((name for name, pattern in PARTS.items() if pattern.search(positive)), "any")
-        dates = tuple(hint for hint in _dates(positive, reference)
-                      if hint.day not in excluded and hint.day.weekday() not in weekdays)
-    # Remove the noun phrase from booking detection while keeping other booking language.
     booking_text = _PERSONAL_SCHEDULE.sub(" ", text_without_email)
     intents = tuple(name for name, pattern in INTENTS.items()
                     if pattern.search(booking_text if name == "book" else text_without_email))
+    is_move = "reschedule" in intents
+    destination = _MOVE_DESTINATION.search(positive) if is_move else None
+    source = positive[:destination.end()] if destination else positive
+    window = positive[destination.end():] if destination else positive
+    existing = None
+    if is_move or "cancel" in intents:
+        match_time = _requested_time(_MEETING_TIME.search(source), bare=True)
+        if match_time is not None:
+            source_dates = _dates(source, reference.replace(hour=0, minute=0, second=0, microsecond=0))
+            existing = DateHint(source_dates[0].day if source_dates else reference.date(), match_time)
+    move_after = _requested_time(_AFTER_TIME.search(window), bare=True) if is_move else None
+    move_later = is_move and bool(re.search(r"\blater\b", window))
+    part: PartOfDay = "any"
+    dates: tuple[DateHint, ...] = ()
+    if not unresolved:
+        part = next((name for name, pattern in PARTS.items() if pattern.search(window)), "any")
+        dates = tuple(hint for hint in _dates(window, reference)
+                      if hint.day not in excluded and hint.day.weekday() not in weekdays)
+        if is_move and existing and not destination:
+            dates = ()
+        if not dates and (move_after or move_later or _THIS_PART.search(window)) and (
+            reference.date() not in excluded and reference.weekday() not in weekdays
+        ):
+            dates = (DateHint(reference.date()),)
+        if destination and dates and move_after:
+            dates = tuple(DateHint(hint.day) for hint in dates)
+        if destination and not dates and not move_after:
+            if new_time := _requested_time(ATTACHED_TIME.match(window)):
+                day = existing.day if existing else reference.date()
+                if day not in excluded and day.weekday() not in weekdays:
+                    dates = (DateHint(day, new_time),)
     relative_week = bool(excluded or weekdays) and any(match["week"] for match in DATES.finditer(positive))
     availability = not unresolved and _availability_request(positive, dates, part, intents)
     if relative_week and not unresolved and not set(intents) & {"list", "cancel", "reschedule"}:
         availability |= not EXPLANATION.search(text_without_email) and not EXISTING_BOOKING.search(text_without_email)
+    duration = _DURATION.search(positive)
+    duration_minutes = int(duration[1]) * (60 if duration[2].startswith("h") else 1) if duration else None
     return PrescanResult(
         match.group().casefold() if match else None,
         dates,
@@ -324,6 +380,10 @@ def prescan(text: str, *, now: datetime, time_zone: str) -> PrescanResult:
         excluded,
         weekdays,
         unresolved,
+        existing,
+        move_after,
+        move_later,
+        duration_minutes,
     )
 
 

@@ -256,36 +256,35 @@ class PrefetchTests(unittest.IsolatedAsyncioTestCase):
                 observe_cal(CalObservation("GET", "/v2/slots", 200, None, 1000))
                 return super().slots(*args, **kwargs)
 
-            def list_bookings(self, *, attendee_email=None, status="upcoming", limit=20, cursor=None):
+            def list_bookings(self, *, attendee_email=None, **query):
                 if not started.wait(1):
                     raise AssertionError("Calendar lookups did not start together.")
                 requested_addresses.append(attendee_email)
                 observe_cal(CalObservation("GET", "/v2/bookings", 200, None, 1))
-                # A bad upstream filter must not expose an unrelated attendee.
-                return super().list_bookings(status=status, limit=limit, cursor=cursor)
+                return super().list_bookings(attendee_email=attendee_email, **query)
 
         requested_addresses = []
         service = self.service(DelayedCalendar(fixture_overrides={"active_bookings": ["sam_intro", "other_intro"]}), budget=0.06)
         try:
             events = await asyncio.wait_for(
-                self.collect(service, "What meetings do I have tomorrow, and can I book a meeting for sam@example.com?"),
+                self.collect(service, "What meetings do I have, and can I book a meeting?"),
                 timeout=0.6,
             )
             terminal = events[-1]
             timings = terminal["metrics"]["prefetch"]
             self.assertTrue(timings["timedOut"])
-            self.assertEqual((timings["slots"], timings["bookings"]), (0, 1))
-            self.assertEqual(requested_addresses, ["sam@example.com"])
+            self.assertEqual((timings["slots"], timings["bookings"]), (0, 2))
+            self.assertEqual(requested_addresses, [None])
             ledger = terminal["metrics"]["calCalls"]
             self.assertEqual([call["endpoint"] for call in ledger], ["GET /v2/bookings"])
             serialized = json.dumps(self.model.contexts)
             self.assertNotIn("sam@example.com", serialized)
             self.assertNotIn("taylor@example.com", serialized)
             self.assertNotIn("fixture-other-intro", serialized)
-            self.assertNotIn("Appointment", serialized)
+            self.assertIn("Appointment", serialized)
             state = verify_state(terminal["stateToken"], KEY, NOW)
             self.assertFalse(state.slots)
-            self.assertEqual([record.uid for record in state.bookings.values()], ["fixture-sam-intro"])
+            self.assertEqual([record.uid for record in state.bookings.values()], ["fixture-other-intro", "fixture-sam-intro"])
         finally:
             release.set()
             service.close_prefetch()
@@ -408,7 +407,7 @@ class PrefetchTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(any(event["type"] in {"refs", "slot_chips"} for event in events))
         self.assertEqual(events[-1]["metrics"]["prefetch"]["slots"], 0)
 
-    async def test_prefetched_reschedule_slots_keep_their_owned_booking_binding(self):
+    async def test_prefetched_reschedule_slots_keep_their_owner_booking_binding(self):
         class RecordedCalendar(FakeCal):
             def slots(self, *args, **kwargs):
                 calendar_reads.append(kwargs.get("booking_uid_to_reschedule"))
@@ -417,7 +416,6 @@ class PrefetchTests(unittest.IsolatedAsyncioTestCase):
         calendar_reads = []
         calendar = RecordedCalendar(fixture_overrides={"active_bookings": ["sam_intro", "other_intro"]})
         state = new_state(ZONE, NOW)
-        state.user.email = "sam@example.com"
         own = add_booking(state, booking_entry(calendar.booking("fixture-sam-intro")))
         foreign = add_booking(state, booking_entry(calendar.booking("fixture-other-intro")))
         duplicate = add_booking(state, booking_entry(calendar.booking("fixture-sam-intro")))
@@ -430,22 +428,21 @@ class PrefetchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calendar_reads, ["fixture-sam-intro"])
         self.assertEqual({record.for_booking_ref for record in token_state.slots.values()}, {own})
         self.assertIn(f"for moving {own}", self.model.contexts[0])
-        self.assertIn(f"Prefetched upcoming booking {own}", self.model.contexts[0])
+        self.assertIn(f"Prefetched booking {own}", self.model.contexts[0])
         self.assertNotIn(f"booking {duplicate}", self.model.contexts[0])
-        self.assertNotIn(f"booking {foreign}", self.model.contexts[0])
+        self.assertIn(f"booking {foreign}", self.model.contexts[0])
         self.assertNotIn("fixture-sam-intro", self.model.contexts[0])
 
     async def test_current_prefetched_booking_is_visible_even_if_its_ref_is_old(self):
         calendar = FakeCal(fixture_overrides={"active_bookings": ["sam_intro"]})
         state = new_state(ZONE, NOW)
-        state.user.email = "sam@example.com"
         intro = booking_entry(calendar.booking("fixture-sam-intro"))
         first = add_booking(state, intro)
         for index in range(12):
             add_booking(state, intro.model_copy(update={"uid": f"old-fixture-{index}", "title": "Stale calendar entry"}))
         service = self.service(calendar)
         events = await self.collect(service, "What meetings do I have?", sign_state(state, KEY))
-        self.assertIn(f"Prefetched upcoming booking {first}", self.model.contexts[0])
+        self.assertIn(f"Prefetched booking {first}", self.model.contexts[0])
         self.assertNotIn("Stale calendar entry", self.model.contexts[0])
         refs = next(event["bookings"] for event in events if event["type"] == "refs")
         self.assertEqual(list(refs), [first])
@@ -458,22 +455,18 @@ class PrefetchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(end.astimezone(zone).isoformat(), "2026-11-11T00:00:00-05:00")
         self.assertEqual(end - begin, timedelta(days=14, hours=1))
 
-    def test_unknown_or_foreign_attendees_do_not_resolve_as_prefetch_bindings(self):
-        calendar = FakeCal(fixture_overrides={"active_bookings": ["other_intro", "sam_intro"]})
+    def test_move_source_time_is_distinct_from_destination(self):
         state = new_state(ZONE, NOW)
-        hints = prescan("Move my meeting to Thursday afternoon", now=NOW, time_zone=ZONE)
-        add_booking(state, booking_entry(calendar.booking("fixture-other-intro")))
-        no_email = plan_prefetch(state, NOW, hints)
-        self.assertIsNone(no_email.attendee_email)
-        self.assertIsNone(no_email.reschedule)
-        state.user.email = "sam@example.com"
-        with_email = plan_prefetch(state, NOW, hints)
-        self.assertEqual(with_email.attendee_email, "sam@example.com")
-        self.assertIsNone(with_email.reschedule)
-        owned = add_booking(state, booking_entry(calendar.booking("fixture-sam-intro")))
-        self.assertEqual(plan_prefetch(state, NOW, hints).reschedule.ref, owned)
-        self.assertIsNone(plan_prefetch(state, NOW, hints, text="Move B1 to Thursday afternoon").reschedule)
-        self.assertIsNone(plan_prefetch(state, NOW, hints, text="Move B999 to Thursday afternoon").reschedule)
+        text = "move my 3pm to later today"
+        hints = prescan(text, now=NOW, time_zone=ZONE)
+        plan = plan_prefetch(state, NOW, hints, text=text)
+        self.assertTrue(plan.move_requested)
+        self.assertTrue(plan.move_later)
+        self.assertEqual(plan.booking_lookup.first.isoformat(), "2026-11-23")
+        self.assertEqual(plan.booking_lookup.first, plan.booking_lookup.last)
+        self.assertEqual(plan.booking_lookup.at.isoformat(), "15:00:00")
+        self.assertIsNone(plan.reschedule)
+        self.assertEqual(plan.days, (plan.booking_lookup.first,))
 
 
 if __name__ == "__main__":
