@@ -4,7 +4,13 @@
 
 ## Reviewer Preview
 
-The reviewer deployment is a single-owner test demo with fictional guests. Anyone with the link can use it by design. A deployment connected to a private calendar would require the owner's own login, such as Cal.com OAuth. Production promotion requires separate approval.
+The reviewer deployment is a single-owner test demo with fictional guests. The app has no sign-in by design. A deployment connected to a private calendar would require the owner's own login, such as Cal.com OAuth. Production promotion requires separate approval.
+
+Revision `03d20da` is ready on Preview with `DEMO_MODE=fake` and `DEMO_TIME_ZONE=Asia/Singapore`. Chromium with Vercel project access opened directly to the composer. Warm-up identified the demo calendar, the retired app auth route returned 404, and the app issued no session cookie. A cross-origin chat request returned HTTP 403. All 281 Python tests, 28 frontend tests, ESLint, TypeScript, and the Next.js build passed. [Vercel Preview](https://livex-scheduling-assistant-exu6du3cy-zenith-dbf8.vercel.app)
+
+The hosted browser check passed all three brief prompts. It showed two fictional meetings for tomorrow, moved the seeded 15:00 meeting to 15:30 with `yes please`, and booked a fictional guest from the Thursday afternoon openings with typed `yes`. The check restored the moved meeting and cancelled the new booking. Chat returned NDJSON with a signed conversation state token.
+
+The Preview and Production project settings each have a daily model-call cap of 30. Both use the default limit of 30 chat turns per IP per 10 minutes. Signed-out requests to the Preview return HTTP 302 to Vercel sign-in. Public reviewer access depends on adding a Deployment Protection Exception for this specific Preview hostname and verifying it in a fresh browser. [Vercel Deployment Protection Exceptions](https://vercel.com/docs/deployment-protection/methods-to-bypass-deployment-protection/deployment-protection-exceptions)
 
 1. Confirm the GitHub `origin`, reviewed revision, and linked Vercel project. Set `DEMO_MODE=fake` and `DEMO_TIME_ZONE=Asia/Singapore` in Preview along with a fresh `STATE_SIGNING_SECRET`, the unbilled project's `GEMINI_API_KEY`, and a daily call cap below the project's quota. Deploy with `vercel deploy --environment preview` and check the deployment target. Keep Fluid compute enabled for the configured Flask duration. [Vercel deploy CLI](https://vercel.com/docs/cli/deploy) · [Preview environment variables](https://vercel.com/docs/environment-variables#preview-environment-variables) · [Function duration limits](https://vercel.com/docs/functions/limitations#max-duration)
 2. Open the reviewer link in a fresh browser context outside the Vercel project session. Verify that the link opens the chat directly and that `/api/warm` identifies the fake calendar. Confirm that the agenda contains fictional data. [Vercel deployment protection](https://vercel.com/docs/deployment-protection)
