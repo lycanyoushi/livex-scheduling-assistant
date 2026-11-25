@@ -8,7 +8,7 @@ from unittest.mock import Mock
 from backend.actions import ActionError, CalendarActions, ConfirmationLedger
 from backend.cal_client import CalError
 from backend.protocol import ConfirmProposal, DismissProposal, MoreSlots, PickSlot, RequestCancel, RequestReschedule
-from backend.state import PendingCall, SlotEntry, add_booking, add_slot, new_state, sign_state, verify_state
+from backend.state import GuestDraft, PendingCall, SlotEntry, add_booking, add_slot, new_state, sign_state, verify_state
 from backend.tools import CalendarTools, booking_entry
 from evals.fake_cal import DEFAULT_CLOCK, FakeCal
 
@@ -110,8 +110,7 @@ def stored_slot(state, start="2026-11-24T06:00:00Z", end="2026-11-24T06:30:00Z")
 class CalendarActionsTests(unittest.TestCase):
     def setUp(self):
         self.state = new_state(ZONE, NOW)
-        self.state.user.name = "Sam"
-        self.state.user.email = "sam@example.com"
+        self.state.guest_draft = GuestDraft(name="Sam", email="sam@example.com")
 
     def actions(self, calendar):
         return CalendarActions(calendar, self.state, NOW)
@@ -121,15 +120,17 @@ class CalendarActionsTests(unittest.TestCase):
 
     def test_button_only_create_reschedule_and_cancel_with_signed_context(self):
         calendar = Calendar(fixture_overrides={"open_local_starts": ["2026-11-24T14:00", "2026-11-24T15:00"]})
+        self.state.guest_draft.notes = "Test note"
         actions = self.actions(calendar)
         available = actions.execute(MoreSlots(type="more_slots", fromDate="2026-11-24"))
         first = ref_at(available, FIRST)
         self.assertIn(first, event(available, "slot_chips")["refs"])
         card = event(actions.execute(PickSlot(type="pick_slot", slotRef=first)), "proposal")["proposal"]
         self.assertEqual((card["kind"], card["name"], card["email"]), ("book", "Sam", "sam@example.com"))
+        self.assertEqual(self.state.guest_draft.slot_ref, first)
         self.assertEqual(calendar.writes, [])
 
-        completed = actions.execute(ConfirmProposal(type="confirm_proposal", proposalId=card["id"], notes="Test note"))
+        completed = actions.execute(ConfirmProposal(type="confirm_proposal", proposalId=card["id"]))
         created = event(completed, "booking_result")
         self.assertEqual(created["kind"], "booked")
         self.assertEqual(created["booking"]["startUtc"], "2026-11-24T06:00:00Z")
@@ -138,6 +139,7 @@ class CalendarActionsTests(unittest.TestCase):
         self.assertNotIn(original_uid, json.dumps(completed.events))
         self.assertEqual(calendar.writes[0][1]["notes_field"], "notes")
         self.assertEqual(calendar.writes[0][1]["notes"], "Test note")
+        self.assertIsNone(self.state.guest_draft)
         self.assertEqual(calendar.reads[-1], ("slots", None, True))
         duplicate = actions.execute(ConfirmProposal(type="confirm_proposal", proposalId=card["id"]))
         self.assertEqual(duplicate.events, [event(completed, "assistant_text")])
@@ -192,40 +194,84 @@ class CalendarActionsTests(unittest.TestCase):
         self.assertEqual(calendar.reads[-1], ("slots", "fixture-sam-intro", False))
         self.assertEqual(calendar.writes, [])
 
-    def test_cancel_requires_live_owner_and_unchanged_booking_on_confirm(self):
-        class OwnerChanges(Calendar):
+    def test_confirm_rejects_a_different_uid_changed_time_or_inactive_booking(self):
+        class BookingChanges(Calendar):
+            changes = {}
+
             def booking(self, uid):
-                data = super().booking(uid)
-                if self.changed:
-                    data["attendees"] = [{"email": "other@example.com"}]
-                return data
+                return {**super().booking(uid), **self.changes}
 
-        cal = OwnerChanges(fixture_overrides={"active_bookings": ["sam_intro"]})
-        cal.changed = False
-        ref = self.record(cal)
-        actions = self.actions(cal)
-        card = event(actions.execute(RequestCancel(type="request_cancel", bookingRef=ref)), "proposal")["proposal"]
-        cal.changed = True
-        with self.assertRaises(ActionError) as caught:
-            actions.execute(ConfirmProposal(type="confirm_proposal", proposalId=card["id"]))
-        self.assertEqual(caught.exception.code, "refusal")
-        self.assertFalse(caught.exception.retryable)
-        self.assertEqual(cal.writes, [])
-        self.assertEqual(self.state.proposal.id, card["id"])
+        for changes in (
+            {"uid": "different-booking"},
+            {"start": "2026-11-25T07:00:00Z", "end": "2026-11-25T07:30:00Z"},
+            {"status": "cancelled"},
+        ):
+            with self.subTest(changes=changes):
+                self.setUp()
+                cal = BookingChanges(fixture_overrides={"active_bookings": ["sam_intro"]})
+                ref = self.record(cal)
+                actions = self.actions(cal)
+                card = event(actions.execute(RequestCancel(type="request_cancel", bookingRef=ref)), "proposal")["proposal"]
+                cal.changes = changes
+                with self.assertRaises(ActionError) as caught:
+                    actions.execute(ConfirmProposal(type="confirm_proposal", proposalId=card["id"]))
+                self.assertEqual(caught.exception.code, "invalid_action")
+                self.assertFalse(caught.exception.retryable)
+                self.assertEqual(cal.writes, [])
+                self.assertEqual(self.state.proposal.id, card["id"])
 
-    def test_signed_foreign_booking_fails_before_calendar_read(self):
+    def test_owner_can_move_and_cancel_a_different_guest(self):
         calendar = Calendar(fixture_overrides={"active_bookings": ["other_intro"]})
         ref = self.record(calendar, "fixture-other-intro")
-        calendar.reads.clear()
+        guest = self.state.bookings[ref].attendee_emails
+        self.assertNotIn(self.state.guest_draft.email, guest)
+        actions = self.actions(calendar)
+        options = actions.execute(RequestReschedule(type="request_reschedule", bookingRef=ref))
+        next_ref = event(options, "slot_chips")["refs"][0]
+        card = event(actions.execute(PickSlot(type="pick_slot", slotRef=next_ref)), "proposal")["proposal"]
+        self.assertEqual(calendar.writes, [])
+        moved = event(actions.execute(ConfirmProposal(type="confirm_proposal", proposalId=card["id"])), "booking_result")
+        self.assertEqual(moved["kind"], "rescheduled")
+        moved_ref = moved["booking"]["ref"]
+        self.assertEqual(self.state.bookings[moved_ref].attendee_emails, guest)
+        self.assertEqual(calendar.writes[0][:2], ("reschedule", "fixture-other-intro"))
+
+        cancel = actions.execute(RequestCancel(type="request_cancel", bookingRef=moved_ref))
+        cancel_card = event(cancel, "proposal")["proposal"]
+        self.assertEqual(len(calendar.writes), 1)
+        result = actions.execute(ConfirmProposal(type="confirm_proposal", proposalId=cancel_card["id"]))
+        self.assertEqual(event(result, "booking_result")["kind"], "cancelled")
+        self.assertEqual(calendar.writes[-1][:2], ("cancel", self.state.bookings[moved_ref].uid))
+        self.assertEqual(self.state.guest_draft.email, "sam@example.com")
+
+    def test_an_unknown_booking_ref_is_rejected_before_calendar_read(self):
+        calendar = Calendar(fixture_overrides={"active_bookings": ["other_intro"]})
         for action in (
-            RequestCancel(type="request_cancel", bookingRef=ref),
-            RequestReschedule(type="request_reschedule", bookingRef=ref),
+            RequestCancel(type="request_cancel", bookingRef="B99"),
+            RequestReschedule(type="request_reschedule", bookingRef="B99"),
         ):
             with self.subTest(action=action), self.assertRaises(ActionError) as caught:
                 self.actions(calendar).execute(action)
-            self.assertEqual(caught.exception.code, "refusal")
+            self.assertEqual(caught.exception.code, "invalid_action")
         self.assertEqual(calendar.reads, [])
         self.assertEqual(calendar.writes, [])
+
+    def test_confirmation_uses_the_guest_frozen_in_the_proposal(self):
+        calendar = Calendar()
+        actions = self.actions(calendar)
+        slot = stored_slot(self.state)
+        self.state.guest_draft.notes = "Signed note"
+        card = event(actions.execute(PickSlot(type="pick_slot", slotRef=slot)), "proposal")["proposal"]
+        self.state.guest_draft.name = "Changed"
+        self.state.guest_draft.email = "changed@example.com"
+        self.state.guest_draft.notes = "Changed note"
+
+        result = actions.execute(ConfirmProposal(type="confirm_proposal", proposalId=card["id"]))
+
+        self.assertEqual(event(result, "booking_result")["kind"], "booked")
+        _, kwargs = calendar.writes[0]
+        self.assertEqual((kwargs["name"], kwargs["email"], kwargs["notes"]), ("Sam", "sam@example.com", "Signed note"))
+        self.assertIsNone(self.state.guest_draft)
 
     def test_create_conflict_emits_three_nearest_refs_and_keeps_state(self):
         calendar = Calendar(fixture_overrides={
@@ -247,6 +293,7 @@ class CalendarActionsTests(unittest.TestCase):
         self.assertEqual(len(calendar.writes), 1)
         self.assertIsNone(self.state.proposal)
         self.assertEqual(self.state.pending_call.outcome.outcome, "no_action_yet")
+        self.assertEqual(self.state.guest_draft.email, "sam@example.com")
         reopened = actions.execute(PickSlot(type="pick_slot", slotRef=chips[0]))
         self.assertEqual(event(reopened, "proposal")["proposal"]["kind"], "book")
         self.assertEqual(len(calendar.writes), 1)
@@ -360,7 +407,7 @@ class CalendarActionsTests(unittest.TestCase):
         calendar = Calendar()
         slot = stored_slot(self.state)
         tools = CalendarTools(calendar, self.state, NOW)
-        initial = tools.execute("propose_booking", {"slot_ref": slot, "name": "", "email": "", "notes": ""})
+        initial = tools.execute("propose_booking", {"slot_ref": slot, "name": "", "notes": ""})
         self.state.pending_call = PendingCall(id="call-x", name="propose_booking", proposal_id=initial.proposal.id)
         actions = self.actions(calendar)
         new_card = event(actions.execute(PickSlot(type="pick_slot", slotRef=slot)), "proposal")["proposal"]
@@ -371,6 +418,7 @@ class CalendarActionsTests(unittest.TestCase):
         self.assertEqual(event(dismissed, "assistant_text")["text"], "Okay. The schedule is unchanged.")
         self.assertEqual(self.state.pending_call.outcome.outcome, "dismissed")
         self.assertIsNone(self.state.proposal)
+        self.assertIsNone(self.state.guest_draft)
         self.assertEqual(calendar.writes, [])
 
 
@@ -380,10 +428,9 @@ class ConfirmationRecoveryTests(unittest.TestCase):
 
     def prepare(self, calendar, kind="book"):
         state = new_state(ZONE, NOW)
-        state.user.name = "Sam"
-        state.user.email = "sam@example.com"
         actions = self.actions(calendar, state)
         if kind == "book":
+            state.guest_draft = GuestDraft(name="Sam", email="sam@example.com")
             slot = stored_slot(state)
             outcome = actions.execute(PickSlot(type="pick_slot", slotRef=slot))
             original = None
@@ -517,6 +564,63 @@ class ConfirmationRecoveryTests(unittest.TestCase):
         self.assertEqual(outcome.error_code, "reschedule_partial")
         self.assertEqual(state.bookings[original].status, "cancelled")
         self.assertTrue(all(item["type"] != "booking_result" for item in outcome.events))
+
+    def test_reschedule_verifies_every_original_guest_on_direct_and_recovered_results(self):
+        class MissingGuest(TimedCalendar):
+            def reschedule_booking(self, uid, start, reason="User requested reschedule"):
+                if self.mode == "direct":
+                    data = Calendar.reschedule_booking(self, uid, start, reason)
+                    data["attendees"].pop()
+                    return data
+                return super().reschedule_booking(uid, start, reason)
+
+            def list_bookings(self, **kwargs):
+                page = super().list_bookings(**kwargs)
+                for record in page["data"]:
+                    if record.get("rescheduledFromUid"):
+                        record["attendees"].pop()
+                return page
+
+        for mode, code in (("direct", "write_unverified"), ("applied", "reschedule_partial")):
+            with self.subTest(mode=mode):
+                calendar = MissingGuest(mode, fixture_overrides={"active_bookings": ["sam_intro"]})
+                calendar._bookings["fixture-sam-intro"]["attendees"].append({
+                    "name": "Second guest", "email": "second@example.com",
+                })
+                state, _, action = self.prepare(calendar, "reschedule")
+
+                outcome = self.actions(calendar, state).execute(action)
+
+                self.assertEqual(outcome.error_code, code)
+                self.assertTrue(all(item["type"] != "booking_result" for item in outcome.events))
+                self.assertEqual(len(calendar.writes), 1)
+
+    def test_guestless_timeout_only_uses_linked_uid_to_verify_a_replacement(self):
+        class GuestlessCalendar(TimedCalendar):
+            def booking(self, uid):
+                data = super().booking(uid)
+                if not self.has_link:
+                    data.pop("rescheduledToUid", None)
+                return data
+
+        for has_link in (True, False):
+            with self.subTest(has_link=has_link):
+                calendar = GuestlessCalendar("applied", fixture_overrides={"active_bookings": ["sam_intro"]})
+                calendar.has_link = has_link
+                calendar._bookings["fixture-sam-intro"]["attendees"] = []
+                state, original, action = self.prepare(calendar, "reschedule")
+
+                outcome = self.actions(calendar, state).execute(action)
+
+                self.assertEqual(calendar.verification_reads, [])
+                self.assertEqual(state.bookings[original].status, "cancelled")
+                self.assertEqual(len(calendar.writes), 1)
+                if has_link:
+                    self.assertIsNone(outcome.error_code)
+                    self.assertEqual(event(outcome, "booking_result")["kind"], "rescheduled")
+                else:
+                    self.assertEqual(outcome.error_code, "reschedule_partial")
+                    self.assertTrue(all(item["type"] != "booking_result" for item in outcome.events))
 
     def test_matching_replacement_with_active_original_is_partial(self):
         class NewOnly(TimedCalendar):
@@ -654,10 +758,6 @@ class ConfirmationRecoveryTests(unittest.TestCase):
         repeated = verify_state(token, KEY, NOW)
         self.assertEqual(CalendarActions(calendar, repeated, NOW, ledger=ledger).execute(action), first_result)
         self.assertEqual(repeated, first_state)
-        with self.assertRaises(ActionError):
-            CalendarActions(calendar, verify_state(token, KEY, NOW), NOW, ledger=ledger).execute(
-                ConfirmProposal(type="confirm_proposal", proposalId=action.proposal_id, email="different@example.com")
-            )
         self.assertEqual(len(calendar.writes), 1)
 
 

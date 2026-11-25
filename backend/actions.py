@@ -32,6 +32,7 @@ from backend.state import (
     BookingEntry,
     ConfirmedOutcome,
     DismissedOutcome,
+    GuestDraft,
     NoActionYetOutcome,
     PendingOutcome,
     Proposal,
@@ -91,6 +92,12 @@ def _has_attendee(booking: BookingEntry, email: str | None) -> bool:
     return bool(email and any(address.casefold() == email.casefold() for address in booking.attendee_emails))
 
 
+def _same_attendees(first: BookingEntry, second: BookingEntry) -> bool:
+    return {email.casefold() for email in first.attendee_emails} == {
+        email.casefold() for email in second.attendee_emails
+    }
+
+
 class CalendarActions:
     def __init__(
         self,
@@ -131,12 +138,11 @@ class CalendarActions:
 
     def _live_booking(self, ref: str, *, same_time: bool = False) -> BookingEntry:
         saved = self.state.bookings.get(ref)
-        email = self.state.user.email
-        if saved is None or not _has_attendee(saved, email):
-            raise ActionError("refusal", "I can only change a booking that matches your attendee email.")
-        live = booking_entry(self.calendar.booking(saved.uid))
-        if live.uid != saved.uid or not _has_attendee(live, email):
-            raise ActionError("refusal", "I can only change a booking that matches your attendee email.")
+        if saved is None:
+            raise ActionError("invalid_action", "Choose a booking from your calendar results.")
+        live = self._booking_result(self.calendar.booking(saved.uid))
+        if live is None or live.uid != saved.uid:
+            raise ActionError("invalid_action", "I couldn't verify that booking. List your calendar again.")
         if live.status not in _UPCOMING_STATUS or parse_instant(live.start_utc) <= self.now:
             raise ActionError("invalid_action", "Only upcoming bookings can be changed.")
         if same_time and (
@@ -178,7 +184,7 @@ class CalendarActions:
         try:
             if booking is None:
                 proposal = self.tools.execute("propose_booking", {
-                    "slot_ref": action.slot_ref, "name": "", "email": "", "notes": "",
+                    "slot_ref": action.slot_ref, "name": "", "notes": "",
                 })
             else:
                 proposal = self.tools.execute("propose_reschedule", {
@@ -188,6 +194,10 @@ class CalendarActions:
             if "nearest" not in error.result:
                 raise
             return self._recover_slot(slot, ref, booking)
+        if booking is None:
+            if self.state.guest_draft is None:
+                self.state.guest_draft = GuestDraft()
+            self.state.guest_draft.slot_ref = action.slot_ref
         self._supersede(previous, proposal.proposal)
         self.state.rescheduling_booking_ref = ref
         return ActionOutcome(proposal.events)
@@ -262,6 +272,8 @@ class CalendarActions:
         proposal = self._active_proposal(action.proposal_id)
         self._pending(proposal, DismissedOutcome(outcome="dismissed"))
         self.state.proposal = None
+        if proposal.kind == "book":
+            self.state.guest_draft = None
         self.state.rescheduling_booking_ref = None
         self._note(f"Dismissed {proposal.id}.")
         return ActionOutcome([{"type": "assistant_text", "text": "Okay. The schedule is unchanged."}])
@@ -333,20 +345,20 @@ class CalendarActions:
             return ActionOutcome([{"type": "assistant_text", "text": self.state.completed[action.proposal_id]}])
         proposal = self._active_proposal(action.proposal_id)
         if self.ledger is None:
-            return self._confirm_once(action, proposal)
+            return self._confirm_once(proposal)
         try:
             return self.ledger.execute(
-                self.state, action, self.now, lambda: self._confirm_once(action, proposal),
+                self.state, action, self.now, lambda: self._confirm_once(proposal),
             )
         except ConfirmationConflict:
             raise ActionError("invalid_action", "This confirmation was already submitted with different details.") from None
 
-    def _confirm_once(self, action: ConfirmProposal, proposal: Proposal) -> ActionOutcome:
+    def _confirm_once(self, proposal: Proposal) -> ActionOutcome:
         ref = proposal.booking_ref
         booking = self._live_booking(ref, same_time=True) if ref is not None else None
         if proposal.kind == "cancel" and booking is not None and ref is not None:
             return self._confirm_cancel(proposal, ref, booking)
-        return self._confirm_slot(action, proposal, booking)
+        return self._confirm_slot(proposal, booking)
 
     def _confirm_cancel(self, proposal: Proposal, ref: str, booking: BookingEntry) -> ActionOutcome:
         try:
@@ -378,31 +390,43 @@ class CalendarActions:
     def _interval(entry: BookingEntry) -> tuple[datetime, datetime]:
         return parse_instant(entry.start_utc), parse_instant(entry.end_utc)
 
+    def _matches_target(
+        self, entry: BookingEntry, event_type_id: int, requested: tuple[datetime, datetime],
+        email: str | None, original: BookingEntry | None,
+    ) -> bool:
+        if (
+            entry.status not in _UPCOMING_STATUS or entry.event_type_id != event_type_id
+            or self._interval(entry) != requested
+        ):
+            return False
+        if original is None:
+            return _has_attendee(entry, email)
+        return entry.uid != original.uid and _same_attendees(entry, original)
+
     def _matching_bookings(
         self,
-        email: str,
+        email: str | None,
         event_type_id: int,
         requested: tuple[datetime, datetime],
         *,
-        exclude_uid: str | None = None,
+        original: BookingEntry | None = None,
     ) -> list[Booking] | None:
+        address = next(iter(original.attendee_emails), None) if original is not None else email
+        if not address:
+            return None
         matches: dict[str, Booking] = {}
         cursor = None
         seen: set[str] = set()
         for _ in range(_MAX_VERIFY_PAGES):
             try:
-                page = self.calendar.list_bookings(attendee_email=email, status=None, limit=100, cursor=cursor)
+                page = self.calendar.list_bookings(attendee_email=address, status=None, limit=100, cursor=cursor)
             except CalError:
                 return None
             for data in page["data"]:
                 entry = self._booking_result(data)
                 if entry is None:
                     return None
-                if (
-                    entry.uid != exclude_uid and entry.status in _UPCOMING_STATUS
-                    and entry.event_type_id == event_type_id and self._interval(entry) == requested
-                    and _has_attendee(entry, email)
-                ):
+                if self._matches_target(entry, event_type_id, requested, email, original):
                     matches[entry.uid] = data
                     if len(matches) > 1:
                         return list(matches.values())
@@ -422,7 +446,7 @@ class CalendarActions:
         entry = self._booking_result(data)
         if (
             entry is None or entry.uid != before.uid or entry.event_type_id != before.event_type_id
-            or self._interval(entry) != self._interval(before) or not _has_attendee(entry, self.state.user.email)
+            or self._interval(entry) != self._interval(before) or not _same_attendees(entry, before)
         ):
             return None
         return data, entry
@@ -480,16 +504,32 @@ class CalendarActions:
             and replacement.get("rescheduledFromUid") in (None, "", original["uid"])
         )
 
+    def _linked_guestless_replacement(
+        self, original: Booking, before: BookingEntry, event_type_id: int, requested: tuple[datetime, datetime],
+    ) -> Booking | None:
+        uid = original.get("rescheduledToUid")
+        if not isinstance(uid, str) or not uid or uid == before.uid:
+            return None
+        try:
+            replacement = self.calendar.booking(uid)
+        except CalError:
+            return None
+        entry = self._booking_result(replacement)
+        if entry is None or entry.uid != uid or not self._matches_target(entry, event_type_id, requested, None, before):
+            return None
+        return replacement
+
     def _recover_reschedule(
         self, proposal: Proposal, before: BookingEntry, event_type_id: int, requested: tuple[datetime, datetime],
     ) -> Booking | ActionOutcome:
         original = self._original_after_write(before)
-        email = self.state.user.email
-        matches = self._matching_bookings(email, event_type_id, requested, exclude_uid=before.uid) if email else None
+        matches = self._matching_bookings(None, event_type_id, requested, original=before)
         replacement = matches[0] if matches is not None and len(matches) == 1 else None
         if original is not None:
             data, current = original
             if current.status == "cancelled":
+                if not before.attendee_emails:
+                    replacement = self._linked_guestless_replacement(data, before, event_type_id, requested)
                 if replacement is not None and self._linked_replacement(data, replacement):
                     return replacement
                 return self._unverified(
@@ -512,24 +552,23 @@ class CalendarActions:
 
     def _confirm_taken_slot(
         self, proposal: Proposal, slot: SlotEntry, booking: BookingEntry | None,
-        requested: tuple[datetime, datetime], name: str, email: str,
+        requested: tuple[datetime, datetime], email: str,
         *, options: list[tuple[datetime, datetime]] | None = None,
     ) -> ActionOutcome:
-        matches = self._matching_bookings(
-            email, slot.event_type_id, requested, exclude_uid=booking.uid if booking is not None else None,
-        )
-        if matches is not None and len(matches) == 1:
-            match = matches[0]
-            if booking is None:
-                return self._complete_slot(proposal, slot, booking, requested, name, email, match)
+        matches = self._matching_bookings(email, slot.event_type_id, requested, original=booking)
+        match = matches[0] if matches is not None and len(matches) == 1 else None
+        if booking is None and match is not None:
+            return self._complete_slot(proposal, slot, booking, requested, email, match)
+        if booking is not None and (match is not None or not booking.attendee_emails):
             original = self._original_after_write(booking)
-            if original is not None and original[1].status == "cancelled" and self._linked_replacement(original[0], match):
-                return self._complete_slot(proposal, slot, booking, requested, name, email, match)
+            if original is not None and original[1].status == "cancelled":
+                if not booking.attendee_emails:
+                    match = self._linked_guestless_replacement(original[0], booking, slot.event_type_id, requested)
+                if match is not None and self._linked_replacement(original[0], match):
+                    return self._complete_slot(proposal, slot, booking, requested, email, match)
         return self._recover_slot(slot, proposal.booking_ref, booking, proposal=proposal, options=options)
 
-    def _confirm_slot(
-        self, action: ConfirmProposal, proposal: Proposal, booking: BookingEntry | None,
-    ) -> ActionOutcome:
+    def _confirm_slot(self, proposal: Proposal, booking: BookingEntry | None) -> ActionOutcome:
         ref = proposal.booking_ref
         slot = self.state.slots.get(proposal.slot_ref or "")
         if slot is None or slot.for_booking_ref != ref or (
@@ -537,19 +576,16 @@ class CalendarActions:
         ):
             raise ActionError("invalid_action", "Choose a time for this booking from the current slots.")
         event = self._event(slot.event_type_id)
-        name, email = "", self.state.user.email or ""
-        if proposal.kind == "book":
-            name = (action.name or proposal.name or "").strip()
-            email = (action.email or proposal.email or "").strip()
-            if not name or not EMAIL.fullmatch(email):
-                raise ActionError("invalid_contact", "Enter a name and a valid email address.")
+        name, email = (proposal.name or "").strip(), (proposal.email or "").strip()
+        if proposal.kind == "book" and (not name or not EMAIL.fullmatch(email)):
+            raise ActionError("invalid_contact", "I need the guest's name and email before booking.")
         start = parse_instant(slot.start_utc)
         requested = (start, parse_instant(slot.end_utc))
         day = start.astimezone(self.zone).date()
         if start <= self.now:
             return self._recover_slot(slot, ref, booking, proposal=proposal)
         if requested not in self._fresh_slots(slot.event_type_id, day, day, booking):
-            return self._confirm_taken_slot(proposal, slot, booking, requested, name, email)
+            return self._confirm_taken_slot(proposal, slot, booking, requested, email)
         try:
             if booking is not None:
                 data = self.calendar.reschedule_booking(
@@ -562,8 +598,7 @@ class CalendarActions:
                 ), None)
                 data = self.calendar.create_booking(
                     start=start, event_type_id=slot.event_type_id, name=name, email=email,
-                    time_zone=self.state.time_zone, notes=action.notes if action.notes is not None else proposal.notes,
-                    notes_field=notes_field,
+                    time_zone=self.state.time_zone, notes=proposal.notes, notes_field=notes_field,
                 )
         except CalError as error:
             if error.code == "unavailable":
@@ -576,31 +611,36 @@ class CalendarActions:
                 action_name = "rescheduled" if booking is not None else "created"
                 return self._unverified(proposal, f"I couldn’t verify whether the booking was {action_name}.")
             elif error.code == "slot_taken":
-                return self._confirm_taken_slot(proposal, slot, booking, requested, name, email)
+                return self._confirm_taken_slot(proposal, slot, booking, requested, email)
             elif error.status not in {400, 409, 422}:
                 raise
             else:
                 options = self._recovery_options(slot, booking)
                 if requested in options:
                     raise
-                return self._confirm_taken_slot(proposal, slot, booking, requested, name, email, options=options)
+                return self._confirm_taken_slot(proposal, slot, booking, requested, email, options=options)
+        else:
+            if booking is not None and not booking.attendee_emails and data.get("rescheduledFromUid") != booking.uid:
+                original = self._original_after_write(booking)
+                if (
+                    original is None or original[1].status != "cancelled"
+                    or original[0].get("rescheduledToUid") != data.get("uid")
+                ):
+                    return self._unverified(proposal, "I couldn’t verify whether the booking was rescheduled.")
 
         if isinstance(data, ActionOutcome):
             return data
-        return self._complete_slot(proposal, slot, booking, requested, name, email, data)
+        return self._complete_slot(proposal, slot, booking, requested, email, data)
 
     def _complete_slot(
         self, proposal: Proposal, slot: SlotEntry, booking: BookingEntry | None,
-        requested: tuple[datetime, datetime], name: str, email: str, data: Booking,
+        requested: tuple[datetime, datetime], email: str, data: Booking,
     ) -> ActionOutcome:
         ref = proposal.booking_ref
         entry = self._booking_result(data)
         if (
-            entry is None or entry.status not in _UPCOMING_STATUS
-            or self._interval(entry) != requested
-            or entry.event_type_id != slot.event_type_id
-            or not _has_attendee(entry, email)
-            or (booking is not None and entry.uid == booking.uid)
+            entry is None or not self._matches_target(entry, slot.event_type_id, requested, email, booking)
+            or (booking is not None and data.get("rescheduledFromUid") not in (None, "", booking.uid))
         ):
             action_name = "rescheduled" if booking is not None else "created"
             return self._unverified(proposal, f"I couldn’t verify whether the booking was {action_name}.")
@@ -611,8 +651,7 @@ class CalendarActions:
             replacement = booking_view(add_booking(self.state, entry), entry, self.state.time_zone)
             result = self._complete(proposal, "rescheduled", replacement)
             return ActionOutcome([{"type": "refs", "bookings": {ref: old}}, *result.events])
-        self.state.user.name = name
-        self.state.user.email = email.casefold()
+        self.state.guest_draft = None
         created = booking_view(add_booking(self.state, entry), entry, self.state.time_zone)
         return self._complete(proposal, "booked", created)
 

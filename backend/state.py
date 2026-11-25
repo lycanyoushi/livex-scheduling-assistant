@@ -70,12 +70,6 @@ class _StateModel(BaseModel):
     )
 
 
-class UserState(_StateModel):
-    name: ContactName | None = None
-    email: ContactEmail | None = None
-    conversation_name: ContactName | None = None
-
-
 class GuestDraft(_StateModel):
     name: ContactName | None = None
     email: ContactEmail | None = None
@@ -182,7 +176,6 @@ class SessionState(_StateModel):
     session_id: _OpaqueId
     time_zone: TimeZoneName
     expires_at: Annotated[int, Field(gt=0)]
-    user: UserState = Field(default_factory=UserState)
     guest_draft: GuestDraft | None = None
     last_offered_slots: Annotated[list[SlotRef], Field(max_length=4)] = Field(default_factory=list)
     slots: Annotated[dict[SlotRef, SlotEntry], Field(max_length=MAX_SLOTS)] = Field(default_factory=dict)
