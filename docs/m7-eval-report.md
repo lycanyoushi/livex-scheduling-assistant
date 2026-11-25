@@ -130,3 +130,31 @@ Cases 2, 10, 11, and 35 passed **75/75 checks** in one live Gemini run against F
 ## Local verification
 
 `pnpm test` passed 192 Python tests and 14 frontend tests. ESLint passed with zero warnings. `pnpm build` compiled, checked TypeScript, and generated the three build pages. A two-turn Chromium smoke against a synthetic chat endpoint verified booking-card order and disabled controls for a retired booking ref.
+
+## Owner-mode initial baseline
+
+The preceding reports cover the earlier visitor mode. The initial owner-mode evaluation used the Flask endpoint, isolated FakeCal calendars and Gemini 3.5 Flash-Lite with minimal thinking. Gemini 3.1 Flash-Lite served as backup. The six held-out prompts and checks were frozen before any provider calls, and both suites ran before further fixes. [Main conversations](../evals/conversations.yaml) · [Frozen rewordings](../evals/owner_held_out.json) · [Synthetic calendar fixture](../evals/fake_cal.json)
+
+| Suite | Cases passed | Repetitions passed | Live Gemini calls | HTTP 429 / 503 |
+| --- | ---: | ---: | ---: | ---: |
+| Main, three repetitions per case | 25/30 | 74/90 | 86 | 0 / 0 |
+| Held-out, one repetition per case | 6/6 | 6/6 | 3 | 0 / 0 |
+
+All 90 main repetitions completed. Of these, 13 had structural failures and three had wording-only failures. The main run passed 2,167 of 2,199 checks. Its 86 live calls comprised 85 primary calls and one backup call. Case 23's simulated outages are separate from the live counts. [Main baseline results](../evals/results/owner-gemini-3.5-flash-lite-initial.json) · [Held-out baseline results](../evals/results/owner-gemini-3.5-flash-lite-held-out-initial.json)
+
+The three example requests each passed 3/3. The dated listing showed two tomorrow meetings in one model call without asking for contact information. The candidate intro showed Thursday afternoon openings, collected guest details in chat after the typed ordinal, and dismissed the resulting card on “no thanks.” The 3pm move showed later openings that day without proposing a new time. The main result file includes the first repetition's email-redacted dialogue and resolved offers for cases 10, 24 and 25. [Dialogue and event evidence](../evals/results/owner-gemini-3.5-flash-lite-initial.json)
+
+### Failures and safety checks
+
+| Case | Passing repetitions | First baseline observation |
+| --- | ---: | --- |
+| 6 · Past time | 0/3 | No future slots appeared. One repetition made four model calls and another missed the past-time wording check. |
+| 8 · Replace a pending proposal | 2/3 | One repetition produced neither expected proposal, so there was no pending call to continue. |
+| 12 · Empty listing | 0/3 | The empty result passed the structural checks. The replies omitted the expected invitation to schedule. |
+| 15 · Move an hour later | 0/3 | The assistant did not propose the requested one-hour shift. |
+| 29 · Typed book, list, move and cancel | 0/3 | The reschedule turn proposed a time before the user chose one. The subsequent typed choices, confirmations and calendar results passed in all three repetitions. |
+| 30 · Update the guest email | 0/3 | The draft updated and the conversation continued in all three repetitions. The email-only turn produced an unrequested booking card twice. One opening turn used a backup after a primary first-event timeout and exceeded its one-call bound. |
+
+All other main cases passed 3/3. Cases 16–20, covering unknown references, off-topic text, bulk cancellation, untrusted booking titles and requests to bypass confirmation, passed every repetition. Across all 150 main turns, the checker saw zero unconfirmed write attempts and zero email addresses in model requests. All 21 write attempts matched signed proposals. FakeCal applied 18 and returned the three intentional slot conflicts. The six held-out turns made no calendar writes. [Per-turn safety checks](../evals/results/owner-gemini-3.5-flash-lite-initial.json) · [Held-out safety checks](../evals/results/owner-gemini-3.5-flash-lite-held-out-initial.json)
+
+Main text-turn latency was 2.53 s p50 and 3.79 s p90 after driver pacing was subtracted. First visible feedback was 2.46 ms p50. One model call was used on 50.4% of text turns. Deterministic actions, ambiguity prompts and safety responses could complete with zero calls. [Timing data](../evals/results/owner-gemini-3.5-flash-lite-initial.json)

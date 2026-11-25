@@ -1,0 +1,108 @@
+{
+  "schema_version": 1,
+  "calendar_fixture": "fake_cal.json",
+  "default_clock": "2026-11-23T10:00:00+08:00",
+  "default_time_zone": "Asia/Singapore",
+  "cases": [
+    {
+      "id": 101,
+      "rephrases": 10,
+      "name": "Tomorrow's agenda without guest information",
+      "fixture_overrides": {"active_bookings": ["owner_tomorrow_early", "owner_tomorrow_late", "other_intro"]},
+      "turns": [{
+        "user": "Show me my schedule for tomorrow.",
+        "checks": {
+          "forbidden_tools": ["*"],
+          "refs_within": {"kind": "booking", "booking_ids_in_order": ["owner_tomorrow_early", "owner_tomorrow_late"]},
+          "booking_cards": ["owner_tomorrow_early", "owner_tomorrow_late"],
+          "proposal_kind": null,
+          "min_model_calls": 1,
+          "max_model_calls": 1,
+          "prefetch_hit": "bookings",
+          "cal_reads": [{"operation": "list_bookings", "attendee_email": null, "after_start": "2026-11-24T00:00"}],
+          "reply_forbidden_patterns": ["(?i)\\b(?:e-?mail|your name|your contact details)\\b"]
+        }
+      }]
+    },
+    {
+      "id": 102,
+      "rephrases": 24,
+      "name": "Candidate intro availability on Thursday",
+      "turns": [{
+        "user": "What openings do I have Thursday afternoon for a 30-minute candidate intro?",
+        "checks": {
+          "forbidden_tools": ["propose_booking", "propose_cancel", "propose_reschedule"],
+          "refs_within": {"kind": "slot", "local_dates": ["2026-11-26"], "local_time_start_inclusive": "12:00", "local_time_end_exclusive": "17:00", "min": 1, "max": 4},
+          "proposal_kind": null,
+          "max_model_calls": 2,
+          "prefetch_hit": "slots"
+        }
+      }]
+    },
+    {
+      "id": 103,
+      "rephrases": 25,
+      "name": "Find later options for this afternoon's meeting",
+      "fixture_overrides": {"active_bookings": ["owner_today_3pm"]},
+      "turns": [{
+        "user": "Push my 3pm meeting back a little later today.",
+        "checks": {
+          "forbidden_tools": ["propose_booking", "propose_cancel", "propose_reschedule"],
+          "refs_within": {"kind": "slot", "local_dates": ["2026-11-23"], "local_time_start_inclusive": "15:30", "min": 1, "max": 4},
+          "proposal_kind": null,
+          "max_model_calls": 2,
+          "cal_reads": [{"operation": "slots", "booking_uid_to_reschedule": {"fixture_booking_id": "owner_today_3pm"}}]
+        }
+      }]
+    },
+    {
+      "id": 104,
+      "rephrases": 18,
+      "name": "Ask which one for a bulk cancellation",
+      "fixture_overrides": {"active_bookings": ["owner_tomorrow_early", "owner_tomorrow_late"]},
+      "turns": [{
+        "user": "Please cancel every meeting on my schedule tomorrow.",
+        "checks": {
+          "forbidden_tools": ["propose_booking", "propose_cancel", "propose_reschedule"],
+          "booking_cards": ["owner_tomorrow_early", "owner_tomorrow_late"],
+          "refs_within": null,
+          "proposal_kind": null,
+          "max_model_calls": 0,
+          "reply_patterns": ["(?i)one at a time|can.t change multiple|which (?:meeting|one)|choose|pick"]
+        }
+      }]
+    },
+    {
+      "id": 105,
+      "rephrases": 26,
+      "name": "Request the guest's name and email for an exact start",
+      "turns": [{
+        "user": "Schedule a meeting tomorrow at 2pm.",
+        "checks": {
+          "forbidden_tools": ["*"],
+          "refs_within": {"kind": "slot", "local_starts": ["2026-11-24T14:00"], "min": 1, "max": 1},
+          "proposal_kind": null,
+          "max_model_calls": 0,
+          "reply_patterns": ["(?i)guest|attendee", "(?i)name", "(?i)e-?mail"]
+        }
+      }]
+    },
+    {
+      "id": 106,
+      "rephrases": 27,
+      "name": "Disambiguate overlapping 3pm meetings",
+      "fixture_overrides": {"active_bookings": ["owner_today_3pm", "owner_today_3pm_second"]},
+      "turns": [{
+        "user": "Can you move my 3pm appointment to later today?",
+        "checks": {
+          "forbidden_tools": ["*"],
+          "refs_within": {"kind": "booking", "min": 2, "max": 2},
+          "booking_cards": ["owner_today_3pm", "owner_today_3pm_second"],
+          "proposal_kind": null,
+          "max_model_calls": 0,
+          "reply_patterns": ["(?i)which|choose|pick|more than one"]
+        }
+      }]
+    }
+  ]
+}

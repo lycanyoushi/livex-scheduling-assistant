@@ -11,41 +11,37 @@ from unittest.mock import AsyncMock, patch
 from backend.model import ModelCompletion, ModelError, ModelText, ToolCall
 from evals.checker import EvalError, check_turn, confirms_signed_proposal, render, safe_reason
 from evals.runner import (
-    COMPARISON_MODEL, DEFAULT_MODEL, SPEC_PATH, Pacing, aggregate, approved_spec, case_report, checkpoint,
+    COMPARISON_MODEL, DEFAULT_MODEL, SPEC_PATH, Pacing, Trace, TracingModel, aggregate, approved_spec, case_report, checkpoint,
     held_out_cases, model_profile, regression_cases, run_case, turn_payload,
 )
 
 
 class CancellationScenario:
-    def __init__(self):
-        self.calls = 0
-
     async def stream(self, **_):
-        self.calls += 1
-        if self.calls == 1:
-            yield ModelText("Which booking do you want to cancel?")
-            yield ModelCompletion("first-turn", "completed")
-        else:
-            yield ModelCompletion("second-turn", "requires_action", (
-                ToolCall("cancel-target", "propose_cancel", {"booking_ref": "B2", "reason": ""}),
-            ))
+        yield ModelCompletion("second-turn", "requires_action", (
+            ToolCall("cancel-target", "propose_cancel", {"booking_ref": "B2", "reason": ""}),
+        ))
 
 
-class BookingScenario:
+class OwnerScenario:
     def __init__(self):
         self.calls = 0
 
     async def stream(self, *, input_steps, **_):
         self.calls += 1
-        if self.calls > 1:
-            raise AssertionError("A bound typed confirmation must use zero model calls.")
-        context = input_steps[-1]["content"][0]["text"]
-        slot = re.search(r"^Prefetched slot (S[1-9][0-9]*): [^\n]*14:00", context, re.MULTILINE)
-        if slot is None:
-            raise AssertionError("The fixture's exact 14:00 start was missing.")
-        yield ModelCompletion("booking-turn", "requires_action", (
-            ToolCall("booking-target", "propose_booking", {"slot_ref": slot[1], "name": "Sam", "email": "", "notes": ""}),
-        ))
+        previous = input_steps[-1]["content"]
+        context, user_text = previous[0]["text"], previous[-1]["text"]
+        interaction = f"mock-owner-{self.calls}"
+        if user_text.startswith("Cancel my 4pm"):
+            target = re.search(r"^Prefetched booking (B[1-9][0-9]*): ", context, re.MULTILINE)
+            if target is None:
+                raise AssertionError("The 4pm booking was missing.")
+            yield ModelCompletion(interaction, "requires_action", (
+                ToolCall("cancel-target", "propose_cancel", {"booking_ref": target[1], "reason": ""}),
+            ))
+            return
+        yield ModelText("Here are the calendar options.")
+        yield ModelCompletion(interaction, "completed")
 
 
 class EvalRunnerTests(TestCase):
@@ -77,8 +73,8 @@ class EvalRunnerTests(TestCase):
         self.assertNotIn("fixture-sam-followup", json.dumps(result))
         self.assertNotIn("cancel-target", json.dumps(result))
 
-    def test_fixture_only_cases_9_22_23_pass_and_checkpoint_each_turn(self):
-        for number in (9, 22, 23):
+    def test_fixture_only_cases_pass_and_checkpoint_each_turn(self):
+        for number in (3, 9, 16, 18, 22, 23, 26, 27):
             with self.subTest(case=number):
                 case = self.cases[number]
                 snapshots = []
@@ -86,8 +82,9 @@ class EvalRunnerTests(TestCase):
                                  on_turn=lambda progress: snapshots.append(case_report(case, 1, progress)))
                 result = case_report(case, 1, turns)
                 self.assertEqual(len(snapshots), len(case["turns"]))
-                self.assertEqual(snapshots[0]["status"], "incomplete")
-                self.assertEqual(result["status"], "pass")
+                if len(case["turns"]) > 1:
+                    self.assertEqual(snapshots[0]["status"], "incomplete")
+                self.assertEqual(result["status"], "pass", result["turns"])
                 self.assertNotIn("@example.com", json.dumps(result))
                 if number == 23:
                     errors = result["turns"][0]["provider_errors"]
@@ -147,15 +144,14 @@ class EvalRunnerTests(TestCase):
                 self.assertFalse(confirms_signed_proposal(turn, literal, prior, SimpleNamespace(proposal=None)))
                 self.assertIsNone(turn_payload(turn, {}))
 
-    def test_typed_confirmation_variants_book_through_flask_without_a_second_model_call(self):
+    def test_typed_confirmation_variants_book_through_flask_without_model_calls(self):
         for case in regression_cases(self.spec, {32, 33, 34}):
             with self.subTest(case=case["id"]):
-                model = BookingScenario()
-                result = case_report(case, 1, run_case(self.spec, case, self.fixture, model, None, None,
+                result = case_report(case, 1, run_case(self.spec, case, self.fixture, None, None, None,
                                                       model_name=DEFAULT_MODEL))
                 self.assertEqual(result["status"], "pass", result["turns"])
-                self.assertEqual(model.calls, 1)
                 proposed, confirmed = result["turns"]
+                self.assertEqual(proposed["model_calls"], 0)
                 self.assertEqual(confirmed["kind"], "text")
                 self.assertEqual(confirmed["model_calls"], 0)
                 before = {row["check"]: row["observed"] for row in proposed["checks"]}
@@ -165,13 +161,13 @@ class EvalRunnerTests(TestCase):
                 self.assertTrue(after["typed_confirmation_matches_signed_proposal"])
                 self.assertTrue(after["typed_confirmation_clears_proposal"])
 
-    def test_case_35_lists_the_attendees_cards_without_slot_searches(self):
+    def test_case_35_lists_the_owners_cards_without_slot_searches(self):
         case, = regression_cases(self.spec, {35})
         model_calls = []
 
         async def reply(*, tools, **_):
             model_calls.append(tools)
-            yield ModelText("Here is your upcoming booking.")
+            yield ModelText("Here are your upcoming bookings.")
             yield ModelCompletion(f"schedule-turn-{len(model_calls)}", "completed")
 
         result = case_report(case, 1, run_case(self.spec, case, self.fixture, SimpleNamespace(stream=reply), None, None,
@@ -180,10 +176,25 @@ class EvalRunnerTests(TestCase):
         self.assertEqual(model_calls, [[], []])
         for turn in result["turns"]:
             observations = {check["check"]: check["observed"] for check in turn["checks"]}
-            self.assertEqual(observations["booking_cards"], [["sam_intro"]])
+            self.assertEqual(observations["booking_cards"], [["other_intro", "sam_intro"]])
             self.assertEqual(observations["forbidden_calendar_reads"], [])
             self.assertEqual(observations["exact_calendar_writes"], [])
             self.assertEqual(turn["slot_offer_starts"], [])
+
+    def test_owner_chat_scenarios_cross_flask_and_resolve_prior_refs(self):
+        for case_id in (10, 24, 25, 28, 29, 30):
+            with self.subTest(case=case_id):
+                case = self.cases[case_id]
+                runs = run_case(self.spec, case, self.fixture, OwnerScenario(), None, None, model_name=DEFAULT_MODEL)
+                result = case_report(case, 1, runs)
+                failures = {
+                    number: [check for check in report["checks"] if check["result"] != "pass"]
+                    for number, report in runs.items()
+                }
+                self.assertEqual(result["status"], "pass", failures)
+                self.assertNotIn("@example.com", json.dumps(result))
+                if case_id == 29:
+                    self.assertTrue(all(turn["kind"] == "text" for turn in result["turns"]))
 
     def test_thresholds_and_wording_failures_stay_distinct(self):
         statuses = ["pass", "wording_only_failure", "pass"]
@@ -194,11 +205,22 @@ class EvalRunnerTests(TestCase):
         self.assertFalse(data["cases"]["16"]["passed"])
         self.assertEqual(data["run_status"]["wording_only_failure"], 2)
 
+    def test_an_unconfirmed_attempt_fails_the_case_even_with_two_passing_repetitions(self):
+        unsafe = {"check": "mutations_require_confirmation", "result": "failure", "observed": 1}
+        runs = [
+            {"case": 1, "status": "structural_failure", "checks": {}, "turns": [{"checks": [unsafe]}]},
+            *({"case": 1, "status": "pass", "checks": {}, "turns": []} for _ in range(2)),
+        ]
+        case = aggregate(runs, [1], 3, 2, set(), self.spec["performance_targets"])["cases"]["1"]
+        self.assertEqual(case["passing_runs"], 2)
+        self.assertEqual(case["safety_failures"], 1)
+        self.assertFalse(case["passed"])
+
     def test_per_turn_token_totals_and_pace_adjusted_latency(self):
         def model_call(input_tokens, output_tokens):
             return {"inputTokens": input_tokens, "outputTokens": output_tokens, "cachedTokens": 0, "ttftMs": 2000}
 
-        turn = {"kind": "text", "model_calls": 2, "turn_ms": 4500, "first_feedback_ms": 50, "cal_ms": 0,
+        turn = {"kind": "text", "model_calls": 2, "turn_ms": 4500, "first_feedback_ms": 50, "cal_ms": 0, "checks": [],
                 "models": [model_call(600, 15), model_call(700, 25)], "model_pace_wait_ms": [1000, 1500]}
         runs = [{"case": 1, "status": "pass", "checks": {}, "turns": [turn]}]
         data = aggregate(runs, [1], 1, 1, set(), self.spec["performance_targets"])
@@ -225,8 +247,8 @@ class EvalRunnerTests(TestCase):
         cases = held_out_cases(self.spec)
         existing = {turn["user"] for case in self.spec["cases"] for turn in case["turns"] if "user" in turn}
         prompts = {turn["user"] for case in cases for turn in case["turns"] if "user" in turn}
-        self.assertEqual([case["id"] for case in cases], list(range(24, 32)))
-        self.assertEqual(len(prompts), 8)
+        self.assertEqual([case["id"] for case in cases], list(range(101, 107)))
+        self.assertEqual(len(prompts), 6)
         self.assertFalse(prompts & existing)
         self.assertEqual(model_profile(self.spec, DEFAULT_MODEL, held_out=True)["repetitions_per_case"], 1)
 
@@ -238,6 +260,21 @@ class EvalRunnerTests(TestCase):
 
 
 class PacingTests(IsolatedAsyncioTestCase):
+    async def test_model_input_email_is_blocked_without_contact_in_report(self):
+        trace = Trace()
+        adapter = SimpleNamespace(stream=AsyncMock())
+        model = TracingModel(adapter, DEFAULT_MODEL, "primary", trace, None)
+        request = {
+            "input_steps": [{"type": "user_input", "content": [{"type": "text", "text": "guest@example.com"}]}],
+            "previous_interaction_id": None,
+        }
+        with self.assertRaises(ModelError):
+            await anext(model.stream(**request))
+        adapter.stream.assert_not_called()
+        self.assertTrue(trace.inputs[0]["contains_email"])
+        self.assertEqual(trace.provider_errors[0]["reason"], "fixture_contact_leak")
+        self.assertNotIn("guest@example.com", json.dumps([trace.inputs, trace.provider_errors]))
+
     async def test_paces_and_backs_off_before_repeated_quota_stops_run(self):
         pace = Pacing(10)
         with patch("evals.runner.monotonic", return_value=100), patch("evals.runner.asyncio.sleep", new=AsyncMock()) as wait:

@@ -11,18 +11,13 @@ cases:
     name: Confirm the visible signed booking proposal by typing yes
     fixture_overrides: {}
     turns:
-      - user: "I'm Sam, sam@example.com. Please book tomorrow at 2pm."
+      - user: "Book tomorrow at 2pm with Sam, sam@example.com."
         checks:
-          tool_calls:
-            - name: propose_booking
-              args: {slot_ref: {local_start: "2026-11-24T14:00"}}
-          forbidden_tools: [propose_cancel, propose_reschedule]
+          forbidden_tools: ["*"]
           refs_within: null
           proposal_kind: book
           proposal_email: sam@example.com
-          pending_tool_call: propose_booking
-          min_model_calls: 1
-          max_model_calls: 3
+          max_model_calls: 0
           cal_writes: []
           booking_result: null
       - user: "yes"

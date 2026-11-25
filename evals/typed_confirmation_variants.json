@@ -12,27 +12,14 @@
               "booking_result": null,
               "cal_writes": [],
               "forbidden_tools": [
-                "propose_cancel",
-                "propose_reschedule"
+                "*"
               ],
-              "max_model_calls": 3,
-              "min_model_calls": 1,
-              "pending_tool_call": "propose_booking",
+              "max_model_calls": 0,
               "proposal_email": "sam@example.com",
               "proposal_kind": "book",
-              "refs_within": null,
-              "tool_calls": [
-                {
-                  "args": {
-                    "slot_ref": {
-                      "local_start": "2026-11-24T14:00"
-                    }
-                  },
-                  "name": "propose_booking"
-                }
-              ]
+              "refs_within": null
             },
-            "user": "I'm Sam, sam@example.com. Please book tomorrow at 2pm."
+            "user": "Book tomorrow at 2pm with Sam, sam@example.com."
           },
           {
             "checks": {
@@ -72,27 +59,14 @@
               "booking_result": null,
               "cal_writes": [],
               "forbidden_tools": [
-                "propose_cancel",
-                "propose_reschedule"
+                "*"
               ],
-              "max_model_calls": 3,
-              "min_model_calls": 1,
-              "pending_tool_call": "propose_booking",
+              "max_model_calls": 0,
               "proposal_email": "sam@example.com",
               "proposal_kind": "book",
-              "refs_within": null,
-              "tool_calls": [
-                {
-                  "args": {
-                    "slot_ref": {
-                      "local_start": "2026-11-24T14:00"
-                    }
-                  },
-                  "name": "propose_booking"
-                }
-              ]
+              "refs_within": null
             },
-            "user": "I'm Sam, sam@example.com. Please book tomorrow at 2pm."
+            "user": "Book tomorrow at 2pm with Sam, sam@example.com."
           },
           {
             "checks": {
@@ -127,5 +101,5 @@
     "default_time_zone": "Asia/Singapore",
     "schema_version": 1
   },
-  "yaml_sha256": "36a271da98d5987e3dfe3bbf599a3e6abf5d6e87a1e3610628340246b65aa555"
+  "yaml_sha256": "5487802f3f12bfe9ce4e9baac0357189169eb19e2a7664659aa2a40ca65fd7af"
 }

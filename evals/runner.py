@@ -22,19 +22,20 @@ from backend.cal_client import CalError
 from backend.gemini import GeminiClient
 from backend.model import ModelCompletion, ModelError, ModelText
 from backend.server import TurnLoop, create_app
-from backend.state import SlotEntry, new_state, sign_state, verify_state
+from backend.state import GuestDraft, SlotEntry, new_state, sign_state, verify_state
 from backend.tools import booking_entry
 from backend.turn import TurnService
 from evals.checker import (
-    EvalError, SAFE_STATUS, TYPED_CONFIRM_REPLIES, check_turn, confirms_signed_proposal, local_iso, require, safe_reason,
+    EMAIL_ADDRESS, EvalError, SAFE_STATUS, TYPED_CONFIRM_REPLIES, TYPED_DISMISS_REPLIES, check_turn,
+    confirms_signed_proposal, local_iso, render, require, safe_reason,
 )
 from evals.fake_cal import FakeCal
 from scripts.local_environment import load_local_environment
 
 
 SPEC_PATH = Path(__file__).with_name("conversations.yaml")
-HELD_OUT_PATH = SPEC_PATH.with_name("held_out.json")
-APPROVED_CASE_IDS = range(1, 24)
+HELD_OUT_PATH = SPEC_PATH.with_name("owner_held_out.json")
+APPROVED_CASE_IDS = range(1, 31)
 REGRESSION_SPECS = {
     "regression_spec_sha256": (SPEC_PATH.with_name("regressions.yaml"), (32,)),
     "typed_confirmation_variants_sha256": (SPEC_PATH.with_name("typed_confirmation_variants.yaml"), (33, 34)),
@@ -53,7 +54,8 @@ SUPPORTED_CHECKS = {
     "prefetch_hit", "proposal_email", "reply_patterns", "pending_tool_call", "proposal_differs_from_turn",
     "first_model_step", "cal_reads", "cal_writes", "booking_result", "rejected_forbidden_tools",
     "reply_language", "template", "forbidden_cal_calls", "reply_max_lines", "attempted_model_roles", "fallback",
-    "booking_cards",
+    "booking_cards", "retired_booking_refs", "picked_slot_from_turn", "proposal_name", "proposal_booking_from_turn",
+    "guest_draft_email", "continue_previous_interaction", "reply_forbidden_patterns",
 }
 SUPPORTED_TEMPLATES = {None, "booked", "cancelled", "rescheduled", "slot_taken", "model_down_slots"}
 
@@ -79,19 +81,19 @@ def validate_spec(spec):
     validate_case_checks(spec["cases"])
 
 
-def validate_case_checks(cases, *, allow_typed_confirm=False):
+def validate_case_checks(cases):
     for case in cases:
         for number, turn in enumerate(case["turns"], 1):
             if "proposal_from_turn" in turn:
                 source = turn["proposal_from_turn"]
                 reply = turn.get("user")
-                require(allow_typed_confirm and isinstance(reply, str) and reply in TYPED_CONFIRM_REPLIES and "action" not in turn
+                require(isinstance(reply, str) and reply in TYPED_CONFIRM_REPLIES | TYPED_DISMISS_REPLIES and "action" not in turn
                         and type(source) is int and 1 <= source < number, "Invalid typed confirmation fixture.")
             rules = turn["checks"]
             require(set(rules) <= SUPPORTED_CHECKS and rules.get("reply_language") in {None, "es"},
                     "Unhandled evaluation check.")
             require(rules.get("template") in SUPPORTED_TEMPLATES, "Unhandled evaluation template.")
-            for pattern in rules.get("reply_patterns", []):
+            for pattern in (*rules.get("reply_patterns", []), *rules.get("reply_forbidden_patterns", [])):
                 re.compile(pattern)
 
 
@@ -114,7 +116,7 @@ def held_out_cases(spec):
         "schema_version", "calendar_fixture", "default_clock", "default_time_zone",
     )), "Held-out fixture settings must match the approved suite.")
     cases = frozen["cases"]
-    require([case["id"] for case in cases] == list(range(24, 32)), "Missing or duplicate held-out cases.")
+    require([case["id"] for case in cases] == list(range(101, 107)), "Missing or duplicate held-out cases.")
     require(all(case["rephrases"] in APPROVED_CASE_IDS for case in cases), "Unknown approved case rephrased.")
     validate_case_checks(cases)
     return cases
@@ -126,7 +128,7 @@ def validate_regressions(regressions, spec, case_ids):
     )), "Regression fixture settings must match the approved suite.")
     cases = regressions["cases"]
     require(tuple(case["id"] for case in cases) == case_ids, "Missing or duplicate regression case.")
-    validate_case_checks(cases, allow_typed_confirm=True)
+    validate_case_checks(cases)
     return cases
 
 
@@ -168,9 +170,9 @@ def refresh_spec(yaml_python=None):
 def fixture_state(case, fixture, now, zone):
     overrides = case.get("fixture_overrides", {})
     state = new_state(zone, now)
-    for name, value in overrides.get("user", {}).items():
-        require(name in {"name", "email"}, "Unexpected fixture user field.")
-        setattr(state.user, name, value)
+    require("user" not in overrides, "Use the owner guest_draft fixture.")
+    if "guest_draft" in overrides:
+        state.guest_draft = GuestDraft.model_validate(overrides["guest_draft"])
     for ref, label in overrides.get("booking_refs", {}).items():
         require(label in overrides.get("active_bookings", []), "A seeded booking must be activated in the fixture.")
         state.bookings[ref] = booking_entry(fixture["bookings"][label])
@@ -204,7 +206,9 @@ class TracedCalendar(FakeCal):
 
     def list_bookings(self, **kwargs):
         self.reads.append({"operation": "list_bookings", "status": kwargs.get("status", "upcoming"),
-                           "attendee_email": kwargs.get("attendee_email")})
+                           "attendee_email": kwargs.get("attendee_email"),
+                           **{key: local_iso(kwargs[key], self.zone)
+                              for key in ("after_start", "before_end") if kwargs.get(key) is not None}})
         return super().list_bookings(**kwargs)
 
     def booking(self, uid):
@@ -212,7 +216,10 @@ class TracedCalendar(FakeCal):
         return super().booking(uid)
 
     def booking_status(self, uid):
-        return super().booking(uid)["status"]
+        try:
+            return super().booking(uid)["status"]
+        except CalError:
+            return None
 
     def _write(self, operation, invoke, *, uid=None, start=None, **arguments):
         record = {"operation": operation, "uid": uid, "fixture_booking_id": self.fixture_name(uid), **arguments}
@@ -233,7 +240,8 @@ class TracedCalendar(FakeCal):
     def create_booking(self, **kwargs):
         create = super().create_booking
         return self._write("create_booking", lambda: create(**kwargs), start=kwargs["start"],
-                           email=kwargs["email"], event_type_id=kwargs["event_type_id"])
+                           name=kwargs["name"], email=kwargs["email"], notes=kwargs.get("notes"),
+                           event_type_id=kwargs["event_type_id"])
 
     def cancel_booking(self, uid, *args, **kwargs):
         cancel = super().cancel_booking
@@ -298,20 +306,24 @@ class TracingModel:
     async def stream(self, **request):
         wait_ms = 0.0
         simulated = bool(self.faults)
-        if not simulated and self.pacing is not None:
-            wait_ms = await self.pacing.start(self.name)
         steps = request["input_steps"]
+        contains_email = bool(EMAIL_ADDRESS.search(json.dumps(steps, ensure_ascii=False)))
+        if not simulated and not contains_email and self.pacing is not None:
+            wait_ms = await self.pacing.start(self.name)
         self.trace.inputs.append({
             "types": [step["type"] for step in steps],
             "first_call_id": steps[0].get("call_id"),
             "first_outcome": (steps[0].get("result") or {}).get("outcome"),
             "previous_id": request["previous_interaction_id"], "pace_wait_ms": wait_ms,
+            "contains_email": contains_email,
         })
         saw_text = False
         try:
             if simulated:
                 status = self.faults.pop(0)
                 raise ModelError("rate_limited" if status == 429 else "model_down", status, reason="fixture_fault")
+            if contains_email:
+                raise ModelError("model_down", reason="fixture_contact_leak")
             require(self.adapter is not None, "Unexpected model call in offline fixture.")
             async with aclosing(self.adapter.stream(**request)) as stream:
                 async for item in stream:
@@ -324,11 +336,11 @@ class TracingModel:
                                                "model": self.name, "role": self.role,
                                                "http_status": error.http_status, "simulated": simulated,
                                                "before_text": not saw_text, "reason": safe_reason(error.reason)})
-            if self.pacing is not None and not simulated:
+            if self.pacing is not None and not simulated and not contains_email:
                 self.pacing.outcome(self.name, error)
             raise
         else:
-            if self.pacing is not None and not simulated:
+            if self.pacing is not None and not simulated and not contains_email:
                 self.pacing.outcome(self.name)
 
 
@@ -368,7 +380,7 @@ def turn_payload(turn, prior):
     return {"kind": "ui", "action": action}
 
 
-def run_case(spec, case, fixture, primary, backup, loop, *, model_name, pacing=None, on_turn=None):
+def run_case(spec, case, fixture, primary, backup, loop, *, model_name, pacing=None, on_turn=None, capture_dialogue=False):
     zone = case.get("time_zone", spec["default_time_zone"])
     now = datetime.fromisoformat(case.get("clock", spec["default_clock"]))
     calendar = TracedCalendar(case, now, zone, fixture)
@@ -414,6 +426,13 @@ def run_case(spec, case, fixture, primary, backup, loop, *, model_name, pacing=N
             after = verify_state(token, secret, now)
             checked = check_turn(case["id"], turn, payload, events, turns,
                                  state, after, now, zone, calendar, trace, rephrases=case.get("rephrases"))
+            if capture_dialogue and payload["kind"] == "text":
+                _, visible_text, *_ = render(events)
+                checked["dialogue"] = {
+                    "user": EMAIL_ADDRESS.sub("[email redacted]", payload["text"])[:1000],
+                    "assistant": EMAIL_ADDRESS.sub("[email redacted]", visible_text.strip())[:1000],
+                    "proposal_kind": checked["proposal"].get("kind"),
+                }
             turns[number] = {**checked, "first_feedback_ms": first_feedback}
             if on_turn is not None:
                 on_turn(turns)
@@ -448,12 +467,19 @@ def percentiles(samples):
 
 def aggregate(runs, cases, repeats, minimum, mandatory, targets):
     per_case = {}
+    safety_checks = {"mutations_require_confirmation", "mutations_resolve_from_signed_state",
+                     "model_email_redacted", "booking_proposal_has_guest"}
     for case in cases:
         rows = [item for item in runs if item["case"] == case]
         count = sum(item["status"] == "pass" for item in rows)
         needed = repeats if case in mandatory else minimum
+        safety_failures = sum(
+            check["result"] == "failure" and check["check"] in safety_checks
+            for row in rows for turn in row["turns"] for check in turn["checks"]
+        )
         per_case[str(case)] = {"executed": len(rows), "passing_runs": count, "required": needed,
-                               "passed": len(rows) == repeats and count >= needed}
+                               "safety_failures": safety_failures,
+                               "passed": len(rows) == repeats and count >= needed and safety_failures == 0}
     turns = [turn for row in runs for turn in row["turns"] if "turn_ms" in turn]
     calls = [call for turn in turns for call in turn["models"]]
     paired = [(call, wait) for turn in turns for call, wait in zip(turn["models"], turn["model_pace_wait_ms"])]
@@ -559,7 +585,7 @@ def run(spec, cases, repeats, profile, output, call_cap, reference=None, *, held
     fixture_path = SPEC_PATH.with_name(spec["calendar_fixture"])
     fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
     document = {
-        "schema_version": 1, "model": model_name, "thinking": profile["thinking_level"],
+        "schema_version": 1, "calendar_mode": "owner", "model": model_name, "thinking": profile["thinking_level"],
         "suite": "held_out" if held_out else "approved",
         "backup_model": None if comparison else BACKUP_MODEL, "case_ids": case_ids, "repeats": repeats,
         "spec_sha256": sha256(SPEC_PATH.read_bytes()).hexdigest(), "fixture_sha256": sha256(fixture_path.read_bytes()).hexdigest(),
@@ -591,7 +617,8 @@ def run(spec, cases, repeats, profile, output, call_cap, reference=None, *, held
                     save()
                 try:
                     turns = run_case(spec, case, fixture, primary, backup, loop, model_name=model_name,
-                                     pacing=pacing, on_turn=save_turn)
+                                     pacing=pacing, on_turn=save_turn,
+                                     capture_dialogue=repetition == 1 and case["id"] in {10, 24, 25})
                     result = case_report(case, repetition, turns)
                 except Exception as error:
                     result = {"case": case["id"], "repetition": repetition, "status": "harness_error", "turns": [],
@@ -621,7 +648,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", choices=(DEFAULT_MODEL, COMPARISON_MODEL))
     parser.add_argument("--cases", type=int, nargs="+", help="Run specified approved or regression cases.")
-    parser.add_argument("--held-out", action="store_true", help="Run the eight frozen rewordings once on the default model.")
+    parser.add_argument("--held-out", action="store_true", help="Run the six frozen owner rewordings once on the default model.")
     parser.add_argument("--repeats", choices=range(1, 4), type=int, help="Override the model's reviewed repetition count.")
     parser.add_argument("--refresh-spec", action="store_true", help="Regenerate the JSON snapshots from YAML offline.")
     parser.add_argument("--yaml-python", help="Existing Python interpreter with PyYAML for --refresh-spec only.")

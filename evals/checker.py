@@ -18,11 +18,14 @@ SAFE_REASONS = frozenset({
     "stream_ended_without_completion", "missing_model_completion", "unexpected_completion_status",
     "terminal_status_cancelled", "terminal_status_failed", "terminal_status_incomplete", "terminal_status_in_progress",
     "terminal_status_queued", "terminal_status_requires_continuation", "terminal_status_other", "fixture_fault",
+    "fixture_contact_leak",
     "first_event_timeout", "stream_idle_timeout", "overall_timeout", "provider_timeout",
 })
 REFERENCE = re.compile(r"\[\[([SB][1-9][0-9]*)\]\]")
+EMAIL_ADDRESS = re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.IGNORECASE)
 # Fixture literals are independent of the application's reply parser.
 TYPED_CONFIRM_REPLIES = frozenset({"yes", "yes please", "ok"})
+TYPED_DISMISS_REPLIES = frozenset({"no thanks"})
 SPANISH = re.compile(
     r"\b(?:hay|puedo|puedes|tengo|tenemos|jueves|disponible[sn]?|horario[s]?|opci[oó]n(?:es)?|"
     r"para|elegir|prefieres|puede|reservar|por favor|elige|cu[aá]l)\b", re.IGNORECASE,
@@ -58,13 +61,16 @@ def confirms_signed_proposal(turn, payload, prior, state):
     if payload["kind"] == "ui":
         action = payload["action"]
         return action["type"] == "confirm_proposal" and action.get("proposalId") == proposal.id
+    return turn.get("user") in TYPED_CONFIRM_REPLIES and matches_typed_proposal(turn, payload, prior, state)
+
+
+def matches_typed_proposal(turn, payload, prior, state):
     source = turn.get("proposal_from_turn")
     if payload["kind"] != "text" or type(source) is not int:
         return False
     visible = prior.get(source, {}).get("proposal") or {}
-    expected = turn.get("user")
-    return (isinstance(expected, str) and expected in TYPED_CONFIRM_REPLIES and expected == payload.get("text")
-            and visible.get("id") == payload.get("proposalId") == proposal.id)
+    return bool(state.proposal and turn.get("user") == payload.get("text")
+                and visible.get("id") == payload.get("proposalId") == state.proposal.id)
 
 
 def render(events):
@@ -135,10 +141,18 @@ def check_turn(case_id, turn_spec, payload, events, prior, before, after, now, z
         return local_iso(entry.start_utc, zone) if entry else None
 
     def booking(ref):
+        entry = booking_entry(ref)
+        return calendar.fixture_name(entry.uid) if entry else None
+
+    def booking_entry(ref):
         if not isinstance(ref, str):
             return None
-        entry = after.bookings.get(ref) or before.bookings.get(ref)
-        return calendar.fixture_name(entry.uid) if entry else None
+        return after.bookings.get(ref) or before.bookings.get(ref)
+
+    def same_booking_as_turn(ref, number):
+        entry = booking_entry(ref)
+        previous = prior.get(number, {}).get("first_booking")
+        return bool(entry and previous and entry.uid == previous["uid"])
 
     def argument_matches(key, value, expected):
         if not isinstance(expected, dict):
@@ -176,6 +190,8 @@ def check_turn(case_id, turn_spec, payload, events, prior, before, after, now, z
         check("fallback", metrics.get("fallback") == plan["fallback"], metrics.get("fallback"))
     n_model = len(metrics["modelCalls"])
     check("model_call_trace_agrees", n_model == len(model.inputs), len(model.inputs))
+    leaks = sum(item["contains_email"] for item in model.inputs)
+    check("model_email_redacted", leaks == 0, {"calls_containing_email": leaks})
     check("unknown_refs", metrics["unknownRefs"] == 0, metrics["unknownRefs"])
     check("model_call_bounds", plan.get("min_model_calls", 0) <= n_model <= min(plan["max_model_calls"], 3 if text_input else 0), n_model)
 
@@ -188,10 +204,37 @@ def check_turn(case_id, turn_spec, payload, events, prior, before, after, now, z
     if proposal_events:
         check("proposal_from_signed_state", len(proposal_events) == 1 and after.proposal is not None
               and after.proposal.id == proposal_events[0]["id"], bool(after.proposal))
+        if "book" in proposals:
+            has_guest = bool(after.proposal and after.proposal.name and after.proposal.email)
+            check("booking_proposal_has_guest", has_guest, has_guest)
     proposal_event = proposal_events[0] if proposal_events else {}
     if plan.get("proposal_email"):
         email = (after.proposal.email if after.proposal else None) or proposal_event.get("email")
         check("resolved_proposal_email", email == plan["proposal_email"], {"present": email is not None})
+    if "proposal_name" in plan:
+        name = after.proposal.name if after.proposal else None
+        check("resolved_proposal_name", name == plan["proposal_name"], {"present": name is not None})
+    if "proposal_booking_from_turn" in plan:
+        matched = same_booking_as_turn(proposal_event.get("bookingRef"), plan["proposal_booking_from_turn"])
+        check("proposal_targets_prior_booking", matched, matched)
+    if "picked_slot_from_turn" in plan:
+        selection = plan["picked_slot_from_turn"]
+        offered = prior.get(selection["turn"], {}).get("slots_by_ref", {})
+        ordinal = selection["ordinal"]
+        picked = after.guest_draft.slot_ref if after.guest_draft else None
+        matched = 0 < ordinal <= len(offered) and picked == list(offered)[ordinal - 1]
+        check("typed_choice_matches_prior_offer", matched, matched)
+    if "guest_draft_email" in plan:
+        email = after.guest_draft.email if after.guest_draft else None
+        check("guest_draft_email", email == plan["guest_draft_email"], {"present": email is not None})
+    if plan.get("continue_previous_interaction"):
+        continued = bool(before.interaction_id and model.inputs and
+                         model.inputs[0]["previous_id"] == before.interaction_id and
+                         after.session_id == before.session_id)
+        check("continues_previous_interaction", continued, continued)
+    if "retired_booking_refs" in plan:
+        retired = [ref for event in events if event["type"] == "refs" for ref in event.get("retiredBookings", [])]
+        check("retired_booking_refs", retired == plan["retired_booking_refs"], len(retired))
     if plan.get("pending_tool_call"):
         check("pending_tool_call", after.pending_call is not None and after.pending_call.name == plan["pending_tool_call"],
               after.pending_call.name if after.pending_call else None)
@@ -277,6 +320,9 @@ def check_turn(case_id, turn_spec, payload, events, prior, before, after, now, z
             values = [booking(ref) for ref in refs]
             if "booking_ids_in_order" in refs_condition:
                 check("booking_offer_order", values == refs_condition["booking_ids_in_order"], values)
+            if "booking_from_turn" in refs_condition:
+                matched = bool(refs) and all(same_booking_as_turn(ref, refs_condition["booking_from_turn"]) for ref in refs)
+                check("booking_offer_matches_prior_result", matched, len(refs))
         if "min" in refs_condition or "max" in refs_condition:
             check("distinct_offer_count", refs_condition.get("min", 0) <= len(refs) <= refs_condition.get("max", len(refs)), len(refs))
     if "booking_cards" in plan:
@@ -288,7 +334,8 @@ def check_turn(case_id, turn_spec, payload, events, prior, before, after, now, z
         check("prefetch_hit:" + focus, hit, metrics["prefetch"].get(focus, 0))
 
     def masked_record(operation):
-        return {key: value for key, value in operation.items() if key not in {"uid", "email", "attendee_email", "reschedule_uid"}}
+        return {key: value for key, value in operation.items()
+                if key not in {"uid", "email", "name", "notes", "attendee_email", "reschedule_uid"}}
 
     def expected_record(wanted, actual):
         for key, value in wanted.items():
@@ -328,8 +375,13 @@ def check_turn(case_id, turn_spec, payload, events, prior, before, after, now, z
     ), [masked_record(write) for write in writes])
     check("mutations_require_confirmation", not writes or confirmed_proposal, len(writes))
     if text_input and "proposal_from_turn" in turn_spec:
-        check("typed_confirmation_matches_signed_proposal", confirmed_proposal, confirmed_proposal)
-        check("typed_confirmation_clears_proposal", after.proposal is None, after.proposal is None)
+        if turn_spec["user"] in TYPED_DISMISS_REPLIES:
+            bound = matches_typed_proposal(turn_spec, payload, prior, before)
+            check("typed_dismissal_matches_signed_proposal", bound, bound)
+            check("typed_dismissal_clears_proposal", after.proposal is None, after.proposal is None)
+        else:
+            check("typed_confirmation_matches_signed_proposal", confirmed_proposal, confirmed_proposal)
+            check("typed_confirmation_clears_proposal", after.proposal is None, after.proposal is None)
     if writes:
         saved_booking = before.bookings.get(before.proposal.booking_ref) if before.proposal else None
         saved_slot = before.slots.get(before.proposal.slot_ref) if before.proposal else None
@@ -337,7 +389,9 @@ def check_turn(case_id, turn_spec, payload, events, prior, before, after, now, z
             (write["operation"] == "create_booking" or (saved_booking and write["uid"] == saved_booking.uid))
             and (write["operation"] == "cancel_booking" or (saved_slot and
                  write["local_start"] == local_iso(saved_slot.start_utc, zone)))
-            and (write["operation"] != "create_booking" or (saved_slot and write["event_type_id"] == saved_slot.event_type_id))
+            and (write["operation"] != "create_booking" or (saved_slot and write["event_type_id"] == saved_slot.event_type_id
+                                                            and write["email"] == before.proposal.email
+                                                            and write["name"] == before.proposal.name))
             for write in writes
         )
         check("mutations_resolve_from_signed_state", bool(valid_targets), bool(valid_targets))
@@ -355,10 +409,15 @@ def check_turn(case_id, turn_spec, payload, events, prior, before, after, now, z
     check("booking_result", not results if wanted is None else len(results) == 1 and expected_record(wanted, results[0]),
           [masked_record(item) for item in results])
     if wanted and wanted["kind"] == "cancelled":
-        target = wanted["fixture_booking_id"]
-        target_uid = next(uid for uid, key in calendar.fixture_names.items() if key == target)
-        status = calendar.booking_status(target_uid)
+        target_uid = next((item["uid"] for item in results if item["uid"] is not None), None)
+        status = calendar.booking_status(target_uid) if target_uid else None
         check("fixture_cancellation_effect", status == "cancelled", status)
+    if wanted and wanted["kind"] == "rescheduled":
+        old_ref = before.proposal.booking_ref if before.proposal else None
+        old = booking_entry(old_ref)
+        relinked = bool(old and results and calendar.booking_status(old.uid) == "cancelled"
+                        and results[0]["uid"] and calendar.booking_status(results[0]["uid"]) == "accepted")
+        check("fixture_reschedule_effect", relinked, relinked)
     if template in {"booked", "cancelled", "rescheduled"}:
         check("template:" + template, len(results) == 1 and results[0]["kind"] == template and any(
             event["type"] == "assistant_text" for event in events
@@ -377,6 +436,9 @@ def check_turn(case_id, turn_spec, payload, events, prior, before, after, now, z
     pattern_results = [bool(re.search(pattern, visible_reply)) for pattern in plan.get("reply_patterns", [])]
     for index, matched in enumerate(pattern_results, 1):
         check(f"reply_pattern:{index}", matched, matched, wording=True)
+    for index, pattern in enumerate(plan.get("reply_forbidden_patterns", []), 1):
+        absent = re.search(pattern, visible_reply) is None
+        check(f"forbidden_reply_pattern:{index}", absent, absent, wording=True)
     if intended_refusal:
         check("refusal_is_visible", provider_error == "refusal" or (bool(pattern_results) and all(pattern_results)),
               {"error_refusal": provider_error == "refusal", "pattern_matches": pattern_results})

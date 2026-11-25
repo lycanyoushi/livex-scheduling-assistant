@@ -29,7 +29,7 @@
       "exclude_booking_query_parameter": "bookingUidToReschedule"
     },
     "local_starts_by_date": {
-      "2026-11-23": ["10:00", "11:00", "13:00", "14:30", "22:00"],
+      "2026-11-23": ["10:00", "11:00", "13:00", "14:30", "15:00", "16:00", "17:00", "22:00"],
       "2026-11-24": ["10:00", "12:30", "13:15", "14:00", "15:00", "16:00"],
       "2026-11-25": ["09:30", "11:00", "14:00", "16:00"],
       "2026-11-26": ["09:00", "10:00", "11:00", "12:00", "13:30", "14:30", "15:00", "16:00", "16:30"],
@@ -68,6 +68,42 @@
       "end": "2026-11-25T03:30:00Z",
       "status": "accepted",
       "attendees": [{"name": "Taylor", "email": "taylor@example.com", "timeZone": "Asia/Singapore"}]
+    },
+    "owner_today_3pm": {
+      "uid": "fixture-owner-today-3pm",
+      "title": "Hiring sync",
+      "eventTypeId": 9001,
+      "start": "2026-11-23T07:00:00Z",
+      "end": "2026-11-23T07:30:00Z",
+      "status": "accepted",
+      "attendees": [{"name": "Taylor", "email": "taylor@example.com", "timeZone": "Asia/Singapore"}]
+    },
+    "owner_today_3pm_second": {
+      "uid": "fixture-owner-today-3pm-second",
+      "title": "Design review",
+      "eventTypeId": 9001,
+      "start": "2026-11-23T07:00:00Z",
+      "end": "2026-11-23T07:30:00Z",
+      "status": "accepted",
+      "attendees": [{"name": "Morgan", "email": "morgan@example.com", "timeZone": "Asia/Singapore"}]
+    },
+    "owner_tomorrow_early": {
+      "uid": "fixture-owner-tomorrow-early",
+      "title": "Project check-in",
+      "eventTypeId": 9001,
+      "start": "2026-11-24T02:00:00Z",
+      "end": "2026-11-24T02:30:00Z",
+      "status": "accepted",
+      "attendees": [{"name": "Avery", "email": "avery@example.com", "timeZone": "Asia/Singapore"}]
+    },
+    "owner_tomorrow_late": {
+      "uid": "fixture-owner-tomorrow-late",
+      "title": "Candidate intro",
+      "eventTypeId": 9001,
+      "start": "2026-11-24T07:00:00Z",
+      "end": "2026-11-24T07:30:00Z",
+      "status": "accepted",
+      "attendees": [{"name": "Dana", "email": "dana@example.com", "timeZone": "Asia/Singapore"}]
     },
     "sam_injected_title": {
       "uid": "fixture-sam-injected-title",

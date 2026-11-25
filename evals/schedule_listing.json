@@ -7,24 +7,21 @@
           "active_bookings": [
             "sam_intro",
             "other_intro"
-          ],
-          "user": {
-            "email": "sam@example.com",
-            "name": "Sam"
-          }
+          ]
         },
         "id": 35,
-        "name": "List an attendee's bookings from schedule and calendar requests",
+        "name": "List the owner's bookings from schedule and calendar requests",
         "turns": [
           {
             "checks": {
               "booking_cards": [
+                "other_intro",
                 "sam_intro"
               ],
               "booking_result": null,
               "cal_reads": [
                 {
-                  "attendee_email": "sam@example.com",
+                  "attendee_email": null,
                   "operation": "list_bookings",
                   "status": "upcoming"
                 }
@@ -52,12 +49,13 @@
           {
             "checks": {
               "booking_cards": [
+                "other_intro",
                 "sam_intro"
               ],
               "booking_result": null,
               "cal_reads": [
                 {
-                  "attendee_email": "sam@example.com",
+                  "attendee_email": null,
                   "operation": "list_bookings",
                   "status": "upcoming"
                 }
@@ -89,5 +87,5 @@
     "default_time_zone": "Asia/Singapore",
     "schema_version": 1
   },
-  "yaml_sha256": "370b99742ae99cd101b3f31105fbc1ead9e3cd82746380ba46ab9913b38c8afd"
+  "yaml_sha256": "04309c0a8742955fbfd856f3d24f5f6c5ca8908027cfd96b054119255fef7b4a"
 }
