@@ -264,3 +264,33 @@ The separate held-out A–C suite has 11 reworded cases. It was frozen before th
 The suite passed 7 of 11 cases. All 14 observed text turns passed the email-redaction and confirmation checks. The only fake write followed a signed confirmation. Gemini made 12 primary calls and two backup calls, with zero HTTP 429 responses. The case inputs, assertions, and implementation stayed fixed during the run.
 
 The frozen suite hash is `d885d056ead4e0bfae92c9bdd39eff742288f273982b135052ea199aa8f37d68`. The fixture hash is `77530d9261dc8d25820d9b0fa5c49db697b5767cb55db3458da4fb142487990e`. Reproduce with `pnpm eval --model gemini-3.5-flash-lite --scheduling-follow-up --max-calls 45 --output <new-report.json>`.
+
+## Scheduling regression rerun
+
+Revision `a9b552f` ran all three suites against fictional calendars using live Gemini 3.5 Flash-Lite, the configured 3.1 Flash-Lite backup, and ten-second provider pacing. The main spec and both frozen scheduling suites kept their original assertions. The meeting-length change is in its own commit, `37a92fd`.
+
+| Suite | Earlier result | `a9b552f` | Text turns with exactly one call | Text latency p50 / p90, excluding pace |
+| --- | --- | ---: | ---: | ---: |
+| Main, three repetitions | `bd731e7` 93/93. `2eb4f4e` 24/31 in one review run. | **93/93** | 56/135 (41.5%) | 2.52 ms / 7.49 s |
+| Frozen scheduling, one repetition | 15/20 on the length working tree in review. | **16/20** | 8/25 (32.0%) | 3.07 s / 12.18 s |
+| Frozen scheduling follow-ups, one repetition | `2eb4f4e` 7/11. | **8/11** | 8/14 (57.1%) | 3.25 s / 4.64 s |
+
+The comparable `bd731e7` main share was 69/135 (51.1%) with 63 zero-call turns and a 2.31 s median and 2.99 s p90. The final run had 75 zero-call, 56 single-call and four multi-call turns. Three multi-call turns were the simulated outages in case 23. In the other, one primary first-event timeout on the exact replacement turn in case 8 used the backup and passed. The final main run made 58 live calls, down from 69. It handled more turns locally and had a slower p90. The `2eb4f4e` main review and the 15/20 held-out review did not record a comparable call split. The prior follow-up run was 6/14 single-call turns (42.9%) with end-to-end p50 / p90 of 3.76 s / 18.35 s, compared with 3.25 s / 4.64 s in the final follow-up.
+
+All 2,397 main checks passed. Case 2 reused checked openings with one model call and zero tools. Case 8 opened the exact 16:00 replacement on all three runs. Case 12 returned an empty agenda with an offer to help schedule. Cases 25 and 29 waited for a time choice, and case 30 saved the guest email without opening a card. In the Singapore fixture, case 4 showed three selectable Monday options at 09:00, 10:00, and 11:00. Case 28 showed three selectable Tuesday options at 10:00, 14:00, and 15:00. Each time resolved against the signed state on all three runs. Before the fix, the browser briefly showed alternatives and then removed them when a narrower lookup retired their refs.
+
+| Frozen scheduling case | Result |
+| --- | --- |
+| 204 | Passed. The previously intermittent range with an en dash resolved to verified openings. |
+| 210 | Wording only. The response missed both required phrases about the whole interval and shorter openings. |
+| 211 | The correct start appeared as a chip. No confirmation card opened, so the dependent turn could not run. |
+| 215 | The move returned one selectable time. The check expected more than one. |
+| 218 | The requested Los Angeles window returned zero options. The check expected openings. |
+
+| Frozen follow-up category | Result |
+| --- | --- |
+| A · Timing interpretation | 5/6. Case 305 checked the converted 08:00 Singapore time but missed the required reply patterns. |
+| B · Unsupported requests | 2/3. Case 308 offered the first occurrence but missed the recurrence-limit wording check. |
+| C · Follow-ups | 1/2. Case 310 retained the guest when Friday changed to Monday. Case 311 offered signed alternatives for the busy slot and verified the same day's 16:00 follow-up, but showed a chip without the expected confirmation card. |
+
+The held-out suite observed 24 of 25 planned text turns and counted the dependent skip in the single-call denominator. It used 19 live calls. The follow-up suite made eight live calls and had zero multi-call turns. Across 201 observed turns in the three suites, all confirmation and email-redaction checks passed. Neither model returned HTTP 429. [Main fixture](../evals/fake_cal.json) · [Frozen scheduling suite](../evals/scheduling_held_out.json) · [Frozen follow-ups](../evals/scheduling_follow_up.json)

@@ -6,7 +6,11 @@
 
 The reviewer deployment is a single-owner test demo with fictional guests. The app has no sign-in by design. A deployment connected to a private calendar would require the owner's own login, such as Cal.com OAuth. Production promotion requires separate approval.
 
-Revision `838f062` is ready on Vercel Preview with the fictional Singapore calendar. The hosted Chromium check opened to the composer, returned one matching meeting card for the named agenda request, explained the personal-block limit, and used live Gemini to resolve `1430 on Friday` to 14:30. These checks made zero calendar writes. Signed-out requests still redirect to Vercel Authentication. [Current Preview](https://livex-scheduling-assistant-42s14zt22-zenith-dbf8.vercel.app) · [Vercel Deployment Protection Exceptions](https://vercel.com/docs/deployment-protection/methods-to-bypass-deployment-protection/deployment-protection-exceptions)
+Revision `a9b552f` built successfully on Vercel Preview and served the fictional `Asia/Singapore` calendar. Chromium verified three enabled alternatives for a closed move window, then selected one and received a move proposal. A two-hour booking showed four 120-minute openings and kept that length on the card after a typed choice. Further checks verified Tokyo time conversion, the single-guest limit, and a busy 15:00 request followed by `can we do 4 instead?`, which opened the same day's 16:00 proposal. The nine hosted turns made zero calendar writes. Both the root and warm endpoint returned HTTP 302 to signed-out requests. [Current Preview](https://livex-scheduling-assistant-8deg055xs-zenith-dbf8.vercel.app) · [Evaluation results](m7-eval-report.md#scheduling-regression-rerun) · [Vercel Deployment Protection Exceptions](https://vercel.com/docs/deployment-protection/methods-to-bypass-deployment-protection/deployment-protection-exceptions)
+
+### Earlier scheduling interpreter Preview
+
+Revision `838f062` served the fictional Singapore calendar. Chromium returned one matching meeting card for the named agenda request, explained the personal-block limit, and used live Gemini to resolve `1430 on Friday` to 14:30. These checks made zero calendar writes. [Earlier Preview](https://livex-scheduling-assistant-42s14zt22-zenith-dbf8.vercel.app)
 
 ### Earlier open-chat Preview
 
