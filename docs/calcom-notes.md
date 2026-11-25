@@ -52,6 +52,8 @@ The client sends offset-aware bounds as UTC timestamps. For a query by local sta
 
 The profile and default availability schedule both returned `America/Los_Angeles`. The 30-minute event had no schedule override. The default schedule was 09:00–17:00 Monday through Friday, with zero date overrides. A seven-date slots query returned 64 openings, all starting between 09:00 and 16:30 Pacific. The reported odd hours did not appear in that window. [Cal.com schedules](https://cal.com/docs/api-reference/v2/schedules/get-all-schedules) · [Cal.com event types](https://cal.com/docs/api-reference/v2/event-types/get-an-event-type)
 
+The follow-up reads at 09:13 Singapore time on November 25 still returned `America/Los_Angeles` for both settings. The 30-minute event still inherits the default schedule. The Singapore seeder check waits for the account owner to save both timezone settings. [Profile settings](https://cal.com/help/my-account/general-settings) · [Default availability schedule](https://cal.com/help/availabilities/availability-dashboard-overview)
+
 ## Reproduce
 
 Set `CAL_API_KEY` in `.env.local` and run `pnpm cal:probe` for the live read checks. If the account has several visible 30-minute event types, set `CAL_DEFAULT_EVENT_TYPE_SLUG` to the one intended for testing.

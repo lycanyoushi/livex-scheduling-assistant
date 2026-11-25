@@ -2,7 +2,21 @@
 
 `vercel.json` routes the web app to Next.js and `/api/*` to Flask's `wsgi:app`. The browser uses the same origin for `/api/auth`, `/api/warm`, and `/api/chat`. Python is pinned to 3.12, and the Flask function has a 120-second duration limit. Local development uses Next.js loopback rewrites. [Vercel Services configuration](https://vercel.com/docs/services/config-reference) · [Vercel service routing](https://vercel.com/docs/services/routing) · [Python streaming](https://vercel.com/docs/functions/runtimes/python#streaming-python-functions)
 
-## Owner-mode Preview
+## Final owner-mode Preview
+
+Revision `bd731e7` deployed to Preview with `DEMO_MODE=fake` and `DEMO_TIME_ZONE=Asia/Singapore`. The authenticated Chromium check started at 09:20 Singapore time on November 25, 2026. [Owner Preview](https://livex-scheduling-assistant-rafkbwm8m-zenith-dbf8.vercel.app)
+
+| Brief prompt | Hosted result |
+| --- | --- |
+| `book a 30-min intro with a candidate Thursday afternoon` | Four Thursday afternoon buttons appeared with a short reply asking for the guest's name and email. A typed time choice, fictional contact and `yes` created one fake booking at 12:30. |
+| `what's on my calendar tomorrow?` | Two fictional meetings appeared for Thursday, November 26. The lookup returned zero write results. |
+| `move my 3pm to later today` | The exact seeded 15:00 meeting was offered later times. A typed choice and `yes please` moved it to 15:30 on the same date. |
+
+The browser restored the seeded meeting to 15:00, cancelled the synthetic 12:30 booking, and signed out to the access prompt. Each tested confirmation used zero model calls.
+
+All 288 Python tests and 29 frontend tests passed, along with ESLint, TypeScript and the Next.js build. The last review suite passed 93 of 93 main runs and all six held-out cases. [Final evaluation report](m7-eval-report.md#owner-mode-final-review)
+
+## Initial owner-mode Preview
 
 Revision `fbfcd08` is ready on Vercel Preview with `DEMO_MODE=fake` and the owner access code enabled. Production promotion requires separate approval. [Owner Preview](https://livex-scheduling-assistant-4o6me8vul-zenith-dbf8.vercel.app)
 
@@ -14,7 +28,7 @@ All 282 Python tests and 28 frontend tests passed. Lint, TypeScript, and the Nex
 
 1. Confirm the GitHub `origin`, the reviewed revision, and the linked Vercel project. Set secrets in the Preview environment. Set `DEMO_MODE=fake`, a fresh random `OWNER_ACCESS_CODE` and `STATE_SIGNING_SECRET`, the unbilled project's `GEMINI_API_KEY`, and a daily call cap below that project's quota. Deploy with `vercel deploy --environment preview` and check the deployment target. Keep Fluid compute enabled for the configured Flask duration. [Vercel deploy CLI](https://vercel.com/docs/cli/deploy) · [Preview environment variables](https://vercel.com/docs/environment-variables#preview-environment-variables) · [Function duration limits](https://vercel.com/docs/functions/limitations#max-duration)
 2. Open the Preview in a fresh browser context. Check that the access prompt appears and that a direct request to `/api/warm` or `/api/chat` returns 401 with no calendar details. Exercise invalid-code handling and the per-IP cooldown. Sign in and verify the signed cookie is HttpOnly, SameSite=Strict, and Secure on HTTPS. The first signed-in warm request should show the host. Sign out and check that local history clears and both calendar endpoints again return 401.
-3. Set the chat time zone to Pacific for the seeded schedule. Run the three exact brief prompts and record the responses. Confirm that a list covering the seed dates displays compact agenda rows, that proposing a change makes zero calendar writes, and that a typed confirmation changes one booking. Run typed book, list, move, and cancel using the fake calendar. Capture the access prompt, agenda, and confirmation summary with fictional data.
+3. Set the chat time zone to the Preview's configured `DEMO_TIME_ZONE`. Run the three exact brief prompts and record the responses. A backend starting before 14:00 local seeds the 15:00 meeting today. A later start seeds it tomorrow, so the exact prompt can exercise the signed fallback choice instead. Confirm that a list covering the seed dates displays compact agenda rows, that proposing a change makes zero calendar writes, and that a typed confirmation changes one booking. Run typed book, list, move, and cancel using the fake calendar. Capture the access prompt, agenda, and confirmation summary with fictional data.
 4. Check that chat returns `application/x-ndjson` and `Cache-Control: no-store`, with at least one useful event before `turn_end`. Test Stop during a streamed reply. Record the first authenticated `/api/warm` round trip and the runtime's `flask_start` setup time. Compare warm and chat boot IDs before attributing timing to a reused Flask instance.
 5. Record the verified Preview URL, test and eval totals, transcripts, and screenshots. Provide the shared app code to an authorized reviewer through a private channel. When Vercel Deployment Protection applies, provide authorized Vercel access separately. The app code belongs in neither the Preview URL nor the repository. [Vercel deployment protection](https://vercel.com/docs/deployment-protection)
 

@@ -14,6 +14,10 @@ The signed state uses version 2. An older visitor token starts a fresh session, 
 
 When an owner asks to move a meeting within a window, the app shows eligible times and waits for a choice. Guest email updates also wait for a time choice when the draft has no selected opening. Relative offsets such as “an hour later” resolve against the existing booking's start.
 
+When the target is missing or ambiguous, the app shows the candidate meetings and signs their ordered refs with the requested action. A typed ordinal, guest name, or clock time resolves against those candidates. Model-assisted clarification receives the same action and candidate scope. A confirmed write retires the previous time choices and guest draft. Starting a calendar lookup or change also clears those choices, so a later ordinal cannot select an old time.
+
+Opening buttons carry the date and time. The assistant gives one short acknowledgment and asks for any missing guest details. For an exact replacement time in a pending booking, the app uses the signed proposal’s local date and offers the model the exact slot, while keeping the prior tool result in the conversation.
+
 The web app verifies a shared `OWNER_ACCESS_CODE` with a constant-time comparison and rate-limits failed attempts by IP. A signed HttpOnly, SameSite=Strict cookie gates `/api/warm` and `/api/chat` and expires after 12 hours. Vercel sets the cookie's Secure attribute. Sign-out clears the cookie and browser chat history. The code is optional in fake mode, and the locally configured terminal runs directly.
 
 The fake calendar and the Cal.com seeder share five fictional bookings in the account's time zone. The live seeder defaults to a read-only check and requires explicit approval for `--write-test`. Its rollback marker comes from the test event's built-in notes field. [Read-only booking range and schedule verification](calcom-notes.md#owner-booking-ranges-and-calendar-time-zone)

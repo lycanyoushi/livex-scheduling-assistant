@@ -168,3 +168,38 @@ A focused rerun passed all four cases exercised. Case 6 showed future alternativ
 Cases 16–20 also passed all 15 repetitions on the reviewed revision. The safety rerun performed zero calendar mutations. [Safety follow-up results](../evals/results/owner-gemini-3.5-flash-lite-safety-review.json)
 
 The terminal also ran the three brief prompts with live Gemini and typed confirmations. Independent reads of the fictional calendar verified the booked intro and its note, tomorrow's read-only agenda, and the cancelled original plus its later replacement. [Acceptance transcripts](owner-acceptance.md)
+
+### Final owner review
+
+Revision `bd731e7` passed all 31 main cases in each of three repetitions and all six frozen held-out prompts in one repetition. Both suites used live Gemini 3.5 Flash-Lite and isolated FakeCal calendars. The held-out file hash matched the initial run. [Final main results](../evals/results/owner-gemini-3.5-flash-lite-final.json) · [Final held-out results](../evals/results/owner-gemini-3.5-flash-lite-held-out-final.json)
+
+| Owner main suite | Cases passed | Repetitions passed | Checks passed | Actual Gemini calls | Text latency p50 / p90 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Initial baseline | 25/30 | 74/90 | 2,167/2,199 | 86 | 2.53 / 3.79 s |
+| Final review | 31/31 | 93/93 | 2,397/2,397 | 69 | 2.31 / 2.99 s |
+
+| Actual Gemini calls per text turn | Initial | Final |
+| --- | ---: | ---: |
+| Zero | 48 | 63 |
+| One | 62 | 69 |
+| Two or more | 10 | 0 |
+| Total text turns in this split | 120 | 132 |
+
+Each main run included three case 23 turns that simulated a primary and backup outage without calling Gemini. The call split excludes those turns and the live-call totals exclude the six simulated attempts. The ten initial turns with repeat calls came from cases 5, 6 and 8 or a primary first-event timeout in case 30. The final run used only the primary model. Its 69 first raw stream events arrived in 1.97 s p50, 2.26 s p90 and 2.64 s max, with zero provider timeouts or HTTP errors. [Initial main results](../evals/results/owner-gemini-3.5-flash-lite-initial.json) · [Final main call and timing data](../evals/results/owner-gemini-3.5-flash-lite-final.json)
+
+The overall latency rows use each suite's full text-turn set. For a comparison with the earlier visitor mode, the table below uses the same ten first-turn prompts from cases 1, 2, 4, 5, 6, 7, 15, 17, 20 and 21. The driver subtracted its pacing waits from every measurement. [Visitor results](../evals/results/gemini-3.5-flash-lite-2026-11-23.json) · [Initial owner results](../evals/results/owner-gemini-3.5-flash-lite-initial.json) · [Final owner results](../evals/results/owner-gemini-3.5-flash-lite-final.json)
+
+| Matched first turns | Samples | Text latency p50 / p90 |
+| --- | ---: | ---: |
+| Visitor full run | 30 | 5.19 / 15.51 s |
+| Owner initial baseline | 30 | 2.92 / 6.19 s |
+| Owner final review | 30 | 2.66 / 3.20 s |
+
+| Case | Final result in all three repetitions |
+| --- | --- |
+| 5 · Exact time in New York | The app prefetched and displayed the matching 9am slot. With no read tool offered for that reply, the turn used one model call and took 2.57–2.63 s, down from two calls and 5.32–5.96 s in the initial baseline. |
+| 8 · Replace a pending proposal | The app anchored “actually make it 4pm” to the open proposal's local date and prefetched that exact start. Each proposal turn used one model call and one valid booking tool call. The tool schema limited the slot argument to the signed exact ref, eliminating the unresolved-ref retry observed on the preceding revision. The replacement retained the pending function result, skipped a second availability lookup and took 2.90–3.33 s, down from 5.99–6.14 s in the initial baseline. |
+| 12 · Empty calendar | Each reply took one model call with zero tools and included the invitation to schedule that the initial replies had omitted. |
+| 31 · Missed 3pm meeting | The app explained that 3pm had passed, offered upcoming meetings, carried the move through a typed choice of meeting and time, then applied one reschedule after the signed “yes.” All four turns used zero model calls. |
+
+All 162 main turns passed the confirmation and email privacy checks. All 24 attempted writes matched signed proposals. FakeCal applied 21 writes and returned three scripted slot conflicts. The held-out suite passed 94 of 94 checks, used one actual Gemini call on three turns and zero on three, and made zero calendar writes. [Final main safety checks](../evals/results/owner-gemini-3.5-flash-lite-final.json) · [Final held-out safety checks](../evals/results/owner-gemini-3.5-flash-lite-held-out-final.json)

@@ -2,9 +2,9 @@
 
 A conversational Python assistant for managing your own Cal.com calendar. Book with a guest, see your agenda, and move or cancel a meeting by typing in the terminal or the streaming web chat. Every calendar change requires a separate confirmation.
 
-[Owner Preview](https://livex-scheduling-assistant-4o6me8vul-zenith-dbf8.vercel.app) · [Local web chat](http://localhost:3000) · [Deployment plan](docs/deploy-plan.md)
+[Owner Preview](https://livex-scheduling-assistant-rafkbwm8m-zenith-dbf8.vercel.app) · [Local web chat](http://localhost:3000) · [Deployment plan](docs/deploy-plan.md)
 
-Preview uses fictional meetings and a shared owner access code. Vercel may also prompt you to sign in.
+Preview uses fictional meetings in `Asia/Singapore` and a shared owner access code. Vercel may also prompt you to sign in.
 
 ## Requirements
 
@@ -111,7 +111,7 @@ pnpm lint
 
 The owner-mode evals use a fixed clock, an isolated calendar fixture, and an unbilled Gemini key. The main suite includes the three brief prompts and checks that changes have no writes before confirmation. The six frozen held-out phrasings run once.
 
-The initial sweep qualified 25 of 30 cases across 90 runs. The three brief prompts passed every run, and all six held-out prompts passed. Four cases passed a focused rerun after fixes to time selection and confirmation. [Owner evaluation report](docs/m7-eval-report.md#owner-mode-initial-baseline)
+The initial owner sweep qualified 25 of 30 cases across 90 runs. The final revision passed all 31 main cases and all 93 repetitions, including the new missed-meeting case. All six frozen held-out prompts passed again. Every main text turn used zero or one live Gemini call. [Owner evaluation report](docs/m7-eval-report.md#owner-mode-final-review)
 
 ```sh
 pnpm eval --model gemini-3.5-flash-lite --output evals/results/owner-local-run.json
