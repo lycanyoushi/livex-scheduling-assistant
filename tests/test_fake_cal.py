@@ -132,8 +132,8 @@ class FakeCalendarTests(unittest.TestCase):
         for hour, email in ((10, "jane@example.com"), (11, "taylor@example.com")):
             calendar.create_booking(start=now.replace(hour=hour), event_type_id=EVENT_TYPE_ID,
                                     name="Demo Guest", email=email, time_zone="America/Los_Angeles")
-        full_day = calendar.list_bookings(after_start=now)
-        self.assertEqual(len(full_day["data"]), 2)
+        full_day = calendar.list_bookings(after_start=now, before_end=now.replace(hour=23, minute=59))
+        self.assertEqual(len(full_day["data"]), 3)
         only_second = calendar.list_bookings(after_start=now.replace(hour=11), before_end=now.replace(hour=11, minute=30))
         self.assertEqual([row["attendees"][0]["email"] for row in only_second["data"]], ["taylor@example.com"])
 

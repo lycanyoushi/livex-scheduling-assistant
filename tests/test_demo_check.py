@@ -60,7 +60,10 @@ class DemoCalendarTests(unittest.TestCase):
         now += timedelta(days=7)
         self.assertNotIn("2027-05-10", read())
         self.assertTrue(all(parse_instant(slot["start"]) > now for rows in read().values() for slot in rows))
-        self.assertEqual(DemoCalendar(clock=lambda: now).list_bookings(status=None)["data"], [])
+        restarted = DemoCalendar(clock=lambda: now).list_bookings(status=None)["data"]
+        self.assertEqual(len(restarted), 5)
+        self.assertTrue(all(row["uid"].startswith("demo-seed-") for row in restarted))
+        self.assertEqual(parse_instant(restarted[0]["start"]).astimezone(ZoneInfo(ZONE)).date(), now.date())
 
     def test_demo_service_warms_and_books_through_signed_ui_without_real_calendar(self):
         with configured(**SETTINGS, DEMO_MODE="fake", CAL_EVENT_TYPE_SLUGS="real-only", CAL_DEFAULT_EVENT_TYPE_SLUG="real-only"), \
@@ -79,21 +82,23 @@ class DemoCalendarTests(unittest.TestCase):
         self.assertIsNone(response.json["bookingUrl"])
         self.assertEqual(response.json["hostName"], "Demo Calendar")
 
-        def send(action, prior=None):
+        def send(payload, prior=None):
             response = client.post("/api/chat", json={"stateToken": prior, "timeZone": ZONE,
-                                                      "input": {"kind": "ui", "action": action}}, buffered=True)
+                                                      "input": payload}, buffered=True)
             self.assertEqual(response.status_code, 200)
             events = [json.loads(line) for line in response.data.splitlines()]
             self.assertEqual(events[-1]["metrics"]["modelCalls"], [])
             return events
 
         today = service.clock().astimezone(ZoneInfo(ZONE)).date().isoformat()
-        offered = send({"type": "more_slots", "fromDate": today})
+        offered = send({"kind": "ui", "action": {"type": "more_slots", "fromDate": today}})
         slot = next(event["refs"][0] for event in offered if event["type"] == "slot_chips")
-        selected = send({"type": "pick_slot", "slotRef": slot}, offered[-1]["stateToken"])
-        proposal = next(event["proposal"]["id"] for event in selected if event["type"] == "proposal")
-        result = send({"type": "confirm_proposal", "proposalId": proposal, "name": "Casey", "email": "casey@example.com"},
-                      selected[-1]["stateToken"])
+        selected = send({"kind": "ui", "action": {"type": "pick_slot", "slotRef": slot}}, offered[-1]["stateToken"])
+        self.assertFalse(any(event["type"] == "proposal" for event in selected))
+        collected = send({"kind": "text", "text": "Casey Reader, casey@example.com"}, selected[-1]["stateToken"])
+        proposal = next(event["proposal"]["id"] for event in collected if event["type"] == "proposal")
+        result = send({"kind": "ui", "action": {"type": "confirm_proposal", "proposalId": proposal}},
+                      collected[-1]["stateToken"])
         self.assertEqual(next(event["kind"] for event in result if event["type"] == "booking_result"), "booked")
         self.assertEqual(len(service.calendar.list_bookings(attendee_email="casey@example.com")["data"]), 1)
         self.assertEqual(service.model.mock_calls, [])
