@@ -2,7 +2,7 @@
 
 import argparse
 from dataclasses import replace
-from datetime import date, timedelta
+from datetime import date
 from time import sleep
 from uuid import uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -154,9 +154,11 @@ def run(*, write_test: bool = False, start_date: date | None = None, controlled_
     if aliases is not None:
         seeds = tuple(replace(seed, email=email) for seed, email in zip(seeds, aliases, strict=True))
     if any(seed.start <= now for seed in seeds):
-        raise ProbeError("The seed window contains a past time. Use --start-date for a future three-day window.")
+        raise ProbeError("The seed window contains a past time. Choose a future start date with --start-date.")
 
-    begin, end = local_bounds(first_day, first_day + timedelta(days=2), zone.key)
+    first_seed_day = seeds[0].start.astimezone(zone).date()
+    last_seed_day = seeds[-1].start.astimezone(zone).date()
+    begin, end = local_bounds(first_seed_day, last_seed_day, zone.key)
     open_slots = client.slots(event["id"], begin, end, zone.key, fresh=True)
     available = {
         (parse_instant(slot["start"]), parse_instant(slot["end"]))
@@ -164,7 +166,7 @@ def run(*, write_test: bool = False, start_date: date | None = None, controlled_
     }
     missing = sum((seed.start, seed.end) not in available for seed in seeds)
     if missing:
-        raise ProbeError(f"{missing} of five seed intervals are unavailable. Choose another three-day window.")
+        raise ProbeError(f"{missing} of five seed intervals are unavailable. Choose another start date.")
     print(f"Verified five test openings in {zone.key}.")
     for seed in seeds:
         print(f"  {seed.start.astimezone(zone):%Y-%m-%d %H:%M}")
@@ -180,7 +182,8 @@ def main() -> int:
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", action="store_true", help="Read-only plan. This is the default.")
     mode.add_argument("--write-test", action="store_true", help="Create bookings on the configured test event.")
-    parser.add_argument("--start-date", type=date.fromisoformat, help="First day in the owner's time zone. Defaults to today.")
+    parser.add_argument("--start-date", type=date.fromisoformat,
+                        help="Start date in the owner's time zone. Defaults to today. A weekend date advances to Monday.")
     parser.add_argument(
         "--controlled-aliases", action="store_true",
         help="Use five inbox aliases from CAL_DEMO_ATTENDEE_EMAILS instead of the fictional example.com addresses.",

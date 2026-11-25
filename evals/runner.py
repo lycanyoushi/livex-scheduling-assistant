@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 from hashlib import sha256
 import json
 import logging
+import os
 from pathlib import Path
 import re
 from secrets import token_hex
@@ -29,12 +30,18 @@ from evals.checker import (
     EMAIL_ADDRESS, EvalError, SAFE_STATUS, TYPED_CONFIRM_REPLIES, TYPED_DISMISS_REPLIES, check_turn,
     confirms_signed_proposal, local_iso, render, require, safe_reason,
 )
-from evals.fake_cal import FakeCal
+from evals.fake_cal import FakeCal, _slot_edge
 from scripts.local_environment import load_local_environment
 
 
 SPEC_PATH = Path(__file__).with_name("conversations.yaml")
 HELD_OUT_PATH = SPEC_PATH.with_name("owner_held_out.json")
+HELD_OUT_SPECS = {
+    "held_out": (HELD_OUT_PATH, range(101, 107)),
+    "scheduling_held_out": (SPEC_PATH.with_name("scheduling_held_out.json"), range(201, 221)),
+    "scheduling_follow_up": (SPEC_PATH.with_name("scheduling_follow_up.json"), range(301, 312)),
+}
+FOLLOW_UP_FIXTURE = "fake_cal_scheduling_follow_up.json"
 APPROVED_CASE_IDS = range(1, 32)
 REGRESSION_SPECS = {
     "regression_spec_sha256": (SPEC_PATH.with_name("regressions.yaml"), (32,)),
@@ -56,7 +63,7 @@ SUPPORTED_CHECKS = {
     "reply_language", "template", "forbidden_cal_calls", "reply_max_lines", "attempted_model_roles", "fallback",
     "booking_cards", "retired_booking_refs", "picked_slot_from_turn", "proposal_name", "proposal_booking_from_turn",
     "proposal_fixture_booking",
-    "guest_draft_email", "continue_previous_interaction", "reply_forbidden_patterns",
+    "guest_draft_email", "continue_previous_interaction", "reply_forbidden_patterns", "calendar_availability",
 }
 SUPPORTED_TEMPLATES = {None, "booked", "cancelled", "rescheduled", "slot_taken", "model_down_slots"}
 
@@ -94,6 +101,12 @@ def validate_case_checks(cases):
             require(set(rules) <= SUPPORTED_CHECKS and rules.get("reply_language") in {None, "es"},
                     "Unhandled evaluation check.")
             require(rules.get("template") in SUPPORTED_TEMPLATES, "Unhandled evaluation template.")
+            for expected in rules.get("calendar_availability", []):
+                require(set(expected) == {"local_start", "status"}
+                        and expected["status"] in {"available", "unavailable"}
+                        and re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}", expected["local_start"]),
+                        "Malformed calendar availability assertion.")
+                datetime.fromisoformat(expected["local_start"])
             for pattern in (*rules.get("reply_patterns", []), *rules.get("reply_forbidden_patterns", [])):
                 re.compile(pattern)
 
@@ -111,16 +124,24 @@ def approved_spec():
     return spec
 
 
-def held_out_cases(spec):
-    frozen = json.loads(HELD_OUT_PATH.read_text(encoding="utf-8"))
+def held_out_cases(spec, *, suite="held_out"):
+    path, ids = HELD_OUT_SPECS[suite]
+    frozen = json.loads(path.read_text(encoding="utf-8"))
     require(all(frozen[name] == spec[name] for name in (
-        "schema_version", "calendar_fixture", "default_clock", "default_time_zone",
+        "schema_version", "default_clock", "default_time_zone",
     )), "Held-out fixture settings must match the approved suite.")
+    require(frozen["calendar_fixture"] == suite_fixture_path(spec, suite).name, "Unexpected held-out calendar fixture.")
     cases = frozen["cases"]
-    require([case["id"] for case in cases] == list(range(101, 107)), "Missing or duplicate held-out cases.")
-    require(all(case["rephrases"] in APPROVED_CASE_IDS for case in cases), "Unknown approved case rephrased.")
+    require([case["id"] for case in cases] == list(ids), "Missing or duplicate held-out cases.")
+    if suite == "held_out":
+        require(all(case["rephrases"] in APPROVED_CASE_IDS for case in cases), "Unknown approved case rephrased.")
     validate_case_checks(cases)
     return cases
+
+
+def suite_fixture_path(spec, suite):
+    name = FOLLOW_UP_FIXTURE if suite == "scheduling_follow_up" else spec["calendar_fixture"]
+    return SPEC_PATH.with_name(name)
 
 
 def validate_regressions(regressions, spec, case_ids):
@@ -189,8 +210,9 @@ def fixture_state(case, fixture, now, zone):
 
 
 class TracedCalendar(FakeCal):
-    def __init__(self, case, now, zone, fixture):
-        super().__init__(clock=lambda: now, fixture_overrides=case.get("fixture_overrides", {}), time_zone=zone)
+    def __init__(self, case, now, zone, fixture, fixture_path=None):
+        super().__init__(clock=lambda: now, fixture_overrides=case.get("fixture_overrides", {}), time_zone=zone,
+                         fixture_path=fixture_path)
         self.zone = zone
         self.fixture_names = {booking["uid"]: name for name, booking in fixture["bookings"].items()}
         self.reads, self.writes = [], []
@@ -199,11 +221,16 @@ class TracedCalendar(FakeCal):
     def fixture_name(self, uid):
         return self.fixture_names.get(uid)
 
-    def slots(self, *args, **kwargs):
-        uid = kwargs.get("booking_uid_to_reschedule")
-        self.reads.append({"operation": "slots", "reschedule_uid": uid,
-                           "booking_uid_to_reschedule": self.fixture_name(uid)})
-        return super().slots(*args, **kwargs)
+    def slots(self, event_type_id, start, end, time_zone="UTC", *, booking_uid_to_reschedule=None, fresh=False):
+        uid = booking_uid_to_reschedule
+        read = {"operation": "slots", "reschedule_uid": uid, "booking_uid_to_reschedule": self.fixture_name(uid)}
+        self.reads.append(read)
+        result = super().slots(event_type_id, start, end, time_zone, booking_uid_to_reschedule=uid, fresh=fresh)
+        read["availability"] = {
+            "lower": _slot_edge(start), "upper": _slot_edge(end, end=True),
+            "starts": {local_iso(slot["start"], self.zone) for day in result.values() for slot in day},
+        }
+        return result
 
     def list_bookings(self, **kwargs):
         self.reads.append({"operation": "list_bookings", "status": kwargs.get("status", "upcoming"),
@@ -381,10 +408,19 @@ def turn_payload(turn, prior):
     return {"kind": "ui", "action": action}
 
 
-def run_case(spec, case, fixture, primary, backup, loop, *, model_name, pacing=None, on_turn=None, capture_dialogue=False):
+def has_visible_content(event):
+    if event["type"] in {"text_delta", "assistant_text"}:
+        return bool(event["text"].strip())
+    if event["type"] == "slot_chips":
+        return bool(event.get("refs") or event.get("plainRefs"))
+    return event["type"] in {"booking_cards", "proposal", "booking_result", "error"}
+
+
+def run_case(spec, case, fixture, primary, backup, loop, *, model_name, pacing=None, on_turn=None, capture_dialogue=False,
+             fixture_path=None):
     zone = case.get("time_zone", spec["default_time_zone"])
     now = datetime.fromisoformat(case.get("clock", spec["default_clock"]))
-    calendar = TracedCalendar(case, now, zone, fixture)
+    calendar = TracedCalendar(case, now, zone, fixture, fixture_path)
     state = fixture_state(case, fixture, now, zone)
     secret = token_hex(32)
     token = sign_state(state, secret)
@@ -412,6 +448,7 @@ def run_case(spec, case, fixture, primary, backup, loop, *, model_name, pacing=N
             calendar.reads.clear()
             trace.clear()
             began = perf_counter()
+            first_content = None
             with client.post("/api/chat", json={"stateToken": token, "timeZone": zone, "input": payload}, buffered=False) as response:
                 require(response.status_code == 200 and response.mimetype == "application/x-ndjson", "Invalid Flask eval response.")
                 events = []
@@ -421,7 +458,10 @@ def run_case(spec, case, fixture, primary, backup, loop, *, model_name, pacing=N
                             event = json.loads(line)
                             if not events:
                                 first_feedback = (perf_counter() - began) * 1000
+                            if first_content is None and has_visible_content(event):
+                                first_content = (perf_counter() - began) * 1000
                             events.append(event)
+            elapsed = (perf_counter() - began) * 1000
             require(events and events[-1]["type"] == "turn_end", "Missing terminal eval event.")
             token = events[-1]["stateToken"]
             after = verify_state(token, secret, now)
@@ -434,7 +474,10 @@ def run_case(spec, case, fixture, primary, backup, loop, *, model_name, pacing=N
                     "assistant": EMAIL_ADDRESS.sub("[email redacted]", visible_text.strip())[:1000],
                     "proposal_kind": checked["proposal"].get("kind"),
                 }
-            turns[number] = {**checked, "first_feedback_ms": first_feedback}
+            turns[number] = {
+                **checked, "first_feedback_ms": first_feedback, "first_visible_content_ms": first_content,
+                "end_to_end_ms": elapsed,
+            }
             if on_turn is not None:
                 on_turn(turns)
             state = after
@@ -456,7 +499,9 @@ def case_report(case, repetition, turns):
         status = "wording_only_failure"
     else:
         status = "pass"
-    return {"case": case["id"], "repetition": repetition, "status": status, "checks": dict(counts), "turns": rows}
+    category = {"category": case["category"]} if "category" in case else {}
+    return {"case": case["id"], "repetition": repetition, **category, "status": status,
+            "checks": dict(counts), "turns": rows}
 
 
 def percentiles(samples):
@@ -466,7 +511,7 @@ def percentiles(samples):
             "p90": round(quantiles(samples, n=10, method="inclusive")[8] if len(samples) > 1 else samples[0], 3)}
 
 
-def aggregate(runs, cases, repeats, minimum, mandatory, targets):
+def aggregate(runs, cases, repeats, minimum, mandatory, targets, *, expected_text_turns=None):
     per_case = {}
     safety_checks = {"mutations_require_confirmation", "mutations_resolve_from_signed_state",
                      "model_email_redacted", "booking_proposal_has_guest"}
@@ -488,8 +533,21 @@ def aggregate(runs, cases, repeats, minimum, mandatory, targets):
     first_text = percentiles([max(0, call["ttftMs"] - wait) for call, wait in paired if call["ttftMs"] > 0])
     text_latency = percentiles([max(0, turn["turn_ms"] - sum(turn["model_pace_wait_ms"])) for turn in text_turns])
     ui_overhead = percentiles([max(0, turn["turn_ms"] - turn["cal_ms"]) for turn in turns if turn["kind"] == "ui"])
-    one_call = sum(turn["model_calls"] == 1 for turn in text_turns) / len(text_turns) if text_turns else None
+    eligible = len(text_turns) if expected_text_turns is None else expected_text_turns
+    distribution = {
+        "eligible": eligible,
+        "zero": sum(turn["model_calls"] == 0 for turn in text_turns),
+        "one": sum(turn["model_calls"] == 1 for turn in text_turns),
+        "two_or_more": sum(turn["model_calls"] >= 2 for turn in text_turns),
+        "not_observed": eligible - len(text_turns),
+    }
+    one_call = distribution["one"] / eligible if eligible else None
     feedback = percentiles([turn["first_feedback_ms"] for turn in turns])
+    content = percentiles([turn["first_visible_content_ms"] for turn in turns if turn.get("first_visible_content_ms") is not None])
+    end_to_end = percentiles([
+        max(0, turn["end_to_end_ms"] - sum(turn["model_pace_wait_ms"]))
+        for turn in text_turns if "end_to_end_ms" in turn
+    ])
     passed = sum(row["passed"] for row in per_case.values())
     return {
         "cases": per_case, "cases_passed": passed, "case_pass_rate": passed / len(cases),
@@ -497,9 +555,11 @@ def aggregate(runs, cases, repeats, minimum, mandatory, targets):
         "checks": dict(sum((Counter(row["checks"]) for row in runs), Counter())),
         "turn_latency_ms_excluding_pace": percentiles([max(0, row["turn_ms"] - sum(row["model_pace_wait_ms"])) for row in turns]),
         "text_turn_latency_ms_excluding_pace": text_latency, "first_model_text_ms_excluding_pace": first_text,
+        "text_end_to_end_ms_excluding_pace": end_to_end, "first_visible_content_ms": content,
         "first_visible_feedback_ms": feedback, "ui_overhead_without_reported_cal_ms": ui_overhead,
         "model_calls_per_turn": percentiles([row["model_calls"] for row in turns]),
         "one_model_call_fraction": one_call,
+        "text_model_call_distribution": distribution,
         "input_tokens": percentiles([call["inputTokens"] for call in calls]),
         "output_tokens": percentiles([call["outputTokens"] for call in calls]),
         "input_tokens_per_turn": percentiles([sum(call["inputTokens"] for call in turn["models"]) for turn in turns]),
@@ -525,8 +585,10 @@ def print_summary(summary):
     fields = (
         ("Turn latency (ms)", "turn_latency_ms_excluding_pace"),
         ("Text turn latency (ms)", "text_turn_latency_ms_excluding_pace"),
+        ("Text end-to-end latency (ms)", "text_end_to_end_ms_excluding_pace"),
         ("First model text (ms)", "first_model_text_ms_excluding_pace"),
         ("First visible feedback (ms)", "first_visible_feedback_ms"),
+        ("First visible content (ms, paced)", "first_visible_content_ms"),
         ("Model calls per turn", "model_calls_per_turn"),
         ("Input tokens per turn", "input_tokens_per_turn"),
         ("Output tokens per turn", "output_tokens_per_turn"),
@@ -538,6 +600,11 @@ def print_summary(summary):
             print(f"{label:<35} {'—':>10} {'—':>10} {0:>8}")
         else:
             print(f"{label:<35} {sample['p50']:>10.2f} {sample['p90']:>10.2f} {sample['n']:>8}")
+    counts = summary["text_model_call_distribution"]
+    if counts["eligible"]:
+        print(f"Text turns: {counts['zero']} zero calls, {counts['one']} one call, "
+              f"{counts['two_or_more']} two or more, {counts['not_observed']} not observed. "
+              f"Single call: {summary['one_model_call_fraction']:.1%} of {counts['eligible']}.")
 
 
 def checkpoint(output, document):
@@ -561,9 +628,9 @@ def compare(document, reference):
             "gate_passed": all((candidate_complete, baseline_complete, same_spec, no_503, more))}
 
 
-def run(spec, cases, repeats, profile, output, call_cap, reference=None, *, held_out=False):
+def run(spec, cases, repeats, profile, output, call_cap, reference=None, *, suite="approved"):
     model_name = profile["model"]
-    key = load_local_environment().get("GEMINI_API_KEY")
+    key = os.environ.get("GEMINI_API_KEY") or load_local_environment().get("GEMINI_API_KEY")
     require(bool(key), "Set an unbilled Gemini project key in .env.local.")
     comparison = model_name == COMPARISON_MODEL
     primary = GeminiClient(key, model=model_name, thinking_level=profile["thinking_level"], persistent=True)
@@ -583,19 +650,21 @@ def run(spec, cases, repeats, profile, output, call_cap, reference=None, *, held
     case_ids = [case["id"] for case in cases]
     mandatory = set(spec["runs"]["default"]["must_pass_every_repetition"])
     minimum = min(repeats, profile["minimum_passing_repetitions"])
-    fixture_path = SPEC_PATH.with_name(spec["calendar_fixture"])
+    fixture_path = suite_fixture_path(spec, suite)
     fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    expected_text_turns = repeats * sum("user" in turn for case in cases for turn in case["turns"])
     document = {
         "schema_version": 1, "calendar_mode": "owner", "model": model_name, "thinking": profile["thinking_level"],
-        "suite": "held_out" if held_out else "approved",
+        "suite": suite,
         "backup_model": None if comparison else BACKUP_MODEL, "case_ids": case_ids, "repeats": repeats,
         "spec_sha256": sha256(SPEC_PATH.read_bytes()).hexdigest(), "fixture_sha256": sha256(fixture_path.read_bytes()).hexdigest(),
         "qualifying_schedule": case_ids == list(APPROVED_CASE_IDS) and repeats == profile["repetitions_per_case"],
         "complete": False, "stop": None, "runs": [], "in_progress": None, "pace_seconds": PACE_SECONDS,
+        "expected_text_turns": expected_text_turns,
         "quota_backoff_seconds": QUOTA_BACKOFF_SECONDS, "provider_call_cap": call_cap,
     }
-    if held_out:
-        document["held_out_sha256"] = sha256(HELD_OUT_PATH.read_bytes()).hexdigest()
+    if suite in HELD_OUT_SPECS:
+        document["held_out_sha256"] = sha256(HELD_OUT_SPECS[suite][0].read_bytes()).hexdigest()
     document.update(regression_hashes(case_ids))
 
     def save():
@@ -603,7 +672,10 @@ def run(spec, cases, repeats, profile, output, call_cap, reference=None, *, held
         for (provider, status), count in pacing.http_errors.items():
             http.setdefault(provider, {})[str(status)] = count
         document.update(stop=pacing.stop, provider_calls=dict(pacing.provider_calls), provider_http_errors=http)
-        document["summary"] = aggregate(document["runs"], case_ids, repeats, minimum, mandatory, spec["performance_targets"])
+        document["summary"] = aggregate(
+            document["runs"], case_ids, repeats, minimum, mandatory, spec["performance_targets"],
+            expected_text_turns=expected_text_turns,
+        )
         checkpoint(output, document)
 
     save()
@@ -618,8 +690,10 @@ def run(spec, cases, repeats, profile, output, call_cap, reference=None, *, held
                     save()
                 try:
                     turns = run_case(spec, case, fixture, primary, backup, loop, model_name=model_name,
-                                     pacing=pacing, on_turn=save_turn,
-                                     capture_dialogue=repetition == 1 and case["id"] in {10, 24, 25})
+                                     pacing=pacing, on_turn=save_turn, fixture_path=fixture_path, capture_dialogue=(
+                                         suite in {"scheduling_held_out", "scheduling_follow_up"}
+                                         or repetition == 1 and case["id"] in {10, 24, 25}
+                                     ))
                     result = case_report(case, repetition, turns)
                 except Exception as error:
                     result = {"case": case["id"], "repetition": repetition, "status": "harness_error", "turns": [],
@@ -649,7 +723,13 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", choices=(DEFAULT_MODEL, COMPARISON_MODEL))
     parser.add_argument("--cases", type=int, nargs="+", help="Run specified approved or regression cases.")
-    parser.add_argument("--held-out", action="store_true", help="Run the six frozen owner rewordings once on the default model.")
+    frozen = parser.add_mutually_exclusive_group()
+    frozen.add_argument("--held-out", action="store_const", dest="suite", const="held_out",
+                        help="Run the six frozen owner rewordings once on the default model.")
+    frozen.add_argument("--scheduling-held-out", action="store_const", dest="suite", const="scheduling_held_out",
+                        help="Run the 20 frozen scheduling cases once on the default model.")
+    frozen.add_argument("--scheduling-follow-up", action="store_const", dest="suite", const="scheduling_follow_up",
+                        help="Run the 11 frozen scheduling follow-up cases once on the default model.")
     parser.add_argument("--repeats", choices=range(1, 4), type=int, help="Override the model's reviewed repetition count.")
     parser.add_argument("--refresh-spec", action="store_true", help="Regenerate the JSON snapshots from YAML offline.")
     parser.add_argument("--yaml-python", help="Existing Python interpreter with PyYAML for --refresh-spec only.")
@@ -667,36 +747,44 @@ def main():
         spec = approved_spec()
         document = json.loads(args.report.read_text(encoding="utf-8"))
         require(document["spec_sha256"] == sha256(SPEC_PATH.read_bytes()).hexdigest(), "The report uses a different spec.")
-        held_out = document.get("suite") == "held_out"
+        suite = document.get("suite")
+        held_out = suite in HELD_OUT_SPECS
         if held_out:
-            require(document["held_out_sha256"] == sha256(HELD_OUT_PATH.read_bytes()).hexdigest(), "The held-out spec differs.")
+            require(document["held_out_sha256"] == sha256(HELD_OUT_SPECS[suite][0].read_bytes()).hexdigest(),
+                    "The held-out spec differs.")
+        if suite == "scheduling_follow_up":
+            require(document["fixture_sha256"] == sha256(suite_fixture_path(spec, suite).read_bytes()).hexdigest(),
+                    "The follow-up calendar fixture differs.")
         for field, digest in regression_hashes(document["case_ids"]).items():
             require(document.get(field) == digest, "The regression spec differs.")
         profile = model_profile(spec, document["model"], held_out)
         repeats = document["repeats"]
         summary = aggregate(document["runs"], document["case_ids"], repeats,
                             min(repeats, profile["minimum_passing_repetitions"]),
-                            set(spec["runs"]["default"]["must_pass_every_repetition"]), spec["performance_targets"])
+                            set(spec["runs"]["default"]["must_pass_every_repetition"]), spec["performance_targets"],
+                            expected_text_turns=document.get("expected_text_turns"))
         print_summary(summary)
         return 0
     require(args.model is not None, "--model is required for an evaluation.")
     require(args.yaml_python is None, "--yaml-python is only used with --refresh-spec.")
     require(1 <= args.max_calls <= DEFAULT_CALL_CAP, "Invalid provider call cap.")
     require(args.against is None or args.model == COMPARISON_MODEL, "--against requires the comparison model.")
-    if args.held_out:
+    suite = args.suite or "approved"
+    held_out = suite in HELD_OUT_SPECS
+    if held_out:
         require(args.model == DEFAULT_MODEL and args.cases is None and args.repeats in {None, 1},
                 "Use all frozen held-out cases exactly once on the default model.")
     logging.disable(logging.CRITICAL)
     spec = approved_spec()
     regression_selected = bool(REGRESSION_CASE_IDS.intersection(args.cases or ()))
-    if args.held_out:
-        cases = held_out_cases(spec)
+    if held_out:
+        cases = held_out_cases(spec, suite=suite)
     else:
         selected = set(args.cases or APPROVED_CASE_IDS)
         require(selected <= {*APPROVED_CASE_IDS, *REGRESSION_CASE_IDS}, "Unknown evaluation case.")
         candidates = [*spec["cases"], *regression_cases(spec, selected)]
         cases = [case for case in candidates if case["id"] in selected]
-    profile = model_profile(spec, args.model, args.held_out)
+    profile = model_profile(spec, args.model, held_out)
     repeats = args.repeats or profile["repetitions_per_case"]
     if args.describe:
         print(json.dumps({"model": args.model, "thinking": profile["thinking_level"],
@@ -704,14 +792,14 @@ def main():
                           "pace_seconds": PACE_SECONDS, "backoff_seconds": QUOTA_BACKOFF_SECONDS, "call_cap": args.max_calls}))
         return 0
     date = datetime.now(ZoneInfo("America/Los_Angeles")).date().isoformat()
-    suffix = "-held-out" if args.held_out else "-regressions" if regression_selected else ""
+    suffix = "-" + suite.replace("_", "-") if held_out else "-regressions" if regression_selected else ""
     output = args.output or Path(spec["runs"]["results_path"].format(model=args.model, date=date + suffix))
     output.parent.mkdir(parents=True, exist_ok=True)
     try:
         output.touch(exist_ok=False)
     except FileExistsError as error:
         raise EvalError("The report already exists. Select a new --output path.") from error
-    return run(spec, cases, repeats, profile, output, args.max_calls, args.against, held_out=args.held_out)
+    return run(spec, cases, repeats, profile, output, args.max_calls, args.against, suite=suite)
 
 
 if __name__ == "__main__":

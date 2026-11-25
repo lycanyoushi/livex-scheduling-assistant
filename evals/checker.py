@@ -6,7 +6,8 @@ import re
 from zoneinfo import ZoneInfo
 
 
-SAFE_TOOLS = frozenset({"find_slots", "list_bookings", "propose_booking", "propose_cancel", "propose_reschedule"})
+SAFE_TOOLS = frozenset({"find_slots", "list_bookings", "propose_booking", "propose_cancel", "propose_reschedule",
+                        "report_unsupported_request"})
 SAFE_STATUS = frozenset({
     "completed", "requires_action", "rate_limited", "model_down", "timeout", "refusal", "interaction_expired",
     "slot_taken", "invalid_action", "cal_down", "loop_limit", "empty", "session_expired", "stream_error", "incomplete",
@@ -44,6 +45,14 @@ def require(condition, label):
 def local_iso(value, zone):
     instant = datetime.fromisoformat(value) if isinstance(value, str) else value
     return instant.astimezone(ZoneInfo(zone)).strftime("%Y-%m-%dT%H:%M")
+
+
+def observed_availability(reads, start, zone):
+    instant = datetime.fromisoformat(start).replace(tzinfo=ZoneInfo(zone))
+    covering_reads = [read["availability"] for read in reads if "availability" in read
+                      and read["availability"]["lower"] <= instant < read["availability"]["upper"]]
+    statuses = {"available" if start in read["starts"] else "unavailable" for read in covering_reads}
+    return {"covering_reads": len(covering_reads), "statuses": sorted(statuses)}
 
 
 def safe_reason(value):
@@ -193,7 +202,8 @@ def check_turn(case_id, turn_spec, payload, events, prior, before, after, now, z
     leaks = sum(item["contains_email"] for item in model.inputs)
     check("model_email_redacted", leaks == 0, {"calls_containing_email": leaks})
     check("unknown_refs", metrics["unknownRefs"] == 0, metrics["unknownRefs"])
-    check("model_call_bounds", plan.get("min_model_calls", 0) <= n_model <= min(plan["max_model_calls"], 3 if text_input else 0), n_model)
+    max_calls = min(plan.get("max_model_calls", 3), 3 if text_input else 0)
+    check("model_call_bounds", plan.get("min_model_calls", 0) <= n_model <= max_calls, n_model)
 
     proposal_events = [event["proposal"] for event in events if event["type"] == "proposal"]
     code_proposal = _code_proposal_observation(metrics, proposal_events, before, after, zone, calendar, model)
@@ -340,7 +350,7 @@ def check_turn(case_id, turn_spec, payload, events, prior, before, after, now, z
 
     def masked_record(operation):
         return {key: value for key, value in operation.items()
-                if key not in {"uid", "email", "name", "notes", "attendee_email", "reschedule_uid"}}
+                if key not in {"uid", "email", "name", "notes", "attendee_email", "reschedule_uid", "availability"}}
 
     def expected_record(wanted, actual):
         for key, value in wanted.items():
@@ -368,6 +378,10 @@ def check_turn(case_id, turn_spec, payload, events, prior, before, after, now, z
         observed = [read for read in calendar.reads if read["operation"] == item["operation"]]
         check("required_calendar_read:" + item["operation"], any(expected_record(item, read) for read in observed),
               [masked_record(read) for read in observed])
+    for item in plan.get("calendar_availability", []):
+        start = item["local_start"]
+        observed = observed_availability(calendar.reads, start, zone)
+        check("calendar_availability:" + start, observed["statuses"] == [item["status"]], observed)
     if plan.get("forbidden_cal_calls"):
         forbidden_reads = [read["operation"] for read in calendar.reads if read["operation"] in plan["forbidden_cal_calls"]]
         check("forbidden_calendar_reads", not forbidden_reads, forbidden_reads)

@@ -5,7 +5,7 @@ from threading import Barrier
 import unittest
 
 from backend.state import MAX_BOOKINGS, GuestDraft, SlotEntry, add_booking, add_slot, new_state
-from backend.tools import CalendarTools, ToolRejected, booking_entry, booking_view, proposal_view
+from backend.tools import BOOKING_HORIZON_DAYS, CalendarTools, ToolRejected, booking_entry, booking_view, last_bookable_day, proposal_view
 from evals.fake_cal import DEFAULT_CLOCK, FakeCal
 
 
@@ -75,19 +75,23 @@ class CalendarToolsTests(unittest.TestCase):
     def known_booking(self, uid="fixture-sam-intro"):
         return add_booking(self.state, booking_entry(self.calendar.booking(uid)))
 
-    def test_schemas_use_required_string_fields_and_optional_event_enum(self):
+    def test_schemas_keep_required_fields_and_add_optional_slot_bounds(self):
         tools = {item["name"]: item for item in self.tools.schemas()}
         self.assertEqual(
             set(tools), {"find_slots", "list_bookings", "propose_booking", "propose_cancel", "propose_reschedule"}
         )
-        for tool in tools.values():
+        for name, tool in tools.items():
             self.assertEqual(tool["type"], "function")
             parameters = tool["parameters"]
             self.assertEqual(parameters["type"], "object")
-            self.assertEqual(parameters["required"], list(parameters["properties"]))
-            self.assertTrue(all(prop["type"] == "string" for prop in parameters["properties"].values()))
+            if name != "find_slots":
+                self.assertEqual(parameters["required"], list(parameters["properties"]))
+                self.assertTrue(all(prop["type"] == "string" for prop in parameters["properties"].values()))
         slots = tools["find_slots"]["parameters"]
-        self.assertIn("for_booking_ref", slots["required"])
+        self.assertEqual(slots["required"], ["from_date", "part_of_day", "for_booking_ref"])
+        for field in ("to_date", "start_time", "end_time", "time_zone"):
+            self.assertEqual(slots["properties"][field]["type"], "string")
+        self.assertEqual(slots["properties"]["duration_minutes"]["type"], "integer")
         self.assertNotIn("event_type", slots["properties"])
         listings = tools["list_bookings"]["parameters"]["properties"]
         self.assertEqual(set(listings), {"which", "from_date", "to_date"})
@@ -104,6 +108,7 @@ class CalendarToolsTests(unittest.TestCase):
             multi.schemas()[0]["parameters"]["properties"]["event_type"]["enum"],
             ["30-minute-meeting", "another-event"],
         )
+        self.assertNotIn("event_type", multi.schemas()[0]["parameters"]["required"])
         with self.assertRaises(ToolRejected):
             multi.execute("find_slots", slot_args())
         reduced = CalendarTools(TwoEvents(), self.state, NOW, allowed_slugs=("30-minute-meeting",))
@@ -149,6 +154,142 @@ class CalendarToolsTests(unittest.TestCase):
                 self.tools.execute("find_slots", args)
         self.assertEqual(self.calendar.slot_calls, [])
         self.assertEqual(self.state.slots, {})
+
+    def test_structured_dates_times_and_duration_reject_invalid_inputs_before_search(self):
+        for args, message in (
+            (slot_args(day="2026-11-22"), "start date has already passed"),
+            (slot_args(day="2026-02-31"), "real start date"),
+            (slot_args(end="2026-11-31"), "real end date"),
+            (slot_args(start_time="1100"), "start time in HH:MM"),
+            (slot_args(end_time="24:00"), "end time in HH:MM"),
+            (slot_args(start_time="13:00", end_time="13:00"), "end time must be after"),
+            (slot_args(start_time="13:00", end_time="11:00"), "end time must be after"),
+            (slot_args(day="2026-11-23", start_time="10:00"), "start time has already passed"),
+            (slot_args(day="2026-11-23", end_time="09:59"), "time window has already passed"),
+            (slot_args(duration_minutes=0), "whole number of minutes"),
+            (slot_args(duration_minutes=True), "whole number of minutes"),
+            (slot_args(duration_minutes="30"), "whole number of minutes"),
+            (slot_args(duration_minutes=120), "no 120-minute event type"),
+            (slot_args(start_time="11:00", end_time="11:20"), "long enough for a 30-minute meeting"),
+        ):
+            with self.subTest(args=args), self.assertRaisesRegex(ToolRejected, message):
+                self.tools.execute("find_slots", args)
+        self.assertEqual(self.calendar.slot_calls, [])
+        self.assertEqual(self.state.slots, {})
+
+    def test_exact_local_start_defaults_to_one_day_and_never_searches_for_other_times(self):
+        args = slot_args(day="2026-11-23", start_time="11:00", duration_minutes=30)
+        del args["to_date"]
+        outcome = self.tools.execute("find_slots", args)
+        row, = outcome.result["slots"]
+        self.assertEqual(row["startLocalIso"], "2026-11-23T11:00:00+08:00")
+        self.assertEqual(row["endLocalIso"], "2026-11-23T11:30:00+08:00")
+        self.assertEqual(outcome.result["requestedTo"], "2026-11-23")
+        self.assertEqual(outcome.result["durationMinutes"], 30)
+        self.assertEqual(list(outcome.events[0]["slots"]), [row["ref"]])
+        self.assertIsNone(self.state.proposal)
+        self.assertEqual(self.calendar.write_calls, [])
+
+        empty = self.tools.execute("find_slots", {**args, "start_time": "11:15"})
+        self.assertEqual(empty.result["slots"], [])
+        self.assertNotIn("nextOpenDate", empty.result)
+        self.assertEqual(len(self.calendar.slot_calls), 2)
+
+    def test_bounded_search_checks_full_slot_against_each_day(self):
+        class WindowCalendar(TrackingCalendar):
+            def _scheduled_starts(self, begin, until):
+                starts = (
+                    "2026-11-26T10:45:00+08:00",
+                    "2026-11-26T11:00:00+08:00",
+                    "2026-11-26T12:30:00+08:00",
+                    "2026-11-26T12:45:00+08:00",
+                    "2026-11-26T13:00:00+08:00",
+                    "2026-11-27T12:30:00+08:00",
+                )
+                return (start for start in map(datetime.fromisoformat, starts) if begin <= start < until)
+
+        calendar = WindowCalendar()
+        tools = CalendarTools(calendar, self.state, NOW)
+        outcome = tools.execute("find_slots", slot_args(end="2026-11-27", start_time="11:00", end_time="13:00"))
+        self.assertEqual(
+            [slot["startLocalIso"] for slot in outcome.result["slots"]],
+            ["2026-11-26T11:00:00+08:00", "2026-11-26T12:30:00+08:00", "2026-11-27T12:30:00+08:00"],
+        )
+        self.assertEqual(outcome.result["slots"][-1]["endLocalIso"], "2026-11-27T13:00:00+08:00")
+        self.assertEqual(outcome.result["requestedStart"], "11:00")
+        self.assertEqual(outcome.result["requestedEnd"], "13:00")
+        self.assertNotIn("durationMinutes", outcome.result)
+        self.assertEqual(len(calendar.slot_calls), 1)
+
+    def test_tool_horizon_is_independent_of_the_warm_window(self):
+        today = NOW.date()
+        horizon = last_bookable_day(today)
+        self.assertEqual((horizon - today).days, BOOKING_HORIZON_DAYS)
+        outcome = self.tools.execute("find_slots", slot_args(day=horizon.isoformat()))
+        self.assertEqual(outcome.result["slots"], [])
+        self.assertEqual(len(self.calendar.slot_calls), 1)
+        with self.assertRaisesRegex(ToolRejected, "366-day booking horizon"):
+            self.tools.execute("find_slots", slot_args(day=(horizon + timedelta(days=1)).isoformat()))
+        self.assertEqual(len(self.calendar.slot_calls), 1)
+
+    def test_explicit_local_clock_rejects_missing_and_ambiguous_dst_times(self):
+        state = new_state("America/New_York", NOW)
+        tools = CalendarTools(self.calendar, state, NOW)
+        for day, start, message in (
+            ("2027-03-14", "02:30", "does not exist"),
+            ("2027-11-07", "01:30", "is ambiguous"),
+        ):
+            with self.subTest(day=day), self.assertRaisesRegex(ToolRejected, message):
+                tools.execute("find_slots", slot_args(day=day, start_time=start))
+        self.assertEqual(self.calendar.slot_calls, [])
+
+    def test_find_slots_interprets_requested_zone_and_displays_the_chat_zone(self):
+        outcome = self.tools.execute(
+            "find_slots", slot_args(day="2026-11-24", time_zone="Asia/Tokyo", start_time="11:00", end_time="11:30"),
+        )
+        row, = outcome.result["slots"]
+        self.assertEqual(row["startLocalIso"], "2026-11-24T10:00:00+08:00")
+        self.assertEqual(row["endLocalIso"], "2026-11-24T10:30:00+08:00")
+        self.assertEqual(outcome.result["requestedStartLocalIso"], row["startLocalIso"])
+        self.assertEqual(outcome.result["requestedEndLocalIso"], row["endLocalIso"])
+        self.assertEqual(outcome.result["requestedTimeZone"], "Asia/Tokyo")
+        self.assertEqual(outcome.result["timeZone"], ZONE)
+        self.assertEqual(outcome.events[0]["slots"][row["ref"]]["startLocalIso"], row["startLocalIso"])
+        self.assertEqual(self.calendar.slot_calls[0][3], "Asia/Tokyo")
+        empty = self.tools.execute(
+            "find_slots", slot_args(day="2026-11-24", time_zone="Asia/Tokyo", start_time="09:00"),
+        ).result
+        self.assertEqual(empty["slots"], [])
+        self.assertEqual(empty["requestedStartLocalIso"], "2026-11-24T08:00:00+08:00")
+
+    def test_requested_zone_uses_its_date_for_future_validation(self):
+        outcome = self.tools.execute(
+            "find_slots", slot_args(day="2026-11-22", time_zone="America/Los_Angeles", start_time="19:00"),
+        )
+        self.assertEqual(outcome.result["slots"][0]["startLocalIso"], "2026-11-23T11:00:00+08:00")
+        for day, start, code in (
+            ("2026-11-21", "19:00", "past_date"),
+            ("2026-11-22", "17:00", "past_time"),
+        ):
+            with self.subTest(day=day, start=start), self.assertRaises(ToolRejected) as error:
+                self.tools.execute("find_slots", slot_args(day=day, time_zone="America/Los_Angeles", start_time=start))
+            self.assertEqual(error.exception.result["code"], code)
+        with self.assertRaisesRegex(ToolRejected, "valid IANA time zone"):
+            self.tools.execute("find_slots", slot_args(time_zone="Asia/InvalidTestZone"))
+        self.assertEqual(len(self.calendar.slot_calls), 1)
+
+    def test_explicit_duration_overrides_new_booking_draft_and_preserves_move_duration(self):
+        self.state.guest_draft = GuestDraft(duration_minutes=60)
+        outcome = self.tools.execute("find_slots", slot_args(start_time="11:00", duration_minutes=30))
+        self.assertEqual(outcome.result["durationMinutes"], 30)
+        self.assertTrue(outcome.result["slots"])
+        self.assertEqual(self.state.guest_draft.duration_minutes, 60)
+        booking = self.known_booking()
+        with self.assertRaisesRegex(ToolRejected, "A move keeps its duration"):
+            self.tools.execute("find_slots", slot_args(booking_ref=booking, duration_minutes=60))
+        outcome = self.tools.execute("find_slots", slot_args(booking_ref=booking, start_time="11:00", duration_minutes=30))
+        self.assertEqual(outcome.result["durationMinutes"], 30)
+        self.assertEqual(self.state.slots[outcome.result["slots"][0]["ref"]].for_booking_ref, booking)
 
     def test_reschedule_availability_passes_uid_and_binds_local_slots(self):
         booking_ref = self.known_booking()

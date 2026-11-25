@@ -8,7 +8,7 @@ from urllib.parse import parse_qs, urlsplit
 from zoneinfo import ZoneInfo
 
 from backend.cal_client import CalClient, CalObservation
-from backend.model import ModelCompletion, ModelText
+from backend.model import ModelCompletion, ModelText, ToolCall
 from backend.prefetch import plan_prefetch, warm_slot_bounds
 from backend.prescan import prescan
 from backend.protocol import ChatRequest
@@ -25,12 +25,17 @@ PREFETCH_REF = re.compile(r"^Prefetched slot (S[1-9][0-9]*):", re.MULTILINE)
 
 
 class LocalHoursCalendar(FakeCal):
-    def __init__(self, *starts):
+    def __init__(self, *starts, duration=30):
         super().__init__()
         self.starts = [datetime.fromisoformat(f"{start}+08:00") for start in starts]
+        self._duration = timedelta(minutes=duration)
+        self._event_type(self._event_type_id)["lengthInMinutes"] = duration
 
     def _scheduled_starts(self, begin, until):
         return (start for start in self.starts if begin <= start < until)
+
+    def _is_scheduled_start(self, start):
+        return start in self.starts
 
 
 class ReplyFromContext:
@@ -55,9 +60,12 @@ class ReplyFromContext:
         yield ModelCompletion(f"fixture-{self.calls}", "completed")
 
 
-def request(text, token=None, zone=ZONE):
+def request(text, token=None, zone=ZONE, *, proposal_id=None):
+    entry = {"kind": "text", "text": text}
+    if proposal_id is not None:
+        entry["proposalId"] = proposal_id
     return ChatRequest.model_validate({
-        "stateToken": token, "timeZone": zone, "input": {"kind": "text", "text": text},
+        "stateToken": token, "timeZone": zone, "input": entry,
     })
 
 
@@ -148,7 +156,7 @@ class PrefetchTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_checked_empty_window_is_distinct_from_missing_availability(self):
         service = self.service(FakeCal(fixture_overrides={"open_local_starts": []}))
-        events = await self.collect(service, "Can I grab thirty minutes Thursday afternoon?")
+        events = await self.collect(service, "Can I grab 30 minutes Thursday afternoon?")
         self.assertFalse(any(event["type"] == "slot_chips" for event in events))
         self.assertIn("Availability checked for this request. No matching openings.", self.model.contexts[0])
         self.assertTrue(events[-1]["metrics"]["prefetch"]["slotsChecked"])
@@ -165,7 +173,7 @@ class PrefetchTests(unittest.IsolatedAsyncioTestCase):
             "2026-11-25T14:00", "2026-11-26T09:00", "2026-11-26T11:00", "2026-11-27T14:00",
         ]})
         service = self.service(calendar)
-        stream = service.events(request("Can I grab thirty minutes Thursday afternoon?"))
+        stream = service.events(request("Can I grab 30 minutes Thursday afternoon?"))
         self.assertEqual((await anext(stream))["type"], "status")
         refs = await anext(stream)
         chips = await anext(stream)
@@ -179,7 +187,7 @@ class PrefetchTests(unittest.IsolatedAsyncioTestCase):
         events = [event async for event in stream]
         self.assertEqual(calls, [(9001, *warm_slot_bounds(NOW, ZONE), ZONE)])
         self.assertEqual(self.model.calls, 1)
-        self.assertEqual(self.model.tool_schemas, [[]])
+        self.assertIn("find_slots", {tool["name"] for tool in self.model.tool_schemas[0]})
         self.assertEqual(events[-1]["metrics"]["toolCalls"], [])
         self.assertEqual(events[-1]["metrics"]["prefetch"]["shownSlots"], 3)
         self.assertIn(f"Nearest alternatives already on screen: {', '.join(chips['refs'])}", self.model.contexts[0])
@@ -198,9 +206,134 @@ class PrefetchTests(unittest.IsolatedAsyncioTestCase):
             ["2026-11-26T09:00:00+08:00", "2026-11-26T11:00:00+08:00", "2026-11-27T10:30:00+08:00"],
         )
         self.assertEqual(self.model.calls, 1)
-        self.assertEqual(self.model.tool_schemas, [[]])
+        self.assertIn("find_slots", {tool["name"] for tool in self.model.tool_schemas[0]})
         self.assertIn("No matching openings.", self.model.contexts[0])
         self.assertFalse(any(event["type"] in {"proposal", "booking_result"} for event in events))
+
+    async def test_compact_booking_window_stays_on_december_second_and_requires_confirmation(self):
+        service = self.service(LocalHoursCalendar(
+            "2026-11-25T11:00", "2026-12-02T10:30", "2026-12-02T11:00", "2026-12-02T11:30",
+            "2026-12-02T12:30", "2026-12-02T12:45", "2026-12-02T13:00",
+        ))
+        events = await self.collect(
+            service, "Schedule a meeting with Avery Example on 2 Dec from 1100 to 1300",
+        )
+        refs = next(event["slots"] for event in events if event["type"] == "refs")
+        chips = next(event for event in events if event["type"] == "slot_chips")
+        self.assertEqual([refs[ref]["startLocalIso"][:16] for ref in chips["refs"]], [
+            "2026-12-02T11:00", "2026-12-02T11:30", "2026-12-02T12:30",
+        ])
+        self.assertFalse(chips["allowMore"])
+        reply = next(event["text"] for event in events if event["type"] == "assistant_text")
+        self.assertIn("doesn’t offer 120-minute meetings", reply)
+        self.assertIn("30-minute meeting within that window", reply)
+        self.assertFalse(any(event["type"] in {"proposal", "booking_result", "error"} for event in events))
+        token = events[-1]["stateToken"]
+        self.assertEqual(verify_state(token, KEY, NOW).guest_draft.name, "Avery Example")
+
+        picked = await self.collect(service, "the second one", token)
+        self.assertIn("email", next(event["text"] for event in picked if event["type"] == "assistant_text"))
+        proposed = await self.collect(service, "avery@example.com", picked[-1]["stateToken"])
+        proposal = next(event["proposal"] for event in proposed if event["type"] == "proposal")
+        self.assertEqual(proposal["slotRef"], chips["refs"][1])
+        self.assertEqual(proposal["durationMinutes"], 30)
+        self.assertFalse(any(event["type"] == "booking_result" for event in [*picked, *proposed]))
+
+        confirmed = [event async for event in service.events(request(
+            "yes please", proposed[-1]["stateToken"], proposal_id=proposal["id"],
+        ))]
+        booking = next(event for event in confirmed if event["type"] == "booking_result")
+        self.assertEqual(booking["kind"], "booked")
+        self.assertEqual(booking["booking"]["guestName"], "Avery Example")
+        self.assertEqual(self.model.calls, 0)
+
+    async def test_empty_window_never_reuses_earlier_openings_or_calls_the_model(self):
+        service = self.service(LocalHoursCalendar("2026-12-02T09:00", "2026-12-02T11:00"))
+        earlier = await self.collect(service, "Show me openings on Dec 2")
+        model_calls = self.model.calls
+        events = await self.collect(
+            service, "Find openings between 13:00 and 15:00 on Dec 2", earlier[-1]["stateToken"],
+        )
+        self.assertFalse(any(event["type"] in {"slot_chips", "proposal", "booking_result"} for event in events))
+        self.assertIn("Wed 02 Dec 2026, 13:00–15:00", next(event["text"] for event in events if event["type"] == "assistant_text"))
+        self.assertFalse(verify_state(events[-1]["stateToken"], KEY, NOW).last_offered_slots)
+        self.assertEqual(self.model.calls, model_calls)
+
+    async def test_booking_window_offers_the_full_duration_when_the_calendar_supports_it(self):
+        service = self.service(LocalHoursCalendar("2026-12-02T11:00", "2026-12-02T11:30", duration=120))
+        events = await self.collect(service, "Book a meeting with Avery Example on Dec 2 from 11:00 to 13:00")
+        refs = next(event["slots"] for event in events if event["type"] == "refs")
+        chips = next(event for event in events if event["type"] == "slot_chips")
+        self.assertEqual([refs[ref]["startLocalIso"][:16] for ref in chips["refs"]], ["2026-12-02T11:00"])
+        self.assertFalse(any(event["type"] in {"proposal", "booking_result", "error"} for event in events))
+        self.assertEqual(self.model.calls, 0)
+
+    async def test_blank_model_reply_keeps_prefetched_choices_selectable(self):
+        service = self.service(FakeCal())
+
+        async def blank(**request):
+            yield ModelCompletion("fixture-blank", "completed")
+
+        self.model.stream = blank
+        events = await self.collect(service, "Show me available times on Thursday")
+        chips = next(event for event in events if event["type"] == "slot_chips")
+        self.assertFalse(any(event["type"] == "error" for event in events))
+        self.assertEqual(events[-1]["metrics"]["outcome"], "ok")
+        self.assertEqual(verify_state(events[-1]["stateToken"], KEY, NOW).last_offered_slots, chips["refs"])
+
+    async def test_unread_clock_range_waits_for_the_model_lookup_and_uses_verified_results(self):
+        service = self.service(LocalHoursCalendar(
+            "2026-12-02T09:00", "2026-12-02T11:00", "2026-12-02T12:30", "2026-12-02T12:45",
+        ))
+        model = self.model
+
+        async def interpret(**request):
+            model.calls += 1
+            if model.calls == 1:
+                context = request["input_steps"][-1]["content"][0]["text"]
+                self.assertIn("Prescan did not account for every date and time expression", context)
+                self.assertNotIn("Prefetched slot S", context)
+                self.assertTrue({"find_slots", "propose_booking"} <= {tool["name"] for tool in request["tools"]})
+                yield ModelText("The 09:00 slot is definitely free.")
+                yield ModelCompletion("looked-up", "requires_action", (ToolCall("read", "find_slots", {
+                    "from_date": "2026-12-02", "part_of_day": "any", "for_booking_ref": "",
+                    "start_time": "11:00", "end_time": "13:00",
+                }),))
+
+        model.stream = interpret
+        events = await self.collect(service, "I want to schedule a meeting with Avery Example on 2 Dec from 1100 until 1300")
+        self.assertEqual([event["type"] for event in events], ["status", "refs", "slot_chips", "assistant_text", "turn_end"])
+        self.assertEqual([events[1]["slots"][ref]["startLocalIso"][:16] for ref in events[2]["refs"]], [
+            "2026-12-02T11:00", "2026-12-02T12:30",
+        ])
+        self.assertNotIn("09:00", events[3]["text"])
+        self.assertEqual(model.calls, 1)
+        self.assertEqual(events[-1]["metrics"]["prefetch"]["shownSlots"], 0)
+
+    async def test_model_can_correct_prefetched_chips_with_a_structured_read(self):
+        service = self.service(LocalHoursCalendar(
+            "2026-11-26T12:00", "2026-11-26T12:30", "2026-11-26T13:00", "2026-11-26T13:30",
+            "2026-11-27T11:00",
+        ))
+        model = self.model
+
+        async def correct(**request):
+            model.calls += 1
+            if model.calls == 1:
+                self.assertTrue({"find_slots", "propose_booking"} <= {tool["name"] for tool in request["tools"]})
+                yield ModelCompletion("read", "requires_action", (ToolCall("correction", "find_slots", {
+                    "from_date": "2026-11-27", "part_of_day": "any", "for_booking_ref": "", "start_time": "11:00",
+                }),))
+
+        model.stream = correct
+        events = await self.collect(service, "Book Thursday afternoon")
+        early, corrected = [event["refs"] for event in events if event["type"] == "slot_chips"]
+        self.assertEqual(len(early), 4)
+        self.assertEqual(len(corrected), 1)
+        self.assertTrue(any(set(early) == set(event.get("retiredSlots", ())) for event in events))
+        self.assertEqual(verify_state(events[-1]["stateToken"], KEY, NOW).last_offered_slots, corrected)
+        self.assertFalse(any(event["type"] == "text_delta" for event in events))
+        self.assertEqual(model.calls, 1)
 
     async def test_closed_sunday_matches_the_nearest_days_in_approved_case_four(self):
         service = self.service(FakeCal())
@@ -381,7 +514,7 @@ class PrefetchTests(unittest.IsolatedAsyncioTestCase):
         previous_refs = next(event["slots"] for event in earlier if event["type"] == "refs")
         for ref in previous_refs:
             self.assertNotIn(f"slot {ref}:", self.model.contexts[-1])
-        self.assertEqual(self.model.tool_schemas[-1], [])
+        self.assertIn("find_slots", {tool["name"] for tool in self.model.tool_schemas[-1]})
         self.assertEqual(events[-1]["metrics"]["toolCalls"], [])
         self.assertEqual(len(events[-1]["metrics"]["modelCalls"]), 1)
 

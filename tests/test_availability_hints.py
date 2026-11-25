@@ -41,7 +41,7 @@ class AvailabilityHintTests(unittest.IsolatedAsyncioTestCase):
         return await prefetcher.fetch(CalendarTools(calendar, new_state(ZONE, NOW), NOW), plan)
 
     async def test_thirty_minutes_thursday_is_a_checked_empty_afternoon(self):
-        plan = build_plan("Can I grab thirty minutes Thursday afternoon?")
+        plan = build_plan("Can I grab 30 minutes Thursday afternoon?")
         self.assertTrue(plan.show_openings)
         self.assertEqual(plan.part_of_day, "afternoon")
         self.assertEqual([day.isoformat() for day in plan.days], ["2026-11-26"])
@@ -49,6 +49,27 @@ class AvailabilityHintTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result.slots_checked)
         self.assertFalse(result.timed_out)
         self.assertEqual(result.slots, [])
+
+    async def test_unresolved_date_time_cues_never_prefetch_guesswork(self):
+        for text in (
+            "Can I grab thirty minutes Thursday afternoon?",
+            "Book tomorrow at noon",
+            "Book tomorrow at 0930",
+            "Book tomorrow at 3.30pm",
+            "Book the day after tomorrow",
+            "Find openings in two weeks",
+            "Book tomorrow at 11am Tokyo time",
+            "Book last Monday at 3",
+            "What meetings did I have last Monday?",
+        ):
+            with self.subTest(text=text):
+                plan = build_plan(text)
+                self.assertEqual(plan.days, ())
+                self.assertIsNone(plan.booking_lookup)
+                self.assertFalse(plan.show_openings)
+                result = await self.fetch(plan)
+                self.assertFalse(result.slots_checked)
+                self.assertEqual(result.slots, [])
 
     async def test_friday_morning_follow_up_keeps_both_actual_options(self):
         plan = build_plan("What about Friday morning?")

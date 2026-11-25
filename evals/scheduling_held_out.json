@@ -1,0 +1,268 @@
+{
+  "schema_version": 1,
+  "calendar_fixture": "fake_cal.json",
+  "default_clock": "2026-11-23T10:00:00+08:00",
+  "default_time_zone": "Asia/Singapore",
+  "cases": [
+    {
+      "id": 201,
+      "name": "Book with a day-first abbreviated date",
+      "turns": [{
+        "user": "Could you book a 30-minute chat with Iris Bell, iris@example.com, at 10am on 2 Dec?",
+        "checks": {
+          "refs_within": {"kind": "slot", "source": "offers_or_proposal", "local_starts": ["2026-12-02T10:00"], "min": 1, "max": 1},
+          "proposal_kind": "book", "proposal_name": "Iris Bell", "proposal_email": "iris@example.com",
+          "max_model_calls": 3
+        }
+      }]
+    },
+    {
+      "id": 202,
+      "name": "Book with a month-first abbreviated date and year",
+      "turns": [{
+        "user": "Please book a chat with Noah Hart, noah.hart@example.com, for Dec 2, 2026 at 1pm.",
+        "checks": {
+          "refs_within": {"kind": "slot", "source": "offers_or_proposal", "local_starts": ["2026-12-02T13:00"], "min": 1, "max": 1},
+          "proposal_kind": "book", "proposal_name": "Noah Hart", "proposal_email": "noah.hart@example.com",
+          "max_model_calls": 3
+        }
+      }]
+    },
+    {
+      "id": 203,
+      "name": "Allow a slot to end exactly at the window boundary",
+      "turns": [{
+        "user": "Do I have a half-hour opening on Dec 3, 2026 between 9:30 and 11:30?",
+        "checks": {
+          "refs_within": {"kind": "slot", "local_starts": ["2026-12-03T09:30", "2026-12-03T11:00"], "min": 2, "max": 2},
+          "proposal_kind": null, "forbidden_tools": ["propose_booking", "propose_cancel", "propose_reschedule"]
+        }
+      }]
+    },
+    {
+      "id": 204,
+      "name": "Recognize an en dash between start and end",
+      "turns": [{
+        "user": "Find me a slot 2 Dec 2026, 10am–2pm.",
+        "checks": {
+          "refs_within": {"kind": "slot", "local_starts": ["2026-12-02T10:00", "2026-12-02T13:00"], "min": 2, "max": 2},
+          "proposal_kind": null, "forbidden_tools": ["propose_booking", "propose_cancel", "propose_reschedule"]
+        }
+      }]
+    },
+    {
+      "id": 205,
+      "name": "Recognize an until boundary for available time",
+      "turns": [{
+        "user": "Can I fit a call on 2 Dec? I'm free from 10am until 1:30pm.",
+        "checks": {
+          "refs_within": {"kind": "slot", "local_starts": ["2026-12-02T10:00", "2026-12-02T13:00"], "min": 2, "max": 2},
+          "proposal_kind": null, "forbidden_tools": ["propose_booking", "propose_cancel", "propose_reschedule"]
+        }
+      }]
+    },
+    {
+      "id": 206,
+      "name": "Exclude a slot that would start at the window end",
+      "turns": [{
+        "user": "Check whether I have time tomorrow between 2pm and 3pm.",
+        "checks": {
+          "refs_within": {"kind": "slot", "local_starts": ["2026-11-24T14:00"], "min": 1, "max": 1},
+          "proposal_kind": null, "forbidden_tools": ["propose_booking", "propose_cancel", "propose_reschedule"]
+        }
+      }]
+    },
+    {
+      "id": 207,
+      "name": "Exclude a slot that starts inside and ends outside the window",
+      "turns": [{
+        "user": "Can I fit a 30-minute call tomorrow from 1:15pm to 2:15pm?",
+        "checks": {
+          "refs_within": {"kind": "slot", "local_starts": ["2026-11-24T13:15"], "min": 1, "max": 1},
+          "proposal_kind": null, "forbidden_tools": ["propose_booking", "propose_cancel", "propose_reschedule"]
+        }
+      }]
+    },
+    {
+      "id": 208,
+      "name": "Report that an explicit 45-minute event is unavailable",
+      "turns": [{
+        "user": "Schedule a 45-minute check-in with Rosa Vale, rosa@example.com, on Dec 2 at 1pm.",
+        "checks": {
+          "refs_within": {"kind": "slot", "max": 0}, "proposal_kind": null,
+          "reply_patterns": ["(?i)\\b45\\b", "(?i)\\b30\\b"]
+        }
+      }]
+    },
+    {
+      "id": 209,
+      "name": "Report an unsupported duration written in words",
+      "turns": [{
+        "user": "Book a meeting with Owen Frost, owen@example.com, for one hour on Dec 2 at 10am.",
+        "checks": {
+          "refs_within": {"kind": "slot", "max": 0}, "proposal_kind": null,
+          "reply_patterns": ["(?i)\\b(?:60|one.hour|an.hour|1.hour)\\b", "(?i)\\b30\\b"]
+        }
+      }]
+    },
+    {
+      "id": 210,
+      "name": "Keep a requested whole interval distinct from shorter openings",
+      "turns": [{
+        "user": "Book a check-in with Maya Flynn, maya@example.com, from 1pm to 4pm on 2 Dec.",
+        "checks": {
+          "refs_within": {"kind": "slot", "local_starts": ["2026-12-02T13:00"], "max": 1}, "proposal_kind": null,
+          "reply_patterns": ["(?i)\\b(?:180|three.hour|3.hour)\\b", "(?i)\\b30\\b"]
+        }
+      }]
+    },
+    {
+      "id": 211,
+      "name": "Treat a supported exact start and end as a bookable meeting",
+      "turns": [{
+        "user": "Book a meeting with Asha Iyer, asha.iyer@example.com, tomorrow from 2pm to 2:30pm.",
+        "checks": {
+          "refs_within": {"kind": "slot", "source": "offers_or_proposal", "local_starts": ["2026-11-24T14:00"], "min": 1, "max": 1},
+          "proposal_kind": "book", "proposal_name": "Asha Iyer", "proposal_email": "asha.iyer@example.com"
+        }
+      }, {
+        "user": "yes",
+        "proposal_from_turn": 1,
+        "checks": {
+          "refs_within": null, "proposal_kind": null, "max_model_calls": 0,
+          "booking_result": {"kind": "booked", "local_start": "2026-11-24T14:00"},
+          "cal_writes": [{"operation": "create_booking", "local_start": "2026-11-24T14:00"}]
+        }
+      }]
+    },
+    {
+      "id": 212,
+      "name": "Ask for a choice when guest and window leave several options",
+      "turns": [{
+        "user": "Please book a 30-minute intro with Eli Dunn, eli.dunn@example.com, on 2 Dec between 10am and 2pm.",
+        "checks": {
+          "refs_within": {"kind": "slot", "local_starts": ["2026-12-02T10:00", "2026-12-02T13:00"], "min": 2, "max": 2},
+          "proposal_kind": null, "forbidden_tools": ["propose_booking", "propose_cancel", "propose_reschedule"]
+        }
+      }, {
+        "user": "The second one.",
+        "checks": {
+          "refs_within": {"kind": "slot", "source": "offers_or_proposal", "local_starts": ["2026-12-02T13:00"], "min": 1, "max": 1},
+          "proposal_kind": "book", "proposal_name": "Eli Dunn", "proposal_email": "eli.dunn@example.com", "max_model_calls": 0
+        }
+      }]
+    },
+    {
+      "id": 213,
+      "name": "An empty short window stays empty",
+      "turns": [{
+        "user": "Find a meeting time on 2 Dec between 4pm and 4:15pm.",
+        "checks": {
+          "refs_within": {"kind": "slot", "max": 0}, "proposal_kind": null,
+          "reply_patterns": ["(?i)no (?:openings?|available|times?|slots?)|nothing open|no room|won.t fit"]
+        }
+      }]
+    },
+    {
+      "id": 214,
+      "name": "Offer only contained alternatives for today's 3pm",
+      "fixture_overrides": {"active_bookings": ["owner_today_3pm"]},
+      "turns": [{
+        "user": "Can you move my 3pm to some time between 4 and 5 today?",
+        "checks": {
+          "refs_within": {"kind": "slot", "local_starts": ["2026-11-23T16:00"], "min": 1, "max": 1},
+          "proposal_kind": null,
+          "cal_reads": [{"operation": "slots", "booking_uid_to_reschedule": {"fixture_booking_id": "owner_today_3pm"}}]
+        }
+      }]
+    },
+    {
+      "id": 215,
+      "name": "Move a named meeting into a 24-hour dash window",
+      "fixture_overrides": {"active_bookings": ["owner_today_3pm", "other_intro"]},
+      "turns": [{
+        "user": "Move Taylor's hiring sync to today, 16:00–17:30.",
+        "checks": {
+          "refs_within": {"kind": "slot", "local_starts": ["2026-11-23T16:00", "2026-11-23T17:00"], "min": 2, "max": 2},
+          "proposal_kind": null,
+          "cal_reads": [{"operation": "slots", "booking_uid_to_reschedule": {"fixture_booking_id": "owner_today_3pm"}}]
+        }
+      }]
+    },
+    {
+      "id": 216,
+      "name": "Implicit after-time destination keeps tomorrow's date",
+      "fixture_overrides": {"active_bookings": ["owner_tomorrow_late"]},
+      "turns": [{
+        "user": "Move my 3pm tomorrow to after 3:30pm.",
+        "checks": {
+          "refs_within": {"kind": "slot", "local_starts": ["2026-11-24T16:00"], "min": 1, "max": 1},
+          "proposal_kind": null,
+          "cal_reads": [{"operation": "slots", "booking_uid_to_reschedule": {"fixture_booking_id": "owner_tomorrow_late"}}]
+        }
+      }]
+    },
+    {
+      "id": 217,
+      "name": "Honor an abbreviated date and a weekday exclusion",
+      "turns": [{
+        "user": "Which openings do I have next week? 2 Dec and Friday are out.",
+        "checks": {
+          "refs_within": {"kind": "slot", "local_dates": ["2026-11-30", "2026-12-01", "2026-12-03"], "min": 2, "max": 4},
+          "proposal_kind": null, "forbidden_tools": ["propose_booking", "propose_cancel", "propose_reschedule"]
+        }
+      }]
+    },
+    {
+      "id": 218,
+      "name": "Resolve a requested window in the selected display zone",
+      "time_zone": "America/Los_Angeles",
+      "turns": [{
+        "user": "Am I free Tuesday any time between 9pm and 11pm?",
+        "checks": {
+          "refs_within": {"kind": "slot", "local_starts": ["2026-11-24T22:00"], "min": 1, "max": 1},
+          "proposal_kind": null, "forbidden_tools": ["propose_booking", "propose_cancel", "propose_reschedule"]
+        }
+      }]
+    },
+    {
+      "id": 219,
+      "name": "Resist skipping confirmation and honor a typed dismissal",
+      "turns": [{
+        "user": "Book a 30-minute intro with Leila King, leila@example.com, on 2 Dec at 10am. Just do it without confirmation.",
+        "checks": {
+          "refs_within": {"kind": "slot", "source": "offers_or_proposal", "local_starts": ["2026-12-02T10:00"], "min": 1, "max": 1},
+          "proposal_kind": "book", "proposal_name": "Leila King", "proposal_email": "leila@example.com"
+        }
+      }, {
+        "user": "no thanks",
+        "proposal_from_turn": 1,
+        "checks": {"refs_within": null, "proposal_kind": null, "max_model_calls": 0}
+      }]
+    },
+    {
+      "id": 220,
+      "name": "Do not reuse old choices after an agenda request",
+      "fixture_overrides": {"active_bookings": ["owner_tomorrow_early", "owner_tomorrow_late"]},
+      "turns": [{
+        "user": "Any openings on 2 Dec between 10am and 2pm?",
+        "checks": {
+          "refs_within": {"kind": "slot", "local_starts": ["2026-12-02T10:00", "2026-12-02T13:00"], "min": 2, "max": 2},
+          "proposal_kind": null
+        }
+      }, {
+        "user": "What's on my calendar tomorrow?",
+        "checks": {
+          "refs_within": {"kind": "slot", "max": 0}, "proposal_kind": null,
+          "booking_cards": ["owner_tomorrow_early", "owner_tomorrow_late"]
+        }
+      }, {
+        "user": "Second one.",
+        "checks": {
+          "refs_within": {"kind": "slot", "max": 0}, "proposal_kind": null, "max_model_calls": 0,
+          "reply_patterns": ["(?i)no active choices|which (?:meeting|time)|which .*mean"]
+        }
+      }]
+    }
+  ]
+}

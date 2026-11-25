@@ -188,6 +188,12 @@ class PendingChange(_StateModel):
     later: bool = False
 
 
+class SlotSearch(_StateModel):
+    day: CalendarDate
+    time_zone: TimeZoneName
+    at: Annotated[str, StringConstraints(pattern=r"^(?:[01][0-9]|2[0-3]):[0-5][0-9]$")] | None = None
+
+
 class SessionState(_StateModel):
     v: Literal[2]
     session_id: _OpaqueId
@@ -195,6 +201,7 @@ class SessionState(_StateModel):
     expires_at: Annotated[int, Field(gt=0)]
     guest_draft: GuestDraft | None = None
     pending_change: PendingChange | None = None
+    last_slot_search: SlotSearch | None = None
     last_offered_slots: Annotated[list[SlotRef], Field(max_length=4)] = Field(default_factory=list)
     slots: Annotated[dict[SlotRef, SlotEntry], Field(max_length=MAX_SLOTS)] = Field(default_factory=dict)
     bookings: Annotated[dict[BookingRef, BookingEntry], Field(max_length=MAX_BOOKINGS)] = Field(default_factory=dict)
@@ -210,6 +217,7 @@ class SessionState(_StateModel):
 
     def clear_time_choices(self, *, keep_proposal: bool = False) -> None:
         self.guest_draft = None
+        self.last_slot_search = None
         self.last_offered_slots.clear()
         kept = self.proposal.slot_ref if keep_proposal and self.proposal is not None else None
         self.slots = {kept: self.slots[kept]} if kept is not None and kept in self.slots else {}

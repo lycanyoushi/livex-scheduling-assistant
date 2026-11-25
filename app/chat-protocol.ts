@@ -78,7 +78,7 @@ export type ServerEvent =
   | { type: "proposal"; proposal: ProposalView }
   | BookingResult
   | { type: "booking_cards"; refs: string[] }
-  | { type: "slot_chips"; refs: string[]; plainRefs?: string[]; note?: string }
+  | { type: "slot_chips"; refs: string[]; plainRefs?: string[]; note?: string; allowMore?: boolean }
   | { type: "error"; code: string; message: string; retryable: boolean; fallback?: "booker" }
   | TurnEnd;
 

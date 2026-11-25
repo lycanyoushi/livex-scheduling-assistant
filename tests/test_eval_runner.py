@@ -1,5 +1,6 @@
 """Offline coverage for the approved evaluation runner."""
 
+from datetime import datetime, time, timedelta
 import json
 from pathlib import Path
 import re
@@ -9,10 +10,10 @@ from unittest import IsolatedAsyncioTestCase, TestCase
 from unittest.mock import AsyncMock, patch
 
 from backend.model import ModelCompletion, ModelError, ModelText, ToolCall
-from evals.checker import EvalError, check_turn, confirms_signed_proposal, render, safe_reason
+from evals.checker import EvalError, check_turn, confirms_signed_proposal, observed_availability, render, safe_reason
 from evals.runner import (
     COMPARISON_MODEL, DEFAULT_MODEL, SPEC_PATH, Pacing, Trace, TracingModel, aggregate, approved_spec, case_report, checkpoint,
-    held_out_cases, model_profile, regression_cases, run_case, turn_payload,
+    TracedCalendar, held_out_cases, model_profile, regression_cases, run_case, suite_fixture_path, turn_payload,
 )
 
 
@@ -265,6 +266,33 @@ class EvalRunnerTests(TestCase):
         self.assertEqual(len(prompts), 6)
         self.assertFalse(prompts & existing)
         self.assertEqual(model_profile(self.spec, DEFAULT_MODEL, held_out=True)["repetitions_per_case"], 1)
+
+    def test_follow_up_uses_a_separate_weekday_calendar_with_grounded_availability(self):
+        suite = "scheduling_follow_up"
+        cases = held_out_cases(self.spec, suite=suite)
+        self.assertEqual([case["category"] for case in cases], ["A"] * 6 + ["B"] * 3 + ["C"] * 2)
+        path = suite_fixture_path(self.spec, suite)
+        self.assertNotEqual(path, suite_fixture_path(self.spec, "scheduling_held_out"))
+        fixture = json.loads(path.read_text(encoding="utf-8"))
+        for day, starts in fixture["availability"]["local_starts_by_date"].items():
+            for start in starts:
+                local = datetime.fromisoformat(f"{day}T{start}")
+                self.assertLess(local.weekday(), 5)
+                self.assertGreaterEqual(local.time(), time(9))
+                self.assertLessEqual((local + timedelta(minutes=30)).time(), time(17))
+
+        zone = self.spec["default_time_zone"]
+        now = datetime.fromisoformat(self.spec["default_clock"])
+        calendar = TracedCalendar(cases[-1], now, zone, fixture, path)
+        tomorrow = "2026-11-24"
+        at_three, at_four = f"{tomorrow}T15:00", f"{tomorrow}T16:00"
+        self.assertEqual(observed_availability(calendar.reads, at_three, zone)["statuses"], [])
+        calendar.slots(fixture["availability"]["event_type_id"], tomorrow, tomorrow)
+        self.assertEqual(observed_availability(calendar.reads, at_three, zone),
+                         {"covering_reads": 1, "statuses": ["unavailable"]})
+        self.assertEqual(observed_availability(calendar.reads, at_four, zone),
+                         {"covering_reads": 1, "statuses": ["available"]})
+        self.assertEqual(observed_availability(calendar.reads, "2026-11-27T08:00", zone)["statuses"], [])
 
     def test_new_comparison_uses_flash_lite_minimal_once(self):
         profile = model_profile(self.spec, COMPARISON_MODEL)

@@ -18,13 +18,15 @@ WEEKDAYS = {
 }
 RELATIVE = {"today": 0, "tomorrow": 1, "yesterday": -1, "hoy": 0, "mañana": 1, "ayer": -1}
 MONTH = (
-    r"january|february|march|april|may|june|july|august|september|october|november|december|"
+    r"jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|"
+    r"aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?|"
     r"enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre"
 )
 DATES = re.compile(
     rf"\b(?:(?P<week>(?:next|this)\s+week|esta\s+semana|(?:la\s+)?próxima\s+semana)"
-    rf"|(?P<calendar>\d{{4}}-\d{{2}}-\d{{2}}|(?:{MONTH})\s+\d{{1,2}}(?:,\s*\d{{4}})?"
-    rf"|\d{{1,2}}\s+(?:de\s+)?(?:{MONTH})(?:\s+(?:de\s+)?\d{{4}})?)"
+    rf"|(?P<calendar>\d{{4}}-\d{{2}}-\d{{2}}"
+    rf"|(?:(?:{MONTH})\s+\d{{1,2}}|\d{{1,2}}\s+(?:de\s+)?(?:{MONTH}))"
+    rf"(?:(?:,\s*|\s+(?:de\s+)?)\d{{4}})?)"
     rf"|(?P<relative>{'|'.join(RELATIVE)})"
     rf"|(?:(?P<modifier>next|this)\s+)?(?P<weekday>{'|'.join(WEEKDAYS)})"
     rf"|the\s+(?P<ordinal>[1-9]|[12]\d|3[01])(?:st|nd|rd|th))\b",
@@ -34,6 +36,50 @@ CLOCK = (r"(?:(?P<marker>at|a\s+las)\s+)?(?P<hour>[0-2]?\d)"
          r"(?::(?P<minute>[0-5]\d))?\s*(?P<period>am|pm)?\b(?!:)")
 ATTACHED_TIME = re.compile(r"^[,\s]*" + CLOCK, re.IGNORECASE)
 LEADING_TIME = re.compile(r"(?<![\w:])" + CLOCK + r"[,\s]*$", re.IGNORECASE)
+_WINDOW_CLOCK = r"(?:\d{3,4}|\d{1,2}(?::\d{2})?(?:\s*(?:am|pm))?)\b(?!:)"
+_TIME_WINDOW = re.compile(
+    rf"\b(?:(?P<from>from)|between)\s+(?P<start>{_WINDOW_CLOCK})\s+"
+    rf"(?(from)to|and)\s+(?P<end>{_WINDOW_CLOCK})",
+)
+_UNREAD_DATE_OR_TIME = re.compile(
+    rf"[\d–—-]|\b(?:{MONTH}|{'|'.join(WEEKDAYS)}|{'|'.join(RELATIVE)}|"
+    r"mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun|weeks?|weekends?|months?|years?|"
+    r"morning|afternoon|evening|tonight|noon|midnight|mediodía|medianoche|am|pm|hours?|minutes?|"
+    r"from|to|until|between|through|before|after)\b"
+)
+_SHORT_WEEKDAY = "mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun"
+_PRIOR_WEEKDAY = re.compile(rf"\b(?:last|previous|past)\s+(?:{'|'.join(WEEKDAYS)}|{_SHORT_WEEKDAY})\b")
+_TIME_UNITS = "days?|weeks?|weekends?|months?|years?"
+_RELATIVE_PERIOD = re.compile(
+    rf"\b(?:in|after|before|within|next|last|previous|this)\s+(?:[\w-]+\s+){{0,3}}(?:{_TIME_UNITS})\b"
+    rf"|\b(?:{_TIME_UNITS})\s+(?:ago|later|earlier|out|from\s+now|(?:after|before)\s+(?:today|tomorrow|next|last))\b"
+)
+_BARE_TIMING_CUE = re.compile(
+    r"\b(?:noon|midnight|tonight|mediodía|medianoche)\b"
+    r"|\b\d{1,2}[:.]\d{2}(?!\d)|\b\d{1,2}\s*[ap]\.?\s*m\.?(?!\w)"
+    r"|\b(?:at|before|after|by|a\s+las)\s+\d{1,4}\b|\b\d{1,2}\s+(?:instead|rather)\b"
+    r"|\b[\w-]+\s+(?:hours?|minutes?)\b",
+)
+_BARE_DATE_CUE = re.compile(
+    r"\b\d{4}[-./]\d{1,2}[-./]\d{1,2}\b|\b\d{1,2}/\d{1,2}(?:/\d{2,4})?\b|\b\d{1,2}\.\d{1,2}\.\d{4}\b"
+    rf"|\b(?:in|on|by|next|last|this)\s+(?:{MONTH})\b|\b(?:{_SHORT_WEEKDAY})\b",
+)
+_STANDALONE_COMPACT_CLOCK = re.compile(r"(?:[01][0-9]|2[0-3])[0-5][0-9]")
+_ZONE_HINT = re.compile(
+    r"\b[a-z][a-z_.+-]*(?:/[a-z0-9_.+-]+)+\b|\b(?:utc|gmt|time\s*zone)\b",
+    re.I,
+)
+_CLOCK_ZONE_SUFFIX = re.compile(
+    r"\b(?:\d{1,2}(?::\d{2})?\s*[ap]m|\d{1,2}:\d{2}|\d{1,2})\s+"
+    r"(?:in\s+)?(?:[a-z][a-z.'-]*\s+){1,3}time\b",
+    re.I,
+)
+_CLOCK_LOCATION = re.compile(r"\b(?:\d{1,2}:\d{2}|\d{1,2}(?::\d{2})?\s*(?i:[ap]m))\s+in\s+[A-Z][a-z]+\b")
+_ZONE_ABBREVIATION = re.compile(r"\b[0-9](?:\s*(?i:[ap]m))?\s+(?:[A-Z]{2,5}T|GMT|UTC)\b")
+_PROPER_ZONE_LABEL = re.compile(
+    r"\b(?!(?:Book|Schedule|Reserve|Show|Find|Check|See|What|Which|Pick|Choose|Local|Free|Available|More|Meeting)\b)"
+    r"[A-Z][a-z]+(?:[ -][A-Z][a-z]+)*\s+time\b",
+)
 PARTS: dict[PartOfDay, re.Pattern[str]] = {
     "morning": re.compile(r"\b(?:morning|por la mañana)\b", re.IGNORECASE),
     "afternoon": re.compile(r"\b(?:afternoon|por la tarde)\b", re.IGNORECASE),
@@ -60,7 +106,8 @@ AVAILABILITY_REQUEST = re.compile(
 )
 TIME_REQUEST = re.compile(
     r"^\s*\d+\s*-?\s*(?:min(?:ute)?s?|hours?)\b"
-    r"|\b(?:can|could|may)\s+(?:i|we)\s+(?:grab|get|have|take)\b[^.!?\n]{0,35}\b(?:mins?|minutes?|hours?)\b",
+    r"|\b(?:can|could|may)\s+(?:i|we)\s+(?:grab|get|have|take)\b[^.!?\n]{0,35}"
+    r"\b(?:mins?|minutes?|hours?|meetings?|calls?|appointments?|slots?)\b",
     re.I,
 )
 DATED_FOLLOWUP = re.compile(r"^\s*¿?\s*(?:what about|how about|qué tal)\b", re.I)
@@ -109,6 +156,20 @@ class DateHint:
 
 
 @dataclass(frozen=True)
+class TimeWindow:
+    start: time
+    end: time
+    full_meeting: bool = False
+
+    @property
+    def minutes(self) -> int:
+        return (self.end.hour - self.start.hour) * 60 + self.end.minute - self.start.minute
+
+    def contains(self, start: datetime, end: datetime) -> bool:
+        return start.date() == end.date() and self.start <= start.time() < end.time() <= self.end
+
+
+@dataclass(frozen=True)
 class PrescanResult:
     email: str | None
     dates: tuple[DateHint, ...]
@@ -123,6 +184,16 @@ class PrescanResult:
     move_later: bool = False
     duration_minutes: int | None = None
     move_delay_minutes: int | None = None
+    time_window: TimeWindow | None = None
+    invalid_time_window: bool = False
+    date_time_complete: bool = True
+    past_date_requested: bool = False
+    timing_mentioned: bool = False
+    date_mentioned: bool = False
+
+    @property
+    def needs_interpretation(self) -> bool:
+        return not self.date_time_complete
 
     def excludes(self, day: date) -> bool:
         return day in self.excluded_days or day.weekday() in self.excluded_weekdays
@@ -140,6 +211,13 @@ def _requested_time(match: re.Match[str] | None, *, bare: bool = False) -> time 
     elif match["minute"] is None and 1 <= hour <= 7:
         hour += 12
     return time(hour, minute) if hour < 24 else None
+
+
+def _window_time(value: str) -> time | None:
+    if value.isdigit() and len(value) >= 3:
+        hour, minute = int(value[:-2]), int(value[-2:])
+        return time(hour, minute) if hour < 24 and minute < 60 else None
+    return _requested_time(re.fullmatch(CLOCK, value), bare=True)
 
 
 _TYPED_TIME = re.compile(
@@ -182,19 +260,27 @@ def _week_start(monday: date, week: str) -> date:
     return monday + timedelta(days=7) if week.startswith("next") or "próxima" in week else monday
 
 
-def _dates(text: str, reference: datetime) -> tuple[DateHint, ...]:
+def _dates(
+    text: str, reference: datetime, *, read: list[tuple[int, int]] | None = None,
+) -> tuple[DateHint, ...]:
     today = reference.date()
     monday = today - timedelta(days=today.weekday())
     results = []
     for position, match in enumerate(DATES.finditer(text)):
-        at = _requested_time(ATTACHED_TIME.match(text[match.end():]))
+        trailing = ATTACHED_TIME.match(text[match.end():])
+        at = _requested_time(trailing)
+        time_span = (match.end(), match.end() + trailing.end()) if at is not None and trailing else None
         if at is None and position == 0:
-            at = _requested_time(LEADING_TIME.search(text[:match.start()]))
+            leading = LEADING_TIME.search(text[:match.start()])
+            at = _requested_time(leading)
+            time_span = leading.span() if at is not None and leading else None
         day = None
         if match["week"]:
             start = _week_start(monday, match["week"])
             results.extend(DateHint(start + timedelta(days=index))
                            for index in range(5) if start + timedelta(days=index) >= today)
+            if read is not None:
+                read.append(match.span())
         elif match["relative"]:
             if match["relative"] != "mañana" or not text[:match.start()].endswith("por la "):
                 day = today + timedelta(days=RELATIVE[match["relative"]])
@@ -213,6 +299,10 @@ def _dates(text: str, reference: datetime) -> tuple[DateHint, ...]:
             day = _calendar_date(match["calendar"], reference)
         if day is not None:
             results.append(DateHint(day, at))
+            if read is not None:
+                read.append(match.span())
+                if time_span is not None:
+                    read.append(time_span)
     return tuple(dict.fromkeys(results))
 
 
@@ -331,7 +421,8 @@ def prescan(text: str, *, now: datetime, time_zone: str) -> PrescanResult:
         raise ValueError("Prescan requires a timezone-aware clock.")
     reference = now.astimezone(ZoneInfo(time_zone))
     match = EMAIL.search(text)
-    text_without_email = EMAIL.sub(" ", text.casefold())
+    without_email = EMAIL.sub(" ", text)
+    text_without_email = without_email.casefold()
     positive, excluded, weekdays, unresolved = _exclusions(text_without_email, reference)
     booking_text = _PERSONAL_SCHEDULE.sub(" ", text_without_email)
     intents = tuple(name for name, pattern in INTENTS.items()
@@ -340,19 +431,37 @@ def prescan(text: str, *, now: datetime, time_zone: str) -> PrescanResult:
     destination = _MOVE_DESTINATION.search(positive) if is_move else None
     source = positive[:destination.end()] if destination else positive
     window = positive[destination.end():] if destination else positive
+    offset = len(positive) - len(window)
+    read: list[tuple[int, int]] = []
     existing = None
     if is_move or "cancel" in intents:
-        match_time = _requested_time(_MEETING_TIME.search(source), bare=True)
+        meeting = _MEETING_TIME.search(source)
+        match_time = _requested_time(meeting, bare=True)
         if match_time is not None:
-            source_dates = _dates(source, reference.replace(hour=0, minute=0, second=0, microsecond=0))
+            source_dates = _dates(source, reference.replace(hour=0, minute=0, second=0, microsecond=0), read=read)
             existing = DateHint(source_dates[0].day if source_dates else reference.date(), match_time)
-    move_after = _requested_time(_AFTER_TIME.search(window), bare=True) if is_move else None
+            read.append(meeting.span())
+    after = _AFTER_TIME.search(window) if is_move else None
+    move_after = _requested_time(after, bare=True)
     move_later = is_move and bool(re.search(r"\blater\b", window))
     part: PartOfDay = "any"
     dates: tuple[DateHint, ...] = ()
+    read_window: list[tuple[int, int]] = []
+    if destination:
+        read.append((source.rstrip().rfind("to"), offset))
+    if move_after is not None and after:
+        read_window.append(after.span())
+    bounds = None if is_move or "cancel" in intents else _TIME_WINDOW.search(window)
+    if bounds is not None:
+        # A clock endpoint before a date must not be treated as an exact start.
+        date_text = window[:bounds.start()] + " " * (bounds.end() - bounds.start()) + window[bounds.end():]
+    else:
+        date_text = window
     if not unresolved:
         part = next((name for name, pattern in PARTS.items() if pattern.search(window)), "any")
-        dates = tuple(hint for hint in _dates(window, reference)
+        if part != "any":
+            read_window.append(PARTS[part].search(window).span())
+        dates = tuple(hint for hint in _dates(date_text, reference, read=read_window)
                       if hint.day not in excluded and hint.day.weekday() not in weekdays)
         if is_move and existing and not destination:
             dates = ()
@@ -364,35 +473,89 @@ def prescan(text: str, *, now: datetime, time_zone: str) -> PrescanResult:
         if destination and dates and move_after:
             dates = tuple(DateHint(hint.day) for hint in dates)
         if destination and not dates and not move_after:
-            if new_time := _requested_time(ATTACHED_TIME.match(window)):
+            exact_move = ATTACHED_TIME.match(window)
+            if new_time := _requested_time(exact_move):
                 day = existing.day if existing else reference.date()
                 if day not in excluded and day.weekday() not in weekdays:
                     dates = (DateHint(day, new_time),)
+                    read_window.append(exact_move.span())
     relative_week = bool(excluded or weekdays) and any(match["week"] for match in DATES.finditer(positive))
     availability = not unresolved and _availability_request(positive, dates, part, intents)
     if relative_week and not unresolved and not set(intents) & {"list", "cancel", "reschedule"}:
         availability |= not EXPLANATION.search(text_without_email) and not EXISTING_BOOKING.search(text_without_email)
     duration = _DURATION.search(positive)
     duration_minutes = int(duration[1]) * (60 if duration[2].startswith("h") else 1) if duration else None
+    if duration is not None and duration_minutes is not None and 0 < duration_minutes <= 1440:
+        read.append(duration.span())
+    time_window = None
+    if bounds is not None and availability:
+        start, end = _window_time(bounds["start"]), _window_time(bounds["end"])
+        if start is not None and end is not None and start < end:
+            full_meeting = bool(bounds["from"] and len(dates) == 1 and duration_minutes is None
+                                and BOOKING_REQUEST.search(positive) and not AVAILABILITY_REQUEST.search(positive))
+            time_window = TimeWindow(start, end, full_meeting)
+        if dates or time_window is None:
+            read_window.append(bounds.span())
     move_delay = _MOVE_DELAY.search(window) if is_move else None
     move_delay_minutes = None
     if move_delay:
         amount = int(move_delay[1]) if move_delay[1].isdigit() else 1
         move_delay_minutes = amount * (60 if move_delay[2].startswith("hour") else 1)
+        read_window.append(move_delay.span())
+    unread = list(positive)
+    read.extend((offset + first, offset + last) for first, last in read_window)
+    for first, last in read:
+        unread[first:last] = " " * (last - first)
+    prior = _PRIOR_WEEKDAY.search(positive)
+    past_date_requested = bool(
+        not unresolved and prior
+        and not re.search(r"\bthe\s*$", positive[:prior.start()])
+        and not re.match(r"\s+(?:of|in)\b", positive[prior.end():])
+        and not DATES.search(_PRIOR_WEEKDAY.sub(" ", positive))
+    )
+    named_zone = (
+        _ZONE_HINT.search(positive) or _CLOCK_ZONE_SUFFIX.search(positive)
+        or _ZONE_ABBREVIATION.search(without_email) or _PROPER_ZONE_LABEL.search(without_email)
+        or _CLOCK_LOCATION.search(without_email)
+    )
+    unread_text = "".join(unread)
+    explicit_date = any(
+        match["relative"] != "mañana" or not positive[:match.start()].endswith("por la ")
+        for match in DATES.finditer(positive)
+    )
+    date_mentioned = bool(
+        explicit_date or prior or _BARE_DATE_CUE.search(positive) or _RELATIVE_PERIOD.search(positive)
+        or _THIS_PART.search(positive)
+    )
+    timing_mentioned = bool(
+        date_mentioned or bounds or part != "any" or duration or named_zone or _BARE_TIMING_CUE.search(positive)
+        or _STANDALONE_COMPACT_CLOCK.fullmatch(positive.strip())
+    )
+    complete = not (
+        unresolved or prior or named_zone or _RELATIVE_PERIOD.search(unread_text)
+        or _UNREAD_DATE_OR_TIME.search(unread_text)
+    )
+    invalid_window = complete and bounds is not None and availability and time_window is None
     return PrescanResult(
         match.group().casefold() if match else None,
-        dates,
-        part,
+        dates if complete else (),
+        part if complete else "any",
         intents,
         availability,
         excluded,
         weekdays,
         unresolved,
-        existing,
-        move_after,
-        move_later,
-        duration_minutes,
-        move_delay_minutes,
+        existing if complete else None,
+        move_after if complete else None,
+        move_later if complete else False,
+        duration_minutes if complete else None,
+        move_delay_minutes if complete else None,
+        time_window if complete else None,
+        invalid_window,
+        complete,
+        past_date_requested,
+        timing_mentioned,
+        date_mentioned,
     )
 
 

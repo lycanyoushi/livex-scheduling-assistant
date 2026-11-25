@@ -18,11 +18,11 @@ from zoneinfo import ZoneInfo
 from pydantic import ValidationError
 
 from backend.cal_client import BookingFilter, CalError
-from backend.prescan import PART_HOURS, DateHint, PartOfDay, PrescanResult
+from backend.prescan import PART_HOURS, DateHint, PartOfDay, PrescanResult, TimeWindow
 from backend.protocol import CalCallMetrics
 from backend.state import BookingEntry, SessionState, SlotEntry
 from backend.time import local_bounds, parse_instant
-from backend.tools import WARM_SLOT_DAYS, CalendarTools, ToolRejected, is_daytime, nearest_slots, preferred_daytime_slots
+from backend.tools import WARM_SLOT_DAYS, CalendarTools, ToolRejected, is_daytime, last_bookable_day, nearest_slots, preferred_daytime_slots
 
 
 PREFETCH_BUDGET_SECONDS = 1.2
@@ -77,6 +77,7 @@ class PrefetchPlan:
     move_requested: bool = False
     move_after: time | None = None
     move_later: bool = False
+    time_window: TimeWindow | None = None
 
     def excludes(self, day: date) -> bool:
         return day in self.excluded_days or day.weekday() in self.excluded_weekdays
@@ -102,11 +103,19 @@ def prefer_daytime_for_request(state: SessionState, hints: PrescanResult) -> boo
 
 
 def plan_prefetch(state: SessionState, now: datetime, hints: PrescanResult, *, text: str = "") -> PrefetchPlan:
+    if hints.needs_interpretation:
+        return PrefetchPlan(
+            (), (), "any", False, None, None,
+            excluded_days=hints.excluded_days,
+            excluded_weekdays=hints.excluded_weekdays,
+            exclusion_unresolved=hints.exclusion_unresolved,
+            move_requested="reschedule" in hints.intents,
+        )
     instant = parse_instant(now)
     today = instant.astimezone(ZoneInfo(state.time_zone)).date()
     intents = set(hints.intents)
     days = () if hints.exclusion_unresolved else tuple(sorted({
-        hint.day for hint in hints.dates if hint.day >= today and not hints.excludes(hint.day)
+        hint.day for hint in hints.dates if today <= hint.day <= last_bookable_day(today) and not hints.excludes(hint.day)
     })[:_MAX_HINT_DAYS])
     spread = (not hints.exclusion_unresolved and not hints.dates and not hints.excluded_days
               and not hints.excluded_weekdays and hints.availability_request)
@@ -143,6 +152,7 @@ def plan_prefetch(state: SessionState, now: datetime, hints: PrescanResult, *, t
         exclusion_unresolved=hints.exclusion_unresolved,
         prefer_daytime=prefer_daytime_for_request(state, hints),
         move_requested="reschedule" in intents, move_after=hints.move_after, move_later=hints.move_later,
+        time_window=hints.time_window,
     )
 
 
@@ -175,10 +185,13 @@ class _SlotResults:
     slots: list[SlotEntry] = field(default_factory=list)
     alternatives: list[SlotEntry] = field(default_factory=list)
     unavailable_event: str | None = None
+    shorter_options: bool = False
 
 
 def _prefetch_slots(tools: CalendarTools, plan: PrefetchPlan) -> _SlotResults:
     target = plan.reschedule
+    window = plan.time_window
+    shorter_options = False
     if target is not None:
         event_id = target.event_type_id
         if not any(event["id"] == event_id for event in tools.event_types()):
@@ -189,6 +202,11 @@ def _prefetch_slots(tools: CalendarTools, plan: PrefetchPlan) -> _SlotResults:
             event_id = tools.event_for_duration(draft.duration_minutes if draft else None)["id"]
         except ToolRejected as error:
             return _SlotResults(unavailable_event=str(error))
+        if window is not None and window.full_meeting:
+            try:
+                event_id = tools.event_for_duration(window.minutes)["id"]
+            except ToolRejected:
+                shorter_options = True
     zone = ZoneInfo(tools.time_zone)
     first_warm_date, last_warm_date = _warm_dates(tools.now, zone)
     other_days = plan.days
@@ -202,7 +220,7 @@ def _prefetch_slots(tools: CalendarTools, plan: PrefetchPlan) -> _SlotResults:
     day_slots: dict[date, list[SlotEntry]] = defaultdict(list)
     daytime_slots: dict[date, list[SlotEntry]] = defaultdict(list)
     warm_entries = None
-    offer_alternatives = plan.show_openings and target is None
+    offer_alternatives = plan.show_openings and target is None and window is None
     hours = PART_HOURS.get(plan.part_of_day)
     for first, last in ranges:
         is_warm_range = (first, last) == (first_warm_date, last_warm_date)
@@ -216,6 +234,8 @@ def _prefetch_slots(tools: CalendarTools, plan: PrefetchPlan) -> _SlotResults:
         for entry in entries:
             instant = parse_instant(entry.start_utc)
             local = instant.astimezone(zone)
+            if window is not None and not window.contains(local, parse_instant(entry.end_utc).astimezone(zone)):
+                continue
             if local.date() in wanted_days and (hours is None or hours[0] <= local.hour < hours[1]):
                 if target is not None and (
                     instant == target.start
@@ -282,7 +302,8 @@ def _prefetch_slots(tools: CalendarTools, plan: PrefetchPlan) -> _SlotResults:
         (entry for entries in days for entry in entries[1:]), key=lambda entry: not matches_time(entry)
     )
     limit = _CONSTRAINED_WEEK_SLOTS if plan.excluded_days or plan.excluded_weekdays else _MAX_DATED_SLOTS
-    return _SlotResults(slots=sorted([*initial, *remainder][:limit], key=lambda entry: entry.start_utc))
+    return _SlotResults(slots=sorted([*initial, *remainder][:limit], key=lambda entry: entry.start_utc),
+                        shorter_options=shorter_options)
 
 
 @dataclass(frozen=True)
@@ -296,6 +317,7 @@ class PrefetchResult:
     alternatives: list[SlotEntry] = field(default_factory=list)
     more_bookings: bool = False
     unavailable_event: str | None = None
+    shorter_options: bool = False
 
 
 _Entries = _SlotResults | tuple[list[BookingEntry], bool]
@@ -407,4 +429,5 @@ class Prefetcher:
             alternatives=availability.alternatives if availability is not None else [],
             more_bookings=bookings[1] if bookings is not None else False,
             unavailable_event=availability.unavailable_event if availability is not None else None,
+            shorter_options=availability.shorter_options if availability is not None else False,
         )

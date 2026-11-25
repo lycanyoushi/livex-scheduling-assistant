@@ -33,11 +33,18 @@ class DemoBooking:
         return self.start + _DEMO_DURATION
 
 
+def _business_day(day: date) -> date:
+    return day + timedelta(days=7 - day.weekday()) if day.weekday() >= 5 else day
+
+
 def demo_bookings(first_day: date, time_zone: str) -> tuple[DemoBooking, ...]:
     """Place the five 30-minute meetings in the calendar owner's local time."""
+    days = [_business_day(first_day)]
+    for _ in range(2):
+        days.append(_business_day(days[-1] + timedelta(days=1)))
     return tuple(
         DemoBooking(
-            start=parse_instant(local_datetime(first_day + timedelta(days=offset), at, time_zone)),
+            start=parse_instant(local_datetime(days[offset], at, time_zone)),
             name=name,
             email=f"{name.lower().replace(' ', '.')}@example.com",
         )
@@ -57,12 +64,9 @@ class DemoCalendar(FakeCal):
             raise ValueError("DEMO_TIME_ZONE must be a valid IANA time zone.") from None
         super().__init__(clock=clock)
         local_now = parse_instant(clock()).astimezone(self._host_zone)
-        self._seed_day = local_now.date()
-        if local_now.time() >= _SEED_CUTOFF:
-            self._seed_day += timedelta(days=1)
-        self._last_seed_day = self._seed_day + timedelta(days=2)
+        first_day = local_now.date() + timedelta(days=local_now.time() >= _SEED_CUTOFF)
         event = self._event_type(self._event_type_id)
-        for index, booking in enumerate(demo_bookings(self._seed_day, self._host_zone.key), start=1):
+        for index, booking in enumerate(demo_bookings(first_day, self._host_zone.key), start=1):
             uid = f"demo-seed-{index}"
             self._bookings[uid] = {
                 "uid": uid,
@@ -84,7 +88,7 @@ class DemoCalendar(FakeCal):
         return events
 
     def _starts_on(self, day: date) -> Iterator[datetime]:
-        if day.weekday() >= 5 and not self._seed_day <= day <= self._last_seed_day:
+        if day.weekday() >= 5:
             return
         start = datetime.combine(day, time(9), self._host_zone).astimezone(timezone.utc)
         close = datetime.combine(day, time(17), self._host_zone).astimezone(timezone.utc)

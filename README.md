@@ -24,7 +24,7 @@ Type an offered time or say “the second one.” The booking summary shows the 
 ## Features
 
 - **Owner agenda** · View meetings by date, with compact rows grouped by day for lists longer than three. Cards and agenda rows show the guest and offer optional move and cancel shortcuts.
-- **Web chat** · Streaming replies, a time-zone picker, system dark mode, and a diagnostics drawer at `/?debug=1`.
+- **Web chat** · Streaming replies, system dark mode, and a diagnostics drawer at `/?debug=1`. The chat starts in the browser's time zone and remembers a chosen zone through reloads and **New chat**.
 - **Demo calendar** · `DEMO_MODE=fake` starts with five fictional bookings over three dates. All four flows work in memory with a Gemini key and signing secret.
 
 ## How it works
@@ -32,17 +32,22 @@ Type an offered time or say “the second one.” The booking summary shows the 
 ```mermaid
 flowchart LR
     A[Terminal or web chat] --> B[Python turn service]
-    B --> C[Parse dates, time zone and intent]
-    C --> D[Prefetch available times or bookings]
-    D --> E[Gemini streams text and requests tools]
-    E --> F[Validated reads or a proposal]
+    B --> C[Prescan and optional calendar prefetch]
+    C -->|Needs interpretation| D[Gemini interprets the scheduling request]
+    C -->|Complete schedule hints| E
+    D --> E[Validated calendar lookup]
+    E --> F[Calendar options or a signed proposal]
     F --> A
     A --> G[User confirms a signed proposal]
     G --> H[Recheck and write to Cal.com]
     H --> A
 ```
 
-Python parses dates and prefetches available slots or the owner's bookings before the model call. It captures a guest email from the owner's message and redacts addresses from model input. Gemini references slots such as `S1` and bookings such as `B1`. The signed state token maps these references to exact records and keeps the guest draft across turns. Python rechecks each confirmed change before it writes. The terminal and web clients use the same turn service.
+Gemini interprets scheduling language in the selected time zone. A complete prescan can speed up straightforward requests with prefetched calendar data. If the timing is unclear, Gemini asks for clarification or requests a structured calendar lookup with local dates, start and end times, and any requested duration. Python validates these requests within a 366-day local booking horizon. A proposed slot must fit the requested window, and an unsupported duration prompts the assistant to explain the available lengths.
+
+Python captures guest addresses and redacts them from model input. Signed state maps references such as `S1` and `B1` to calendar records and keeps the guest draft across turns. Both clients use the same turn service, which rechecks each signed proposal after explicit confirmation before writing to Cal.com.
+
+Availability messages come from calendar lookups. If a requested time is busy, asking for another time keeps the date of that request. The demo handles one guest and one occurrence per booking. Use your calendar app for personal busy blocks.
 
 ## Code tour
 
@@ -50,6 +55,7 @@ Python parses dates and prefetches available slots or the owner's bookings befor
 | --- | --- |
 | [backend/cli.py](backend/cli.py) | Runs the Python terminal chat, including optional numbered choices and letter shortcuts. |
 | [backend/turn.py](backend/turn.py) | Captures guest details, orchestrates prefetch, and handles Gemini streaming and validated tools. |
+| [backend/tools.py](backend/tools.py) | Validates structured calendar reads, time windows, and event durations, and issues signed slot and booking references. |
 | [backend/state.py](backend/state.py) | Signs the guest draft, proposed action, and the mappings for slot and booking refs. |
 | [backend/actions.py](backend/actions.py) | Rechecks signed proposals and executes confirmed booking, move, and cancellation actions. |
 | [backend/cal_client.py](backend/cal_client.py) | Calls the Cal.com REST endpoints with per-endpoint versions and parses responses. |
@@ -69,7 +75,7 @@ pnpm install --frozen-lockfile
 
 Copy `.env.example` to `.env.local`. Create `GEMINI_API_KEY` in an unbilled Google AI Studio project. Generate `STATE_SIGNING_SECRET` with `python -c "import secrets; print(secrets.token_hex(32))"`. [Google AI Studio key setup](https://ai.google.dev/gemini-api/docs/api-key) · [Gemini free tier and data use](https://ai.google.dev/gemini-api/docs/pricing)
 
-For the demo calendar, set `DEMO_MODE=fake` and leave `CAL_API_KEY` empty. `DEMO_TIME_ZONE` defaults to `America/Los_Angeles`. Set it to `Asia/Singapore` for Singapore hours, and use the same zone in the chat picker or terminal `/tz` command. When the backend starts before 14:00 in that zone, the first fictional meeting is at 15:00 today. At 14:00 or later, the whole fixture starts tomorrow. The next two days have meetings at 10:00 and 14:00, then 15:00 and 15:30. Restarting the backend resets the fixture.
+For the demo calendar, set `DEMO_MODE=fake` and leave `CAL_API_KEY` empty. `DEMO_TIME_ZONE` defaults to `America/Los_Angeles`. Set it to `Asia/Singapore` for Singapore hours, and use the same zone in the chat picker or terminal `/tz` command. The demo offers times Monday through Friday, 09:00–17:00 in that zone. On a weekday before 14:00, the first fictional meeting is at 15:00 today. At 14:00 or later, or on a weekend, the fixture starts on the next weekday. The following two weekdays have meetings at 10:00 and 14:00, then 15:00 and 15:30. Restarting the backend resets the fixture.
 
 For local Cal.com testing in the terminal, leave `DEMO_MODE` empty and use an isolated test account with a visible 30-minute event and an availability schedule. Generate an API key in **Settings → Developer → API Keys**, save it as `CAL_API_KEY`, and set `CAL_DEFAULT_EVENT_TYPE_SLUG` to the test event's slug. [Cal.com event setup](https://next.cal.com/blog/event-types-guide-calcom) · [Cal.com API key setup](https://next.cal.com/blog/where-is-my-api-key-and-what-can-it-do)
 
@@ -89,7 +95,7 @@ A stalled primary model can switch to the free-tier 3.1 Flash-Lite backup. If th
 
 For terminal chat, run `pnpm chat` or `python -m backend.cli` from the activated virtual environment. Use plain text or the optional numbered choices and `y`/`n` confirmations. Use `r` or `c` to move or cancel the latest confirmed booking. `/new` starts a fresh chat, `/tz America/Los_Angeles` changes the time zone, `/debug` shows the last turn's metrics, and `/quit` exits.
 
-In fake mode, try the three prompts above. For the booking request, reply with a time choice and a fictional contact such as `Casey Reader, casey@example.com`, then `yes`. If the demo started at 14:00 or later, try “move my 3pm tomorrow to later tomorrow” for the seeded meeting.
+In fake mode, try the three prompts above. For the booking request, reply with a time choice and a fictional contact such as `Casey Reader, casey@example.com`, then `yes`. If the demo started at 14:00 or later, or on a weekend, use the next weekday's date to find the seeded meeting. For example, type “move my 3pm on Monday to later that day” when the fixture starts on Monday.
 
 ### Preview the test calendar seed
 
@@ -97,7 +103,7 @@ In fake mode, try the three prompts above. For the booking request, reply with a
 node scripts/run-python.mjs -m scripts.seed_demo --dry-run
 ```
 
-The dry run checks five open intervals in the test calendar's time zone. Use `--start-date YYYY-MM-DD` to choose a future three-day window if today's 15:00 has passed or a slot is unavailable. Run with `--write-test` only after the test account owner approves the five real bookings. Set the exact test event slug and enable its built-in notes field for rollback verification. Cal.com previously rejected `example.com` addresses. If needed, set `CAL_DEMO_ATTENDEE_EMAILS` in `.env.local` to five comma-separated inbox aliases you control and opt in with `--controlled-aliases`. [Cal.com probe and time zone checks](docs/calcom-notes.md)
+The dry run checks five open intervals across three weekdays in the test calendar's time zone. Use `--start-date YYYY-MM-DD` to choose a future start date if today's 15:00 has passed or a slot is unavailable. Run with `--write-test` only after the test account owner approves the five real bookings. Set the exact test event slug and enable its built-in notes field for rollback verification. Cal.com previously rejected `example.com` addresses. If needed, set `CAL_DEMO_ATTENDEE_EMAILS` in `.env.local` to five comma-separated inbox aliases you control and opt in with `--controlled-aliases`. [Cal.com probe and time zone checks](docs/calcom-notes.md)
 
 Run the checks from the repository root.
 
@@ -110,11 +116,14 @@ pnpm lint
 
 The owner-mode evals use a fixed clock, an isolated calendar fixture, and an unbilled Gemini key. The main suite includes the three brief prompts and checks that changes have no writes before confirmation. The six frozen held-out phrasings run once.
 
-The initial owner sweep qualified 25 of 30 cases across 90 runs. The final revision passed all 31 main cases and all 93 repetitions, including the new missed-meeting case. All six frozen held-out prompts passed again. Every main text turn used zero or one live Gemini call. [Owner evaluation report](docs/m7-eval-report.md#owner-mode-final-review)
+The initial owner sweep qualified 25 of 30 cases across 90 runs. The prior owner review passed all 31 main cases and all 93 repetitions, including the new missed-meeting case. All six frozen held-out prompts passed again. Every main text turn used zero or one live Gemini call. [Owner evaluation report](docs/m7-eval-report.md#final-owner-review)
+
+The scheduling interpreter comparison uses 20 separate frozen cases covering durations, time windows, date forms, moves, and signed confirmations. [Comparison methodology](docs/m7-eval-report.md#scheduling-interpreter-comparison)
 
 ```sh
 pnpm eval --model gemini-3.5-flash-lite --output evals/results/owner-local-run.json
 pnpm eval --model gemini-3.5-flash-lite --held-out --output evals/results/owner-local-held-out.json
+pnpm eval --model gemini-3.5-flash-lite --scheduling-held-out --output evals/results/scheduling-local.json
 pnpm eval --report evals/results/owner-local-run.json
 ```
 

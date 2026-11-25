@@ -54,6 +54,12 @@ The profile and default availability schedule both returned `America/Los_Angeles
 
 The follow-up reads at 09:13 Singapore time on November 25 still returned `America/Los_Angeles` for both settings. The 30-minute event still inherits the default schedule. The Singapore seeder check waits for the account owner to save both timezone settings. [Profile settings](https://cal.com/help/my-account/general-settings) · [Default availability schedule](https://cal.com/help/availabilities/availability-dashboard-overview)
 
+## Guest invitations and booking scope
+
+Cal.com API v2 documents a required primary `attendee` and an optional `guests` array of email addresses in `POST /v2/bookings` with version `2026-02-25`. It also documents a recurring booking input. [Create a booking](https://cal.com/docs/api-reference/v2/bookings/create-a-booking)
+
+This app confirms one guest and one occurrence at a time. A request naming several guests asks the owner to choose one. A recurring booking request offers the first occurrence as a separate choice. Personal time blocks belong in the owner's calendar app.
+
 ## Reproduce
 
 Set `CAL_API_KEY` in `.env.local` and run `pnpm cal:probe` for the live read checks. If the account has several visible 30-minute event types, set `CAL_DEFAULT_EVENT_TYPE_SLUG` to the one intended for testing.

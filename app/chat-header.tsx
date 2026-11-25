@@ -72,7 +72,7 @@ export function ChatHeader({
   }
 
   function selectZone(zone: string) {
-    if (zone !== timeZone) onTimeZoneChange(zone);
+    onTimeZoneChange(zone);
     dialog.current?.close();
   }
 

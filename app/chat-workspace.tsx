@@ -26,7 +26,8 @@ import { ChatDebug, type DebugSnapshot } from "./chat-debug";
 import { AssistantAvatar, ChatHeader } from "./chat-header";
 import {
   type ActiveProposal, type TurnError, type TurnRecord,
-  CHAT_HISTORY_KEY, browserStorage, clearHistory, loadHistory, saveHistory, validTimeZone,
+  CHAT_HISTORY_KEY, browserStorage, clearHistory, loadHistory, loadPreferredTimeZone, saveHistory,
+  savePreferredTimeZone, validTimeZone, withoutRetiredSlotGroups,
 } from "./chat-history";
 
 const EMPTY_VIEWS: ReferenceViews = { slots: {}, bookings: {} };
@@ -89,7 +90,8 @@ export default function ChatWorkspace() {
     const timer = window.setTimeout(() => {
       const storage = browserStorage();
       const saved = storage && loadHistory(storage, CHAT_HISTORY_KEY);
-      setTimeZone(saved?.timeZone ?? browserTimeZone());
+      const preferred = storage && loadPreferredTimeZone(storage);
+      setTimeZone(preferred ?? saved?.timeZone ?? browserTimeZone());
       setDebugEnabled(new URLSearchParams(window.location.search).get("debug") === "1");
       if (saved) {
         token.current = saved.stateToken;
@@ -263,6 +265,7 @@ export default function ChatWorkspace() {
             updateTurn((turn) => ({
               ...turn,
               views: nextViews,
+              groups: withoutRetiredSlotGroups(turn.groups, retiredSlots),
               results: turn.results.filter((result) => !retiredBookings.has(result.booking.ref)),
             }));
             break;
@@ -278,9 +281,12 @@ export default function ChatWorkspace() {
           case "slot_chips": {
             setStatus("");
             for (const ref of event.refs) recoveryRefs.add(ref);
+            const groups = withoutRetiredSlotGroups([{
+              refs: event.refs, plainRefs: event.plainRefs, note: event.note, allowMore: event.allowMore,
+            }], retiredSlots);
             updateTurn((turn) => ({
               ...turn,
-              groups: [...turn.groups, { refs: event.refs, plainRefs: event.plainRefs, note: event.note }],
+              groups: [...turn.groups, ...groups],
             }));
             break;
           }
@@ -408,7 +414,9 @@ export default function ChatWorkspace() {
   }
 
   function changeTimeZone(zone: string) {
-    if (request.current || zone === timeZone || !validTimeZone(zone)) return;
+    if (request.current || !validTimeZone(zone)) return;
+    const storage = browserStorage();
+    if (storage) savePreferredTimeZone(storage, zone);
     setTimeZone(zone);
   }
 
@@ -485,7 +493,7 @@ export default function ChatWorkspace() {
                   timeZone={timeZone}
                   selectedRef={sameSession ? selectedRef : undefined}
                   available={(ref) => turn.controls !== "none" && slotAvailable(ref)}
-                  allowMore={turn.controls !== "alternatives"}
+                  allowMore={group.allowMore !== false && turn.controls !== "alternatives"}
                   onAction={takeAction}
                 />
               ));
@@ -509,7 +517,8 @@ export default function ChatWorkspace() {
                           selectedRef={sameSession ? selectedRef : undefined}
                           slotAvailable={(ref) => turn.controls === "all" && slotAvailable(ref)}
                           bookingAvailable={bookingAvailable}
-                          showMore={!turn.groups.some((group) => group.refs.length) && turn.controls !== "alternatives"}
+                          showMore={turn.controls !== "alternatives" &&
+                            !turn.groups.some((group) => group.refs.length || group.allowMore === false)}
                           onAction={takeAction}
                         />
                       )}
@@ -578,7 +587,6 @@ export default function ChatWorkspace() {
                           active={isActiveProposal}
                           submitting={sending}
                           originalBooking={turn.proposal.bookingRef ? turn.views.bookings[turn.proposal.bookingRef] : undefined}
-                          selectedSlot={turn.proposal.slotRef ? turn.views.slots[turn.proposal.slotRef] : undefined}
                           onAction={takeAction}
                         />
                       )}

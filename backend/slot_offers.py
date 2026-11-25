@@ -17,6 +17,7 @@ class SlotOfferLimit:
     ) -> None:
         self.earlier_label = earlier_label
         self.excluded_ref = excluded_ref
+        self.require_current_slot = False
         self.slots: dict[str, SlotView] = {}
         self.offered: list[str] = []
         self.text = ReferenceText(self._replace_marker)
@@ -34,6 +35,8 @@ class SlotOfferLimit:
     def _replace_marker(self, ref: str, preceding: str) -> ReferenceLabel | None:
         if not ref.startswith("S"):
             return None
+        if self.require_current_slot and ref not in self.slots:
+            return ReferenceLabel("", compact=True)
         if self.excluded_ref is not None and self.excluded_ref(ref):
             return ReferenceLabel("", compact=True)
         label = self._label(ref)
@@ -54,6 +57,11 @@ class SlotOfferLimit:
         kind = event["type"]
         if kind == "refs":
             self.slots.update(event.get("slots", {}))
+            retired = set(event.get("retiredSlots", ()))
+            if retired:
+                self.offered = [ref for ref in self.offered if ref not in retired]
+                for ref in retired:
+                    self.slots.pop(ref, None)
         elif kind == "text_delta":
             text = self.text.feed(event["text"])
             if text:
@@ -69,7 +77,7 @@ class SlotOfferLimit:
                     continue
                 if self._label(ref) is not None:
                     (choices if self._offer(ref) else plain).append(ref)
-            event = {"type": kind, "refs": choices, **({"note": event["note"]} if "note" in event else {})}
+            event = {**event, "refs": choices}
             if plain:
                 event["plainRefs"] = plain
         elif kind == "error":

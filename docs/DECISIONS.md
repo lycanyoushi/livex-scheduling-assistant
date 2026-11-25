@@ -61,6 +61,20 @@ Test each phrase with an injected **Monday, November 23, 2026 at 10:00 a.m. loca
 
 Use half-open part-of-day windows. Add a shared-instant test at `2026-11-23T02:00:00Z`: `tomorrow 9am` means Nov 24 in Singapore and Nov 23 in New York. Cover `next week`, intent and email hints, and New York DST gap and overlap cases in `unittest`. [Chrono weekday semantics](https://github.com/wanasit/chrono/blob/master/src/calculation/weekdays.ts)
 
+### Scheduling interpretation
+
+Gemini interprets the user's scheduling language. Prescan accelerates a turn when its date and time expressions are accounted for. Unresolved expressions or exclusions suspend early offers. Gemini can clarify the request or use `find_slots` to resolve the timing before showing a choice. Prefetched results can speed up replies when they match the request.
+
+`find_slots` accepts local calendar dates, a start time, an end time, and a duration in minutes. A start without an end requests an exact start. A window requires the entire slot to fit and allows the slot to end at its upper bound. An explicit duration selects a matching event length. For an unsupported length, explain the available lengths and ask before selecting a shorter meeting. If the phrasing leaves the duration ambiguous, ask whether the owner wants the whole interval or a meeting within it.
+
+Python validates the tool arguments, including date order, the 366-local-day horizon, past starts, local time validity, and event duration. Reads return actual Cal.com slots and associate a move with the existing booking ref. The same signed proposal and fresh confirmation checks authorize writes.
+
+The browser starts with its device time zone and stores the user's explicit selection separately from chat history. **New chat** and a reload keep that preference. Calendar times are resolved and displayed in the selected zone.
+
+Availability replies come from validated calendar results. Gemini can interpret an unread timing expression or correct a complete prescan with `find_slots`. Python displays the verified openings or the checked window with no matches. Free-form Gemini prose cannot supply availability facts on those turns. A time-only correction keeps the last checked requested date and source time zone in signed state, including when the result was empty or the displayed time crossed midnight. An explicit change of day starts a new search and preserves the guest draft.
+
+The demo books one guest and one occurrence per confirmation. A request for multiple guests asks the owner to choose one. A recurring request can lead to a separate first-occurrence booking. Personal busy blocks belong in the user's calendar app. The demo opens Monday to Friday, 09:00–17:00 in its calendar zone. [Cal.com booking scope](calcom-notes.md#guest-invitations-and-booking-scope)
+
 ### Validation and signed state
 
 Use Pydantic v2 in strict mode for request bodies, action variants, decoded state, and model tool arguments. The UI action discriminator and known tool name select their respective schemas. Reject unknown fields and wrong types, enforce the 2,000-character message cap, validate time zones and date bounds, and check referenced slots or bookings against verified state before a tool runs. Expose only Gemini's supported object, string, and enum schema subset. The existing Cal.com response validators stay in the client. [Pydantic strict mode](https://pydantic.dev/docs/validation/latest/concepts/strict_mode/)

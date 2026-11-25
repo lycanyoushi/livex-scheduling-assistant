@@ -1,0 +1,428 @@
+{
+  "schema_version": 1,
+  "calendar_fixture": "fake_cal_scheduling_follow_up.json",
+  "default_clock": "2026-11-23T10:00:00+08:00",
+  "default_time_zone": "Asia/Singapore",
+  "cases": [
+    {
+      "id": 301,
+      "category": "A",
+      "name": "Noon tomorrow resolves to 12:00 on the next date",
+      "turns": [
+        {
+          "user": "Book a half-hour chat with Mira Vale, mira.vale@example.com, for tomorrow at noon.",
+          "checks": {
+            "refs_within": {
+              "kind": "slot",
+              "source": "offers_or_proposal",
+              "local_starts": [
+                "2026-11-24T12:00"
+              ],
+              "min": 1,
+              "max": 1
+            },
+            "proposal_kind": "book",
+            "proposal_name": "Mira Vale",
+            "proposal_email": "mira.vale@example.com",
+            "calendar_availability": [
+              {
+                "local_start": "2026-11-24T12:00",
+                "status": "available"
+              }
+            ]
+          }
+        },
+        {
+          "user": "yes please",
+          "proposal_from_turn": 1,
+          "checks": {
+            "refs_within": null,
+            "proposal_kind": null,
+            "max_model_calls": 0,
+            "calendar_availability": [
+              {
+                "local_start": "2026-11-24T12:00",
+                "status": "available"
+              }
+            ],
+            "booking_result": {
+              "kind": "booked",
+              "local_start": "2026-11-24T12:00"
+            },
+            "cal_writes": [
+              {
+                "operation": "create_booking",
+                "local_start": "2026-11-24T12:00",
+                "name": "Mira Vale",
+                "email": "mira.vale@example.com"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": 302,
+      "category": "A",
+      "name": "Compact military time resolves to Friday at 14:30",
+      "turns": [
+        {
+          "user": "Please schedule a meeting with Orla Webb, orla.webb@example.com, at 1430 on Friday.",
+          "checks": {
+            "refs_within": {
+              "kind": "slot",
+              "source": "offers_or_proposal",
+              "local_starts": [
+                "2026-11-27T14:30"
+              ],
+              "min": 1,
+              "max": 1
+            },
+            "proposal_kind": "book",
+            "proposal_name": "Orla Webb",
+            "proposal_email": "orla.webb@example.com",
+            "calendar_availability": [
+              {
+                "local_start": "2026-11-27T14:30",
+                "status": "available"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": 303,
+      "category": "A",
+      "name": "Dotted time resolves to the day after tomorrow",
+      "turns": [
+        {
+          "user": "Book a half-hour with Ethan Mori, ethan.mori@example.com, at 2.30pm the day after tomorrow.",
+          "checks": {
+            "refs_within": {
+              "kind": "slot",
+              "source": "offers_or_proposal",
+              "local_starts": [
+                "2026-11-25T14:30"
+              ],
+              "min": 1,
+              "max": 1
+            },
+            "proposal_kind": "book",
+            "proposal_name": "Ethan Mori",
+            "proposal_email": "ethan.mori@example.com",
+            "calendar_availability": [
+              {
+                "local_start": "2026-11-25T14:30",
+                "status": "available"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": 304,
+      "category": "A",
+      "name": "In two weeks advances 14 calendar days",
+      "turns": [
+        {
+          "user": "I'd like to book a 30-minute meeting with Suri Noel, suri.noel@example.com, at 10am in two weeks.",
+          "checks": {
+            "refs_within": {
+              "kind": "slot",
+              "source": "offers_or_proposal",
+              "local_starts": [
+                "2026-12-07T10:00"
+              ],
+              "min": 1,
+              "max": 1
+            },
+            "proposal_kind": "book",
+            "proposal_name": "Suri Noel",
+            "proposal_email": "suri.noel@example.com",
+            "calendar_availability": [
+              {
+                "local_start": "2026-12-07T10:00",
+                "status": "available"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": 305,
+      "category": "A",
+      "name": "Tokyo time converts to 08:00 Singapore time before checking",
+      "turns": [
+        {
+          "user": "Can you check whether I'm free at 9am Tokyo time on Friday? I only need that time.",
+          "checks": {
+            "refs_within": {
+              "kind": "slot",
+              "max": 0
+            },
+            "proposal_kind": null,
+            "forbidden_tools": [
+              "propose_booking",
+              "propose_cancel",
+              "propose_reschedule"
+            ],
+            "calendar_availability": [
+              {
+                "local_start": "2026-11-27T08:00",
+                "status": "unavailable"
+              }
+            ],
+            "reply_patterns": [
+              "(?i)\\b(?:0?8(?::00)?[ \\t]*(?:am\\b|a\\.m\\.|Singapore|SGT)|9(?::00)?[ \\t]*(?:am|a\\.m\\.)[ \\t]*(?:in[ \\t]+)?(?:Tokyo|JST))",
+              "(?i)\\b(?:unavailable|taken|busy|already booked|not (?:currently )?(?:available|free|open)|no (?:availability|opening|openings|open slot|slots?)|already (?:have|got) a meeting)\\b"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": 306,
+      "category": "A",
+      "name": "An explicitly past weekday is not shifted forward",
+      "turns": [
+        {
+          "user": "Can you book a chat with Lila West, lila.west@example.com, last Monday at 3?",
+          "checks": {
+            "refs_within": {
+              "kind": "slot",
+              "after_clock": true,
+              "max": 4
+            },
+            "proposal_kind": null,
+            "forbidden_tools": [
+              "propose_booking",
+              "propose_cancel",
+              "propose_reschedule"
+            ],
+            "reply_patterns": [
+              "(?i)\\b(?:past|already passed|already gone|last Monday has gone|earlier in the past)\\b"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": 307,
+      "category": "B",
+      "name": "A two-guest request gets a clear single-guest limitation",
+      "turns": [
+        {
+          "user": "Please book one meeting at 2:30pm Friday with Daria Moss, daria.moss@example.com, and Cole Hart, cole.hart@example.com. I need them both there.",
+          "checks": {
+            "refs_within": {
+              "kind": "slot",
+              "max": 0
+            },
+            "proposal_kind": null,
+            "forbidden_tools": [
+              "propose_booking",
+              "propose_cancel",
+              "propose_reschedule"
+            ],
+            "reply_patterns": [
+              "(?i)\\b(?:one|single|1)[ \\t]+(?:guest|invitee|attendee|person)(?:[ \\t]+(?:only|per meeting|at a time))?\\b|(?:multiple|two)[ \\t]+(?:guests|invitees|attendees).{0,40}(?:not supported|unavailable)"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": 308,
+      "category": "B",
+      "name": "A recurring request can offer the first occurrence for explicit approval",
+      "turns": [
+        {
+          "user": "Book a weekly check-in with Priya Reed, priya.reed@example.com, on Thursdays at 1:30pm, starting this week.",
+          "checks": {
+            "refs_within": {
+              "kind": "slot",
+              "local_starts": [
+                "2026-11-26T13:30"
+              ],
+              "max": 1
+            },
+            "proposal_kind": null,
+            "forbidden_tools": [
+              "propose_booking",
+              "propose_cancel",
+              "propose_reschedule"
+            ],
+            "reply_patterns": [
+              "(?i)(?:can(?:not|['’]t)|don['’]t|unable|only).{0,55}(?:recurr|repea|weekly|one[- ]time)|(?:recurr|repea|weekly).{0,55}(?:not supported|unavailable)",
+              "(?i)\\b(?:first[ \\t]+(?:one|meeting|occurrence|instance|session)|just[ \\t]+(?:this|the first)|one[- ]time|one[ \\t]+(?:meeting|session)|this Thursday)\\b"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": 309,
+      "category": "B",
+      "name": "A personal focus block requires a guest meeting instead",
+      "turns": [
+        {
+          "user": "Please reserve half an hour at noon tomorrow so I can write by myself. Block it as focus time without inviting anyone.",
+          "checks": {
+            "refs_within": {
+              "kind": "slot",
+              "max": 0
+            },
+            "proposal_kind": null,
+            "forbidden_tools": [
+              "propose_booking",
+              "propose_cancel",
+              "propose_reschedule"
+            ],
+            "reply_patterns": [
+              "(?i)\\b(?:meetings?|bookings?)\\b.{0,65}\\b(?:guests?|attendees?|invitees?)\\b|\\b(?:guest|attendee|invitee)\\b.{0,65}\\b(?:required|needed|meetings?|bookings?)\\b"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": 310,
+      "category": "C",
+      "name": "Revising Friday to Monday preserves the guest",
+      "turns": [
+        {
+          "user": "I'd like to book a 30-minute chat with Rowan Fenn, rowan.fenn@example.com, this Friday.",
+          "checks": {
+            "refs_within": {
+              "kind": "slot",
+              "local_dates": [
+                "2026-11-27"
+              ],
+              "min": 2,
+              "max": 4
+            },
+            "proposal_kind": null,
+            "guest_draft_email": "rowan.fenn@example.com"
+          }
+        },
+        {
+          "user": "Switch that to Monday, please.",
+          "checks": {
+            "refs_within": {
+              "kind": "slot",
+              "local_dates": [
+                "2026-11-30"
+              ],
+              "includes_local_starts": [
+                "2026-11-30T14:00"
+              ],
+              "min": 2,
+              "max": 4
+            },
+            "proposal_kind": null,
+            "guest_draft_email": "rowan.fenn@example.com",
+            "calendar_availability": [
+              {
+                "local_start": "2026-11-30T14:00",
+                "status": "available"
+              }
+            ]
+          }
+        },
+        {
+          "action": {
+            "type": "pick_slot",
+            "slot_from_turn": 2,
+            "local_start": "2026-11-30T14:00"
+          },
+          "checks": {
+            "refs_within": {
+              "kind": "slot",
+              "source": "offers_or_proposal",
+              "local_starts": [
+                "2026-11-30T14:00"
+              ],
+              "min": 1,
+              "max": 1
+            },
+            "proposal_kind": "book",
+            "proposal_name": "Rowan Fenn",
+            "proposal_email": "rowan.fenn@example.com",
+            "max_model_calls": 0
+          }
+        }
+      ]
+    },
+    {
+      "id": 311,
+      "category": "C",
+      "name": "A new time after a busy exact request keeps the original date",
+      "fixture_overrides": {
+        "active_bookings": [
+          "owner_tomorrow_late"
+        ]
+      },
+      "turns": [
+        {
+          "user": "Could you book a meeting with Finn Hsu, finn.hsu@example.com, at 3pm tomorrow?",
+          "checks": {
+            "refs_within": {
+              "kind": "slot",
+              "local_starts": [
+                "2026-11-24T10:00",
+                "2026-11-24T12:00",
+                "2026-11-24T12:30",
+                "2026-11-24T13:15",
+                "2026-11-24T14:00",
+                "2026-11-24T16:00"
+              ],
+              "max": 4
+            },
+            "proposal_kind": null,
+            "forbidden_tools": [
+              "propose_booking",
+              "propose_cancel",
+              "propose_reschedule"
+            ],
+            "calendar_availability": [
+              {
+                "local_start": "2026-11-24T15:00",
+                "status": "unavailable"
+              }
+            ],
+            "reply_patterns": [
+              "(?i)\\b(?:unavailable|taken|busy|already booked|not (?:currently )?(?:available|free|open)|no (?:availability|opening|openings|open slot|slots?)|already (?:have|got) a meeting)\\b"
+            ],
+            "guest_draft_email": "finn.hsu@example.com"
+          }
+        },
+        {
+          "user": "Would 4 work instead?",
+          "checks": {
+            "refs_within": {
+              "kind": "slot",
+              "source": "offers_or_proposal",
+              "local_starts": [
+                "2026-11-24T16:00"
+              ],
+              "min": 1,
+              "max": 1
+            },
+            "proposal_kind": "book",
+            "proposal_name": "Finn Hsu",
+            "proposal_email": "finn.hsu@example.com",
+            "calendar_availability": [
+              {
+                "local_start": "2026-11-24T16:00",
+                "status": "available"
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

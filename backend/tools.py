@@ -10,7 +10,7 @@ from typing import Annotated, Literal, Protocol, TypeVar
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
-from pydantic import BaseModel, ConfigDict, StringConstraints, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError
 
 from backend.cal_client import (
     Booking,
@@ -37,9 +37,10 @@ from backend.protocol import (
     ServerEvent,
     SlotRef,
     SlotView,
+    TimeZoneName,
 )
 from backend.state import MAX_SLOTS, BookingEntry, BookingTarget, GuestDraft, Proposal, SessionState, SlotEntry, add_booking, add_slot
-from backend.time import local_bounds, parse_instant, slot_labels
+from backend.time import local_bounds, local_datetime, parse_instant, slot_labels
 
 
 _MUTABLE_BOOKING_STATUSES = {"accepted", "pending"}
@@ -50,7 +51,15 @@ _MAX_BOOKING_CHOICES = 10
 _MAX_BOOKING_PAGES = 10
 _STALE_SLOT_SECONDS = 120
 WARM_SLOT_DAYS = 14
+BOOKING_HORIZON_DAYS = 366
+_MAX_SLOT_DATE_SPAN = 7
 _Reason = Annotated[str, StringConstraints(max_length=2_000)]
+_SlotClock = Annotated[str, StringConstraints(pattern=r"^(?:[01][0-9]|2[0-3]):[0-5][0-9]$")]
+
+
+def last_bookable_day(today: date) -> date:
+    """Return the inclusive search horizon in the caller's local calendar."""
+    return date.fromordinal(min(today.toordinal() + BOOKING_HORIZON_DAYS, date.max.toordinal() - 1))
 
 
 class CalendarReader(Protocol):
@@ -97,9 +106,12 @@ class ToolRejected(ValueError):
         *,
         nearest: list[str] | None = None,
         events: list[ServerEvent] | None = None,
+        code: str | None = None,
     ) -> None:
         super().__init__(message)
         self.result: JsonObject = {"error": message}
+        if code is not None:
+            self.result["code"] = code
         if nearest is not None:
             self.result["nearest"] = nearest
         self.events = events if events is not None else []
@@ -115,9 +127,13 @@ class _ToolArgs(BaseModel):
 
 class _FindSlots(_ToolArgs):
     from_date: CalendarDate
-    to_date: CalendarDate
+    to_date: CalendarDate | None = None
     part_of_day: PartOfDay
     for_booking_ref: BookingRef | Literal[""]
+    start_time: _SlotClock | None = None
+    end_time: _SlotClock | None = None
+    duration_minutes: Annotated[int, Field(ge=1, le=1440)] | None = None
+    time_zone: TimeZoneName | None = None
 
 
 class _FindSlotsWithEvent(_FindSlots):
@@ -315,7 +331,13 @@ def _string(description: str, choices: Sequence[str] = ()) -> JsonObject:
     return prop
 
 
-def _function(name: str, description: str, properties: dict[str, JsonObject]) -> JsonObject:
+def _function(
+    name: str,
+    description: str,
+    properties: dict[str, JsonObject],
+    *,
+    optional: tuple[str, ...] = (),
+) -> JsonObject:
     return {
         "type": "function",
         "name": name,
@@ -323,16 +345,31 @@ def _function(name: str, description: str, properties: dict[str, JsonObject]) ->
         "parameters": {
             "type": "object",
             "properties": properties,
-            "required": list(properties),
+            "required": [name for name in properties if name not in optional],
         },
     }
+
+
+_SLOT_ARGUMENT_ERRORS = {
+    "from_date": "Use a real start date in YYYY-MM-DD form.",
+    "to_date": "Use a real end date in YYYY-MM-DD form.",
+    "start_time": "Use a local start time in HH:MM form.",
+    "end_time": "Use a local end time in HH:MM form.",
+    "duration_minutes": "Use a whole number of minutes from 1 to 1440.",
+    "time_zone": "Use a valid IANA time zone, such as Asia/Tokyo.",
+}
 
 
 def _validate(model: type[_Args], args: object) -> _Args:
     try:
         return model.model_validate(args)
-    except ValidationError:
-        raise InvalidToolArguments("Invalid tool arguments. Use the required fields and short calendar references.") from None
+    except ValidationError as error:
+        message = "Invalid tool arguments. Use the required fields and short calendar references."
+        if issubclass(model, _FindSlots):
+            location = error.errors(include_input=False)[0]["loc"]
+            if location:
+                message = _SLOT_ARGUMENT_ERRORS.get(location[0], message)
+        raise InvalidToolArguments(message) from None
 
 
 class CalendarTools:
@@ -415,18 +452,30 @@ class CalendarTools:
             events = self.event_types()
         slots = {
             "from_date": _string("First local day, in YYYY-MM-DD form."),
-            "to_date": _string("Last local day, at most seven days after from_date, in YYYY-MM-DD form."),
+            "to_date": _string("Last local day in YYYY-MM-DD form, at most seven days after from_date. Omit for one day."),
             "part_of_day": _string("The requested part of the local day.", _PARTS),
             "for_booking_ref": _string("The booking ref to move, or an empty string for a new meeting."),
+            "start_time": _string("Local HH:MM. An exact start if end_time is omitted, or the earliest start in a window."),
+            "end_time": _string("Latest allowed local end in HH:MM. The entire slot must fit when supplied."),
+            "duration_minutes": {
+                "type": "integer",
+                "description": "Requested meeting length in minutes. Omit when the user only specified a time window.",
+            },
+            "time_zone": _string(
+                "Explicit time zone for the requested dates and times, as an IANA name. Omit to use the chat time zone."
+            ),
         }
         if len(events) > 1:
-            slots["event_type"] = _string("The event type slug.", [event["slug"] for event in events])
+            slots["event_type"] = _string("The event type slug, if known.", [event["slug"] for event in events])
         booking_refs = (self.required_booking_ref,) if self.required_booking_ref else sorted(self.allowed_booking_refs or ())
         booking_ref = _string("A short booking ref returned by list_bookings.", booking_refs)
         book_slots = (self.required_book_slot,) if self.required_book_slot else ()
         move_slots = (self.required_change_slot,) if self.required_change_slot else ()
         return [
-            _function("find_slots", "Find available calendar slots in the user's time zone.", slots),
+            _function(
+                "find_slots", "Find available calendar slots in the user's time zone.", slots,
+                optional=("to_date", "start_time", "end_time", "duration_minutes", "time_zone", "event_type"),
+            ),
             _function("list_bookings", "List the bookings on the user's calendar.", {
                 "which": _string("Which bookings to list.", ("upcoming", "past", "cancelled")),
                 "from_date": _string("First local start date in YYYY-MM-DD form, or an empty string."),
@@ -482,9 +531,13 @@ class CalendarTools:
             event = next((event for event in events if event["id"] == booking.event_type_id), None)
             if event is None or (isinstance(args, _FindSlotsWithEvent) and event["slug"] != args.event_type):
                 raise ToolRejected("Choose the event type attached to that booking.")
+            if args.duration_minutes is not None and event["lengthInMinutes"] != args.duration_minutes:
+                raise ToolRejected(f"That booking is {event['lengthInMinutes']} minutes long. A move keeps its duration.")
             return event
         draft = self.state.guest_draft
-        minutes = draft.duration_minutes if draft is not None else None
+        minutes = args.duration_minutes
+        if minutes is None and draft is not None:
+            minutes = draft.duration_minutes
         if isinstance(args, _FindSlotsWithEvent):
             if len(events) <= 1:
                 raise ToolRejected("Omit event_type when only one event type is available.")
@@ -509,13 +562,15 @@ class CalendarTools:
         booking_uid: str | None,
         *,
         fresh: bool = False,
+        query_time_zone: str | None = None,
     ) -> list[SlotEntry]:
+        zone = ZoneInfo(query_time_zone) if query_time_zone is not None else self._zone
         try:
-            begin, end = local_bounds(first, last, self.time_zone)
+            begin, end = local_bounds(first, last, zone.key)
         except (ValueError, OverflowError):
             raise ToolRejected("Choose a valid calendar date range.") from None
         data = self.calendar.slots(
-            event_type_id, begin, end, self.time_zone,
+            event_type_id, begin, end, zone.key,
             booking_uid_to_reschedule=booking_uid, fresh=fresh,
         )
         with self._state_lock:
@@ -528,8 +583,9 @@ class CalendarTools:
                 start = parse_instant(slot["start"])
                 if start <= self.now or not begin <= start < end or start == existing_start:
                     continue
-                local = start.astimezone(self._zone)
-                if self._excluded_day(local.date()) or (hours is not None and not hours[0] <= local.hour < hours[1]):
+                local = start.astimezone(zone)
+                exclusion_day = local.date() if zone is self._zone else start.astimezone(self._zone).date()
+                if self._excluded_day(exclusion_day) or (hours is not None and not hours[0] <= local.hour < hours[1]):
                     continue
                 matches[start] = SlotEntry(
                     start_utc=_iso_utc(start),
@@ -564,43 +620,118 @@ class CalendarTools:
                 views[ref] = slot_view(entry, self.state.time_zone)
             return views
 
+    def _slot_search_bounds(
+        self, args: _FindSlots, first: date, last: date, time_zone: str,
+    ) -> dict[date, tuple[datetime | None, datetime | None]]:
+        start = time.fromisoformat(args.start_time) if args.start_time is not None else None
+        end = time.fromisoformat(args.end_time) if args.end_time is not None else None
+        if start is None and end is None:
+            return {}
+        if start is not None and end is not None and end <= start:
+            raise ToolRejected("The end time must be after the start time on the same day.")
+        bounds = {}
+        for offset in range((last - first).days + 1):
+            day = first + timedelta(days=offset)
+            try:
+                lower = parse_instant(local_datetime(day, start, time_zone)) if start is not None else None
+                upper = parse_instant(local_datetime(day, end, time_zone)) if end is not None else None
+            except (ValueError, OverflowError) as error:
+                raise ToolRejected(str(error)) from None
+            if lower is not None and upper is not None and upper <= lower:
+                raise ToolRejected("The end time must be after the start time in the selected time zone.")
+            bounds[day] = (lower, upper)
+        lower, upper = bounds[first]
+        if lower is not None and lower <= self.now:
+            raise ToolRejected("That start time has already passed. Choose a future start time.", code="past_time")
+        if first == last and upper is not None and upper <= self.now:
+            raise ToolRejected("That time window has already passed. Choose a future time window.", code="past_time")
+        return bounds
+
     def _find_slots(self, args: _FindSlots) -> ToolOutcome:
-        first, last = date.fromisoformat(args.from_date), date.fromisoformat(args.to_date)
-        if first > last or (last - first).days > 7:
-            raise ToolRejected("Choose a date range of seven days or less.")
+        first = date.fromisoformat(args.from_date)
+        last = date.fromisoformat(args.to_date) if args.to_date is not None else first
+        zone = ZoneInfo(args.time_zone) if args.time_zone is not None else self._zone
+        today = self.now.astimezone(zone).date()
+        if first > last:
+            raise ToolRejected("The end date must be on or after the start date.")
+        if first < today:
+            raise ToolRejected("That start date has already passed. Choose today or a future date.", code="past_date")
+        horizon = last_bookable_day(today)
+        if last > horizon:
+            raise ToolRejected(f"Choose a date on or before {horizon.isoformat()}, within the {BOOKING_HORIZON_DAYS}-day booking horizon.")
+        if (last - first).days > _MAX_SLOT_DATE_SPAN:
+            raise ToolRejected("Choose an end date at most seven days after the start date.")
+        bounds = self._slot_search_bounds(args, first, last, zone.key)
         booking_ref = args.for_booking_ref or None
         with self._state_lock:
             booking = self._changeable_booking(booking_ref) if booking_ref is not None else None
         event = self._resolve_event(args, booking)
         uid = booking.uid if booking is not None else None
-        today = self.now.astimezone(self._zone).date()
-        entries = self.read_slot_entries(event["id"], max(first, today), last, args.part_of_day, booking_ref, uid) if last >= today else []
-        if self.slots_after is not None:
-            entries = [entry for entry in entries if parse_instant(entry.start_utc) > self.slots_after]
+        event_duration = timedelta(minutes=event["lengthInMinutes"])
+        if args.start_time is not None and args.end_time is not None and all(
+            upper - lower < event_duration for lower, upper in bounds.values()
+            if lower is not None and upper is not None
+        ):
+            raise ToolRejected(f"Choose a window long enough for a {event['lengthInMinutes']}-minute meeting.")
+
+        def search(start_date: date, end_date: date) -> list[SlotEntry]:
+            matches = []
+            for entry in self.read_slot_entries(
+                event["id"], start_date, end_date, args.part_of_day, booking_ref, uid, query_time_zone=zone.key,
+            ):
+                start, end = parse_instant(entry.start_utc), parse_instant(entry.end_utc)
+                if self.slots_after is not None and start <= self.slots_after:
+                    continue
+                if args.duration_minutes is not None and end - start != event_duration:
+                    continue
+                if bounds:
+                    lower, upper = bounds[start.astimezone(zone).date()]
+                    if lower is not None and (start < lower or (upper is None and start != lower)):
+                        continue
+                    if upper is not None and end > upper:
+                        continue
+                matches.append(entry)
+            return matches
+
+        entries = search(first, last)
         next_open: str | None = None
-        followup_window = not entries
+        followup_window = not entries and not bounds and args.to_date is not None and last < horizon
         if followup_window:
-            try:
-                resume = max(last + timedelta(days=1), today)
-                end = resume + timedelta(days=6)
-            except OverflowError:
-                return ToolOutcome({"slots": [], "timeZone": self.state.time_zone})
-            entries = self.read_slot_entries(event["id"], resume, end, args.part_of_day, booking_ref, uid)
-        if self._prefer_daytime and booking_ref is None:
-            entries = preferred_daytime_slots(entries, self._zone)
+            resume = last + timedelta(days=1)
+            last_followup = date.fromordinal(min(resume.toordinal() + 6, horizon.toordinal()))
+            entries = search(resume, last_followup)
+        if self._prefer_daytime and booking_ref is None and not bounds:
+            entries = preferred_daytime_slots(entries, zone)
         if followup_window and entries:
-            next_open = parse_instant(entries[0].start_utc).astimezone(self._zone).date().isoformat()
+            next_open = parse_instant(entries[0].start_utc).astimezone(zone).date().isoformat()
             entries = [
                 entry for entry in entries
-                if parse_instant(entry.start_utc).astimezone(self._zone).date().isoformat() == next_open
+                if parse_instant(entry.start_utc).astimezone(zone).date().isoformat() == next_open
             ]
-        refs = self.register_slots(entries[:_MAX_SLOT_CHOICES])
+        offered = entries[:_MAX_SLOT_CHOICES]
+        refs = self.register_slots(offered, reuse_known=True)
         result: JsonObject = {
-            "slots": [{"ref": ref, **view} for ref, view in refs.items()],
+            "slots": [
+                {"ref": ref, **view, "endLocalIso": parse_instant(entry.end_utc).astimezone(self._zone).isoformat()}
+                for (ref, view), entry in zip(refs.items(), offered, strict=True)
+            ],
             "timeZone": self.state.time_zone,
-            "requestedFrom": args.from_date,
-            "requestedTo": args.to_date,
+            "requestedTimeZone": zone.key,
+            "requestedFrom": first.isoformat(),
+            "requestedTo": last.isoformat(),
         }
+        if args.start_time is not None:
+            result["requestedStart"] = args.start_time
+        if args.end_time is not None:
+            result["requestedEnd"] = args.end_time
+        if bounds and first == last:
+            lower, upper = bounds[first]
+            if lower is not None:
+                result["requestedStartLocalIso"] = lower.astimezone(self._zone).isoformat()
+            if upper is not None:
+                result["requestedEndLocalIso"] = upper.astimezone(self._zone).isoformat()
+        if args.duration_minutes is not None:
+            result["durationMinutes"] = event["lengthInMinutes"]
         if next_open is not None:
             result["nextOpenDate"] = next_open
         return ToolOutcome(result, [{"type": "refs", "slots": refs}] if refs else [])

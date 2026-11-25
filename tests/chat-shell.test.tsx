@@ -114,18 +114,17 @@ it("leaves explicit booking mentions as text and disables controls on historical
   expect(historical).not.toContain("Add to calendar");
 });
 
-it("summarizes the guest and both times on an inactive move proposal", () => {
+it("summarizes the guest and displays both move times in the proposal's time zone", () => {
   const html = renderToStaticMarkup(createElement(ConfirmCard, {
     proposal: {
-      id: "P2", kind: "reschedule", title: "Synthetic meeting", whenLabel: "Fri 27 Nov, 9:00 am",
+      id: "P2", kind: "reschedule", title: "Synthetic meeting", whenLabel: "Fri 27 Nov 2026, 09:00–09:30",
       timeZone: "America/Los_Angeles", durationMinutes: 30, bookingRef: "B1", slotRef: "S2",
     },
     originalBooking: {
-      ref: "B1", title: "Synthetic meeting", whenLabel: "Thu 26 Nov, 8:00 am", status: "accepted",
+      ref: "B1", title: "Synthetic meeting", whenLabel: "Fri 27 Nov 2026, 00:00–00:30", status: "accepted",
       guestName: "Nova Fixture", attendees: ["fixture@example.com"],
       startUtc: "2026-11-26T16:00:00Z", endUtc: "2026-11-26T16:30:00Z",
     },
-    selectedSlot: { dayLabel: "Fri 27 Nov", timeLabel: "9:00 am", startLocalIso: "2026-11-27T17:00:00Z" },
     active: false,
     submitting: false,
     onAction: () => {},
@@ -135,8 +134,12 @@ it("summarizes the guest and both times on an inactive move proposal", () => {
   expect(html).toContain(">Move meeting</h2>");
   expect(html).toContain(">From</p>");
   expect(html).toContain(">To</p>");
-  expect(html).toContain("8:00 am");
-  expect(html).toContain("9:00 am · 30 min");
+  expect(html).toContain("Thu 26 Nov 2026");
+  expect(html).toContain("08:00–08:30");
+  expect(html).toContain("Fri 27 Nov 2026");
+  expect(html).toContain("09:00–09:30 · 30 min");
+  expect(html).toContain("America/Los_Angeles");
+  expect(html).not.toContain("00:00–00:30");
   expect(html).toContain("Nova Fixture · fixture@example.com");
   expect(html).toMatch(/<button\b[^>]*disabled=""[^>]*>Confirm<\/button>/);
   expect(html).toMatch(/<button\b[^>]*disabled=""[^>]*>Not now<\/button>/);

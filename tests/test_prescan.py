@@ -58,7 +58,6 @@ class PrescanTests(unittest.TestCase):
             "tomorrow at 3:00": time(3),
             "tomorrow at 07:45": time(7, 45),
             "tomorrow at 3:30pm": time(15, 30),
-            "tomorrow at 3:60": None,
             "mañana a las 3": time(15),
         }
         for zone in ZONES:
@@ -217,3 +216,115 @@ class PrescanTests(unittest.TestCase):
             with self.subTest(phrase=phrase):
                 self.assertEqual(self.scan(phrase, ZONES[0]).dates, (DateHint(date(2026, 11, 26)),))
         self.assertEqual(self.scan("jueves por la mañana", ZONES[0]).part_of_day, "morning")
+
+    def test_abbreviated_english_months_with_optional_years_and_times(self):
+        examples = {
+            "2 Dec": DateHint(date(2026, 12, 2)),
+            "Dec 2": DateHint(date(2026, 12, 2)),
+            "DEC 2 at 3pm": DateHint(date(2026, 12, 2), time(15)),
+            "2 Dec 2027": DateHint(date(2027, 12, 2)),
+            "2 Dec, 2027": DateHint(date(2027, 12, 2)),
+            "Dec 2 2027": DateHint(date(2027, 12, 2)),
+            "Dec 2, 2025": DateHint(date(2025, 12, 2)),
+            "Sept 2": DateHint(date(2027, 9, 2)),
+        }
+        for zone in ZONES:
+            for phrase, expected in examples.items():
+                with self.subTest(zone=zone, phrase=phrase):
+                    self.assertEqual(self.scan(phrase, zone).dates, (expected,))
+
+    def test_early_openings_require_the_entire_time_expression_to_be_read(self):
+        complete = (
+            "Book 30 minutes on Dec 2 from 1100 to 1300",
+            "Find openings between 11:00 and 13:00 on Dec 2",
+            "Book a meeting on Thursday afternoon",
+            "Find openings next week except Monday",
+        )
+        unread = (
+            "Book a meeting on Dec 2 at 1030",
+            "Find openings on Dec 2 from 1100 until 1300",
+            "Set up a meeting Dec 2 11:00–13:00",
+            "Check next Tuesday or the week after",
+            "Book a two hour meeting tomorrow",
+            "See what is open Thu afternoon",
+        )
+        for expected, phrases in ((True, complete), (False, unread)):
+            for phrase in phrases:
+                with self.subTest(phrase=phrase):
+                    self.assertEqual(self.scan(phrase, ZONES[0]).date_time_complete, expected)
+
+    def test_unresolved_scheduling_cues_leave_no_partial_date_or_time_window(self):
+        phrases = (
+            "Book tomorrow at noon",
+            "Book Wednesday at 0930",
+            "Book tomorrow at 3.30pm",
+            "Book the day after tomorrow at 10am",
+            "Show openings in two weeks",
+            "Show openings in three days",
+            "Book tomorrow at 11am Tokyo time",
+            "Book tomorrow at 11:00 Asia/Tokyo",
+            "Book tomorrow at 11:00 in Tokyo",
+            "Check Friday at 09:00 in new york time",
+            "Book tomorrow at 3:60",
+        )
+        for phrase in phrases:
+            with self.subTest(phrase=phrase):
+                hints = self.scan(phrase, ZONES[0])
+                self.assertTrue(hints.needs_interpretation)
+                self.assertEqual(hints.dates, ())
+                self.assertIsNone(hints.time_window)
+                self.assertFalse(hints.invalid_time_window)
+
+    def test_last_weekday_cannot_predate_or_roll_forward_to_a_new_booking(self):
+        hints = self.scan("last Monday at 3", ZONES[0])
+        self.assertTrue(hints.needs_interpretation)
+        self.assertTrue(hints.past_date_requested)
+        self.assertEqual(hints.dates, ())
+        for phrase in ("Book the last Monday of November", "Check last Monday or next Friday"):
+            with self.subTest(phrase=phrase):
+                hints = self.scan(phrase, ZONES[0])
+                self.assertTrue(hints.needs_interpretation)
+                self.assertFalse(hints.past_date_requested)
+
+    def test_complete_compact_range_and_ordinary_time_request_keep_their_hints(self):
+        compact = self.scan("Book 30 minutes on Dec 2 from 1100 to 1300", ZONES[0])
+        self.assertFalse(compact.needs_interpretation)
+        self.assertEqual(compact.dates, (DateHint(date(2026, 12, 2)),))
+        self.assertEqual((compact.time_window.start, compact.time_window.end), (time(11), time(13)))
+        ordinary = self.scan("Book time tomorrow at 11am", ZONES[0])
+        self.assertFalse(ordinary.needs_interpretation)
+        self.assertEqual(ordinary.dates, (DateHint(date(2026, 11, 24), time(11)),))
+
+    def test_timing_and_date_mentions_keep_revision_context_separate(self):
+        for phrase, expected in (
+            ("Tell me 3 jokes", (False, False)),
+            ("Explain the dash — with three examples", (False, False)),
+            ("4 instead", (True, False)),
+            ("noon", (True, False)),
+            ("0930", (True, False)),
+            ("3.30 pm", (True, False)),
+            ("Tokyo time", (True, False)),
+            ("90 minutes", (True, False)),
+            ("the day after tomorrow", (True, True)),
+            ("in two weeks", (True, True)),
+            ("last Mon at 3", (True, True)),
+            ("2027/04/03 at 11", (True, True)),
+            ("the 4th at noon", (True, True)),
+            ("por la mañana", (True, False)),
+        ):
+            with self.subTest(phrase=phrase):
+                hints = self.scan(phrase, ZONES[0])
+                self.assertEqual((hints.timing_mentioned, hints.date_mentioned), expected)
+
+    def test_abbreviated_month_exclusions_target_only_the_named_dates(self):
+        for phrase in (
+            "Book a time next week except 2 Dec or Dec 4, 2026.",
+            "Book a time next week. 2 Dec and Dec 4 are out.",
+        ):
+            with self.subTest(phrase=phrase):
+                hints = self.scan(phrase, ZONES[0])
+                self.assertFalse(hints.exclusion_unresolved)
+                self.assertEqual(hints.excluded_days, {date(2026, 12, 2), date(2026, 12, 4)})
+                self.assertEqual(hints.dates, (
+                    DateHint(date(2026, 11, 30)), DateHint(date(2026, 12, 1)), DateHint(date(2026, 12, 3)),
+                ))

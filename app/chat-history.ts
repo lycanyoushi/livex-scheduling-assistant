@@ -1,7 +1,18 @@
 import type { BookingResult, ChatInput, ProposalView, ReferenceViews, TurnControls } from "./chat-protocol";
 
 export type TurnError = { message: string; retryable: boolean; code?: string; fallback?: "booker" };
-export type SlotGroup = { refs: string[]; plainRefs?: string[]; note?: string };
+export type SlotGroup = { refs: string[]; plainRefs?: string[]; note?: string; allowMore?: boolean };
+
+export function withoutRetiredSlotGroups(groups: SlotGroup[], retired: ReadonlySet<string>): SlotGroup[] {
+  if (!retired.size) return groups;
+  return groups.flatMap((group) => {
+    const refs = group.refs.filter((ref) => !retired.has(ref));
+    const plainRefs = group.plainRefs?.filter((ref) => !retired.has(ref));
+    if (refs.length === group.refs.length && plainRefs?.length === group.plainRefs?.length) return [group];
+    if (!refs.length && !plainRefs?.length) return [];
+    return [{ ...group, refs, plainRefs }];
+  });
+}
 
 export type TurnRecord = {
   id: number;
@@ -34,6 +45,7 @@ type BrowserStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 
 // Keep open chat history separate from the earlier protected sessions.
 export const CHAT_HISTORY_KEY = "livex.chat.v2";
+const TIME_ZONE_PREFERENCE_KEY = "livex.timeZone.v1";
 
 export function browserStorage(): Storage | null {
   try {
@@ -50,6 +62,24 @@ export function validTimeZone(value: unknown): value is string {
     return true;
   } catch {
     return false;
+  }
+}
+
+export function loadPreferredTimeZone(storage: BrowserStorage): string | null {
+  try {
+    const zone = storage.getItem(TIME_ZONE_PREFERENCE_KEY);
+    return validTimeZone(zone) ? zone : null;
+  } catch {
+    return null;
+  }
+}
+
+export function savePreferredTimeZone(storage: BrowserStorage, zone: string): void {
+  if (!validTimeZone(zone)) return;
+  try {
+    storage.setItem(TIME_ZONE_PREFERENCE_KEY, zone);
+  } catch {
+    // The time zone can still be changed for the current page.
   }
 }
 

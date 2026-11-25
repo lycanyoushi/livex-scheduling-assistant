@@ -259,6 +259,7 @@ class SlotChipsEvent(TypedDict):
     refs: list[str]
     plainRefs: NotRequired[list[str]]
     note: NotRequired[str]
+    allowMore: NotRequired[bool]
 
 
 class AssistantTextEvent(TypedDict):

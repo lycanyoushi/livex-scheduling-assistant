@@ -14,7 +14,7 @@ from scripts import seed_demo
 _ZONE = ZoneInfo("America/Los_Angeles")
 _NOW = datetime.fromisoformat("2027-03-12T09:00:00-08:00")
 _SETTINGS = {"CAL_API_KEY": "fixture-private-key", "CAL_DEFAULT_EVENT_TYPE_SLUG": "30-minute-meeting"}
-_CLOCKS = ["Fri 15:00 -0800", "Sat 10:00 -0800", "Sat 14:00 -0800", "Sun 15:00 -0700", "Sun 15:30 -0700"]
+_CLOCKS = ["Fri 15:00 -0800", "Mon 10:00 -0700", "Mon 14:00 -0700", "Tue 15:00 -0700", "Tue 15:30 -0700"]
 
 
 def _local_starts(bookings):
@@ -47,33 +47,39 @@ class SeedCalendar(DemoCalendar):
 
 
 class DemoCalendarSeedTests(unittest.TestCase):
-    def test_new_calendar_has_five_seeded_bookings_and_three_days_of_openings(self):
+    def test_new_calendar_skips_the_weekend_for_seed_bookings_and_openings(self):
         calendar = DemoCalendar(clock=lambda: _NOW)
         meetings = calendar.list_bookings()["data"]
         self.assertEqual(_local_starts(meetings), _CLOCKS)
         self.assertEqual(len({row["attendees"][0]["email"] for row in meetings}), 5)
         self.assertTrue(all(row["attendees"][0]["email"].endswith("@example.com") for row in meetings))
-        begin, end = local_bounds(_NOW.date(), datetime.fromisoformat("2027-03-15").date(), _ZONE.key)
+        begin, end = local_bounds(_NOW.date(), datetime.fromisoformat("2027-03-16").date(), _ZONE.key)
         event = calendar.event_types(calendar.me()["username"])[0]
         days = calendar.slots(event["id"], begin, end, _ZONE.key)
-        self.assertEqual(list(days), ["2027-03-12", "2027-03-13", "2027-03-14", "2027-03-15"])
+        self.assertEqual(list(days), ["2027-03-12", "2027-03-15", "2027-03-16"])
         starts = {parse_instant(slot["start"]) for slots in days.values() for slot in slots}
         self.assertTrue(all(parse_instant(row["start"]) not in starts for row in meetings))
         self.assertTrue(all(any(parse_instant(slot["start"]).astimezone(_ZONE).hour == 16 for slot in slots)
                             for slots in days.values()))
 
-    def test_late_start_rolls_all_five_openings_to_tomorrow(self):
-        calendar = DemoCalendar(clock=lambda: _NOW.replace(hour=18))
-        self.assertEqual(calendar.list_bookings(status="past")["data"], [])
-        self.assertEqual(_local_starts(calendar.list_bookings()["data"]), [
-            "Sat 15:00 -0800", "Sun 10:00 -0700", "Sun 14:00 -0700", "Mon 15:00 -0700", "Mon 15:30 -0700",
-        ])
+    def test_friday_after_cutoff_and_weekend_starts_seed_the_following_weekdays(self):
+        for instant in (
+            _NOW.replace(hour=18),
+            datetime.fromisoformat("2027-03-13T09:00:00-08:00"),
+            datetime.fromisoformat("2027-03-14T09:00:00-07:00"),
+        ):
+            with self.subTest(instant=instant):
+                calendar = DemoCalendar(clock=lambda: instant)
+                self.assertEqual(calendar.list_bookings(status="past")["data"], [])
+                self.assertEqual(_local_starts(calendar.list_bookings()["data"]), [
+                    "Mon 15:00 -0700", "Tue 10:00 -0700", "Tue 14:00 -0700", "Wed 15:00 -0700", "Wed 15:30 -0700",
+                ])
 
     def test_configured_zone_applies_to_daily_cutoff_and_opening_hours(self):
         zone = ZoneInfo("Asia/Singapore")
         before = datetime.fromisoformat("2027-03-12T05:59:59Z")
         at_cutoff = datetime.fromisoformat("2027-03-12T06:00:00Z")
-        for instant, first_day in ((before, "2027-03-12"), (at_cutoff, "2027-03-13")):
+        for instant, first_day in ((before, "2027-03-12"), (at_cutoff, "2027-03-15")):
             with self.subTest(instant=instant):
                 calendar = DemoCalendar(clock=lambda: instant, time_zone=zone.key)
                 self.assertEqual(calendar.me()["timeZone"], zone.key)
@@ -85,9 +91,11 @@ class DemoCalendarSeedTests(unittest.TestCase):
 
         calendar = DemoCalendar(clock=lambda: at_cutoff, time_zone=zone.key)
         event = calendar.event_types(calendar.me()["username"])[0]
-        slots = calendar.slots(event["id"], "2027-03-13", "2027-03-13", zone.key)["2027-03-13"]
-        self.assertEqual(slots[0]["start"], "2027-03-13T09:00:00+08:00")
-        self.assertEqual(slots[-1]["end"], "2027-03-13T17:00:00+08:00")
+        days = calendar.slots(event["id"], "2027-03-13", "2027-03-15", zone.key)
+        self.assertEqual(list(days), ["2027-03-15"])
+        slots = days["2027-03-15"]
+        self.assertEqual(slots[0]["start"], "2027-03-15T09:00:00+08:00")
+        self.assertEqual(slots[-1]["end"], "2027-03-15T17:00:00+08:00")
 
     def test_invalid_demo_time_zone_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "DEMO_TIME_ZONE"):
@@ -117,6 +125,7 @@ class LiveSeederTests(unittest.TestCase):
             seed_demo.run()
         self.assertEqual(calendar.creates, 0)
         self.assertIn("2027-03-12 15:00", self.output.getvalue())
+        self.assertIn("2027-03-16 15:30", self.output.getvalue())
         self.assertIn("Dry run complete", self.output.getvalue())
         self.assert_sanitized()
 

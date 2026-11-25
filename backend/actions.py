@@ -44,7 +44,7 @@ from backend.state import (
     add_slot,
 )
 from backend.time import local_bounds, parse_instant
-from backend.tools import CalendarReader, CalendarTools, ToolRejected, booking_entry, booking_view, slot_view
+from backend.tools import CalendarReader, CalendarTools, ToolRejected, booking_entry, booking_view, last_bookable_day, slot_view
 
 
 _UPCOMING_STATUS = {"accepted", "pending"}
@@ -205,10 +205,10 @@ class CalendarActions:
         return ActionOutcome(proposal.events)
 
     def _ask_for_slots(self, event: EventType, first: date, ref: str | None, note: str) -> ActionOutcome:
-        try:
-            last = first + timedelta(days=6)
-        except OverflowError:
-            raise ActionError("invalid_action", "Choose a valid date range.") from None
+        horizon = last_bookable_day(self.now.astimezone(self.zone).date())
+        if first > horizon:
+            raise ActionError("invalid_action", f"Choose a date on or before {horizon.isoformat()}.")
+        last = date.fromordinal(min(first.toordinal() + 6, horizon.toordinal()))
         args = {
             "from_date": first.isoformat(),
             "to_date": last.isoformat(),

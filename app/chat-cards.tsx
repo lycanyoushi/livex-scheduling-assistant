@@ -45,6 +45,32 @@ function whenParts(label: string) {
   return split < 0 ? { dayLabel: label, timeLabel: "" } : { dayLabel: label.slice(0, split), timeLabel: label.slice(split + 2) };
 }
 
+function bookingTimeInZone(booking: BookingView, timeZone: string) {
+  const start = new Date(booking.startUtc);
+  const end = new Date(booking.endUtc);
+  if (!(start < end)) return undefined;
+
+  try {
+    const date = new Intl.DateTimeFormat("en-GB", {
+      timeZone, weekday: "short", day: "numeric", month: "short", year: "numeric",
+    });
+    const clock = new Intl.DateTimeFormat("en-GB", {
+      timeZone, hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZoneName: "longOffset",
+    });
+    const firstDay = date.format(start).replace(",", "");
+    const lastDay = date.format(end).replace(",", "");
+    const [firstTime, firstOffset = ""] = clock.format(start).split(" GMT");
+    const [lastTime, lastOffset = ""] = clock.format(end).split(" GMT");
+    return {
+      dayLabel: firstDay === lastDay ? firstDay : `${firstDay} – ${lastDay}`,
+      timeLabel: firstOffset === lastOffset ? `${firstTime}–${lastTime}` :
+        `${firstTime} UTC${firstOffset}–${lastTime} UTC${lastOffset}`,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
 function Detail({ icon: Icon, children }: { icon: LucideIcon; children: ReactNode }) {
   return (
     <p className="flex items-start gap-2 text-sm text-muted-foreground wrap-anywhere">
@@ -54,22 +80,22 @@ function Detail({ icon: Icon, children }: { icon: LucideIcon; children: ReactNod
   );
 }
 
-export function ConfirmCard({ proposal, originalBooking, selectedSlot, active, submitting, onAction }: {
+export function ConfirmCard({ proposal, originalBooking, active, submitting, onAction }: {
   proposal: ProposalView;
   originalBooking?: BookingView;
-  selectedSlot?: SlotView;
   active: boolean;
   submitting: boolean;
   onAction: SendAction;
 }) {
   const headingId = useId();
   const { title, icon: TitleIcon } = PROPOSAL_STYLE[proposal.kind];
-  const { dayLabel, timeLabel } = selectedSlot ?? whenParts(proposal.whenLabel);
+  const { dayLabel, timeLabel } = whenParts(proposal.whenLabel);
   const duration = `${proposal.durationMinutes} min`;
   const guestName = proposal.kind === "book" ? proposal.name : originalBooking?.guestName ?? proposal.name;
   const guestEmail = proposal.kind === "book" ? proposal.email : originalBooking?.attendees.join(", ") || proposal.email;
   const guest = [guestName, guestEmail].filter(Boolean).join(" · ");
-  const move = proposal.kind === "reschedule" && originalBooking ? whenParts(originalBooking.whenLabel) : undefined;
+  const move = proposal.kind === "reschedule" && originalBooking
+    ? bookingTimeInZone(originalBooking, proposal.timeZone) : undefined;
   const working = active && submitting;
   const disabled = !active || submitting;
   const hasGuestDetails = proposal.kind !== "book" || Boolean(proposal.name && proposal.email);

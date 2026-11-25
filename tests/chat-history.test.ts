@@ -1,5 +1,8 @@
 import { expect, it } from "vitest";
-import { CHAT_HISTORY_KEY, type ChatHistory, clearHistory, loadHistory, saveHistory } from "../app/chat-history";
+import {
+  CHAT_HISTORY_KEY, type ChatHistory, clearHistory, loadHistory, loadPreferredTimeZone, saveHistory, savePreferredTimeZone,
+  withoutRetiredSlotGroups,
+} from "../app/chat-history";
 
 function storage() {
   const values = new Map<string, string>();
@@ -28,6 +31,35 @@ it("restores open chat history in its own namespace", () => {
   clearHistory(store, CHAT_HISTORY_KEY);
   expect(loadHistory(store, CHAT_HISTORY_KEY)).toBeNull();
   expect(loadHistory(store, formerProtectedKey)).toEqual(history);
+});
+
+it("keeps a validated time-zone preference after New chat clears the transcript", () => {
+  const store = storage();
+  saveHistory(store, CHAT_HISTORY_KEY, history);
+  expect(loadPreferredTimeZone(store)).toBeNull();
+  savePreferredTimeZone(store, "America/Denver");
+  expect(loadPreferredTimeZone(store)).toBe("America/Denver");
+  clearHistory(store, CHAT_HISTORY_KEY);
+  expect(loadHistory(store, CHAT_HISTORY_KEY)).toBeNull();
+  expect(loadPreferredTimeZone(store)).toBe("America/Denver");
+
+  savePreferredTimeZone(store, "Invalid/Zone");
+  expect(loadPreferredTimeZone(store)).toBe("America/Denver");
+  expect(loadPreferredTimeZone({ ...store, getItem: () => "Invalid/Zone" })).toBeNull();
+});
+
+it("removes retired chips from the current reply while keeping its other slots and options", () => {
+  const groups = [
+    { refs: ["S1"], note: "Tentative times" },
+    { refs: ["S2", "S3"], plainRefs: ["S1", "S4"], note: "Confirmed times", allowMore: false },
+    { refs: ["S5"] },
+  ];
+  expect(withoutRetiredSlotGroups(groups, new Set(["S1", "S2"]))).toEqual([
+    { refs: ["S3"], plainRefs: ["S4"], note: "Confirmed times", allowMore: false },
+    groups[2],
+  ]);
+  expect(groups[0].refs).toEqual(["S1"]);
+  expect(groups[1].plainRefs).toEqual(["S1", "S4"]);
 });
 
 it("ignores malformed history and never revives a confirmation whose active record was cleared", () => {

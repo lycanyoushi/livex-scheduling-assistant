@@ -203,3 +203,64 @@ The overall latency rows use each suite's full text-turn set. For a comparison w
 | 31 · Missed 3pm meeting | The app explained that 3pm had passed, offered upcoming meetings, carried the move through a typed choice of meeting and time, then applied one reschedule after the signed “yes.” All four turns used zero model calls. |
 
 All 162 main turns passed the confirmation and email privacy checks. All 24 attempted writes matched signed proposals. FakeCal applied 21 writes and returned three scripted slot conflicts. The held-out suite passed 94 of 94 checks, used one actual Gemini call on three turns and zero on three, and made zero calendar writes. [Final main safety checks](../evals/results/owner-gemini-3.5-flash-lite-final.json) · [Final held-out safety checks](../evals/results/owner-gemini-3.5-flash-lite-held-out-final.json)
+
+## Scheduling interpreter comparison
+
+Twenty frozen cases cover 25 planned text turns. They use isolated FakeCal calendars, Gemini 3.5 Flash-Lite with minimal thinking, and the fixed clock `2026-11-23T10:00:00+08:00`. Each case ran once with identical inputs, assertions, and 10-second provider pacing. The approved 3.1 Flash-Lite backup remained available. The baseline includes the local month-abbreviation and time-window prescan changes. The held-out input was frozen before either run (SHA-256 `f7348e9a56806bd5d33602dc15fcef3977c8897f6f694b805416b16187b5d0db`). [Frozen scheduling cases](../evals/scheduling_held_out.json) · [Calendar fixture](../evals/fake_cal.json)
+
+| Measure | Baseline | Candidate |
+| --- | ---: | ---: |
+| Cases passed | 11/20 (55%) | 12/20 (60%) |
+| Text turns observed | 24/25 | 24/25 |
+| Zero / one / two or more model calls | 15 / 8 / 1 | 10 / 1 / 13 |
+| One model call across all planned text turns | 8/25 (32%) | 1/25 (4%) |
+| Text end-to-end latency p50 / p90, excluding pace | 4.50 / 3,610.47 ms | 6,374.84 / 13,797.28 ms |
+| First visible content p50 / p90, including pace | 3.75 / 5,870.56 ms | 3.95 / 17,671.17 ms |
+| Primary / backup provider calls | 10 / 0 | 24 / 5 |
+| Unconfirmed writes / model inputs containing emails | 0 / 0 | 0 / 0 |
+
+The runner measures end-to-end latency through the Flask test client. First visible content includes text, a calendar card, selectable options, or an error. Each revision skipped one dependent turn because its preceding turn produced no proposal. The single-call rate uses all 25 planned turns. The baseline handled 15 turns without Gemini, which explains its 4.50 ms median. The candidate handled 13 turns with multiple calls. Neither run received a provider HTTP 429.
+
+Five cases moved from fail to pass (201, 204, 207, 209, 217). Four moved from pass to fail (210, 216, 218, 220). All eight candidate failures were structural.
+
+| Case | Candidate finding |
+| --- | --- |
+| 202 | Correct opening, but the app asked for the guest's name again and produced no proposal. |
+| 210 | A request for the full three-hour interval produced a 30-minute proposal and no write. |
+| 211 | The correct 30-minute opening was shown, but the turn asked the user to choose a slot instead of preparing the exact proposal. The dependent confirmation could not run. |
+| 214–216 | The model proposed a move inside a requested window before the user selected a time. Case 215 also showed one option where the fixture expected more. |
+| 218 | The model returned no slots for a Los Angeles window where the fixture expected openings. |
+| 220 | Both models timed out on the intervening agenda turn. The app cleared the prior slot choices, and the old ordinal made no change. |
+
+The scheduling implementation stayed fixed during the held-out runs. The comparison used fictional calendars, guests, and emails.
+
+A separate live smoke check used the original report's compact `2 Dec from 1100 to 1300` phrasing with a fictional guest on the Singapore demo calendar. Two Gemini calls produced chips at 11:00 and 11:30 on December 2 and asked for the guest's email. The reply did not clarify whether the request meant a full two-hour meeting. No proposal or calendar write occurred. This check is outside the held-out totals.
+
+## Scheduling follow-up review
+
+The direct checks used live Gemini and a fictional calendar fixed at Tuesday, November 24, 2026 at 10:00 Singapore time. Names and contact details were fictional. No write was confirmed in these checks.
+
+| User form | Observed result |
+| --- | --- |
+| `tomorrow at noon` | November 25, 12:00. |
+| `at 1430 on Friday` | November 27, 14:30. |
+| `2.30pm the day after tomorrow` | November 26, 14:30. |
+| `in two weeks` | Openings on December 8 only. |
+| `9am Tokyo time on Friday` | Verified November 27 at 08:00 Singapore and reported no openings at that time. |
+| `last Monday at 3` | Reported that the date had passed. |
+| Two guests, a recurring meeting, and a personal block | Asked the owner to choose one guest, offered the first occurrence separately, and directed personal blocks to the calendar app. These requests made zero calendar reads or writes. |
+| Friday booking draft, then `actually make it Monday` | Showed November 30 openings and retained the guest. |
+| Busy 15:00 tomorrow, then `can we do 4 instead?` | Verified November 25 at 16:00 and showed the 16:00 confirmation card. |
+| Next meeting with Riley and a Saturday look-up | Showed one matching meeting card and zero Saturday openings. |
+
+The separate held-out A–C suite has 11 reworded cases. It was frozen before the direct checks and uses the same final source for one paced pass on live Gemini. The weekday-only fixture and the earlier frozen results are separate. [Frozen follow-up cases](../evals/scheduling_follow_up.json) · [Follow-up calendar fixture](../evals/fake_cal_scheduling_follow_up.json)
+
+| Category | Passed | Failed |
+| --- | ---: | --- |
+| A · Timing interpretation | 5/6 | 305 · Wording only. The lookup correctly checked 08:00 Singapore time and returned zero openings. The patterns missed the parenthetical zone and the phrase “no matching openings.” |
+| B · Unsupported requests | 2/3 | 308 · Wording only. The reply explained one meeting at a time and offered the first occurrence. It omitted an explicit recurring-limit phrase. |
+| C · Follow-ups | 0/2 | 310 · Both models timed out on the original booking turn, so the date revision had no saved guest or lookup anchor. 311 · The busy-time turn emitted three alternatives before the later exact read retired them. The final token lacked those three refs, so the case failed. The second turn passed its checks, verifying 16:00 on the original date and displaying the proposal. |
+
+The suite passed 7 of 11 cases. All 14 observed text turns passed the email-redaction and confirmation checks. The only fake write followed a signed confirmation. Gemini made 12 primary calls and two backup calls, with zero HTTP 429 responses. The case inputs, assertions, and implementation stayed fixed during the run.
+
+The frozen suite hash is `d885d056ead4e0bfae92c9bdd39eff742288f273982b135052ea199aa8f37d68`. The fixture hash is `77530d9261dc8d25820d9b0fa5c49db697b5767cb55db3458da4fb142487990e`. Reproduce with `pnpm eval --model gemini-3.5-flash-lite --scheduling-follow-up --max-calls 45 --output <new-report.json>`.
