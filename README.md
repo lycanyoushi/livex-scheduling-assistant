@@ -1,32 +1,31 @@
 # LiveX Scheduling Assistant
 
-A conversational Python assistant for booking, viewing, rescheduling, and cancelling meetings through Cal.com. It runs in a terminal and in a streaming Next.js chat. Every change shows a proposed time or booking and waits for confirmation.
+A conversational Python assistant for managing your own Cal.com calendar. Book with a guest, see your agenda, and move or cancel a meeting by typing in the terminal or the streaming web chat. Every calendar change requires a separate confirmation.
 
-[Local web chat](http://localhost:3000) · [Local widget demo](http://localhost:3000/widget-demo) · [Deployment plan](docs/deploy-plan.md)
+[Owner Preview](https://livex-scheduling-assistant-4o6me8vul-zenith-dbf8.vercel.app) · [Local web chat](http://localhost:3000) · [Deployment plan](docs/deploy-plan.md)
 
-[Live web chat](https://livex-scheduling-assistant.vercel.app) · [Live widget demo](https://livex-scheduling-assistant.vercel.app/widget-demo)
-
-![Local web chat showing a fictional booking and its management controls](docs/images/scheduling-demo.png)
+Preview uses fictional meetings and a shared owner access code. Vercel may also prompt you to sign in.
 
 ## Requirements
 
-The LiveX brief requires an interactive Python chatbot that books, views, cancels, and reschedules meetings through the Cal.com REST API. Run it with `python -m backend.cli`. The Next.js web chat is the bonus interface and runs the same Python conversation and calendar actions. [Confirmed assignment brief](docs/DECISIONS.md#assignment-requirements)
+> Meet your user: a busy founder who lives in their inbox and runs their day out of cal.com. They don't want forms or menus — they just want to type things like "book a 30-min intro with a candidate Thursday afternoon", "what's on my calendar tomorrow?", or "move my 3pm to later today" and have it handled. Your task is to build an interactive chatbot that lets this user manage their cal.com account through plain conversation. How you build the conversational layer is up to you. You are free to use any LLM provider.
 
-| Flow | How to try it | Cal.com REST API |
+| Try typing | What the assistant does | Cal.com REST API |
 | --- | --- | --- |
-| Book | Ask for availability, select a time, provide your name and email, then confirm. | `GET /v2/slots`, `POST /v2/bookings` |
-| List | Ask “What's on my calendar?” and give the email address you entered when booking if prompted. | `GET /v2/bookings` with the `attendeeEmail` filter |
-| Reschedule | Choose a booked meeting, pick a different time, then confirm. | `GET /v2/bookings/{uid}`, `GET /v2/slots`, `POST /v2/bookings/{uid}/reschedule` |
-| Cancel | Choose a booked meeting and confirm the cancellation. | `GET /v2/bookings/{uid}`, `POST /v2/bookings/{uid}/cancel` |
+| `book a 30-min intro with a candidate Thursday afternoon` | Finds 30-minute openings on Thursday afternoon and collects the guest's name and email in chat. It includes the intro purpose when the event supports notes and asks for confirmation. | `GET /v2/slots`, `POST /v2/bookings` |
+| `what's on my calendar tomorrow?` | Shows tomorrow's meetings from the owner's calendar in chronological order for the chat's time zone. | `GET /v2/bookings` |
+| `move my 3pm to later today` | Looks up the current 3 p.m. meeting, asks which meeting if several match, and offers later openings. If the rest of today is full, it offers the closest available times on later dates. | `GET /v2/bookings`, `GET /v2/bookings/{uid}`, `GET /v2/slots`, `POST /v2/bookings/{uid}/reschedule` |
+| `Cancel my 4pm tomorrow` | Checks the matching booking and asks you to confirm the cancellation. Requests to cancel several meetings show the matches and ask you to choose one. | `GET /v2/bookings`, `GET /v2/bookings/{uid}`, `POST /v2/bookings/{uid}/cancel` |
 
 The client uses `GET /v2/me` and `GET /v2/event-types` to find the host and eligible events. The single-booking read also helps verify changes when a write times out. [Cal.com API verification](docs/calcom-notes.md)
 
-At the Python terminal's confirmation prompt, type `y`. On the web, type `yes`, `yes please`, or `ok` in chat or click **Confirm** on the active proposal. Both use the name and email shown on the booking card. Fill in any missing details before confirming.
+Type an offered time or say “the second one.” The booking summary shows the time and guest. Type `yes` to confirm or `no` to dismiss. The web interface also has **Confirm** and **Not now** buttons. [Acceptance transcripts](docs/owner-acceptance.md) · [Owner agenda screenshot](docs/images/scheduling-demo.png)
 
 ## Features
 
-- **Web bonus** · Streaming replies, clickable time options and booking cards, a time-zone picker, and an embeddable demo. The web chat adds system dark mode, local history, keyboard controls, and a diagnostics drawer at `/?debug=1`.
-- **Demo calendar** · `DEMO_MODE=fake` runs all four flows against a rolling in-memory calendar with a Gemini key and signing secret.
+- **Owner agenda** · View meetings by date, with compact rows grouped by day for lists longer than three. Cards and agenda rows show the guest and offer optional move and cancel shortcuts.
+- **Web chat** · Streaming replies, a time-zone picker, system dark mode, a shared access code for real calendars, and a diagnostics drawer at `/?debug=1`.
+- **Demo calendar** · `DEMO_MODE=fake` starts with five fictional bookings over three dates. All four flows work in memory with a Gemini key and signing secret.
 
 ## How it works
 
@@ -43,18 +42,20 @@ flowchart LR
     H --> A
 ```
 
-Python parses dates and prefetches relevant calendar data before the model call. Gemini references options such as `S1` and bookings such as `B1`. The state token signs their mappings to exact calendar records. Python owns every write, rechecks the chosen record or time when you confirm, and streams status, text, cards, and turn metrics. The terminal and web clients use the same turn service.
+Python parses dates and prefetches available slots or the owner's bookings before the model call. It captures a guest email from the owner's message and redacts addresses from model input. Gemini references slots such as `S1` and bookings such as `B1`. The signed state token maps these references to exact records and keeps the guest draft across turns. Python rechecks each confirmed change before it writes. The terminal and web clients use the same turn service.
 
 ## Code tour
 
 | File | Responsibility |
 | --- | --- |
-| [backend/cli.py](backend/cli.py) | Runs the required Python terminal chat and accepts numbered choices and typed confirmations. |
-| [backend/turn.py](backend/turn.py) | Orchestrates a turn, prefetches calendar data, and handles Gemini streaming and tool calls. |
+| [backend/cli.py](backend/cli.py) | Runs the Python terminal chat, including optional numbered choices and letter shortcuts. |
+| [backend/turn.py](backend/turn.py) | Captures guest details, orchestrates prefetch, and handles Gemini streaming and validated tools. |
+| [backend/state.py](backend/state.py) | Signs the guest draft, proposed action, and the mappings for slot and booking refs. |
 | [backend/actions.py](backend/actions.py) | Rechecks signed proposals and executes confirmed booking, move, and cancellation actions. |
 | [backend/cal_client.py](backend/cal_client.py) | Calls the Cal.com REST endpoints with per-endpoint versions and parses responses. |
-| [backend/server.py](backend/server.py) | Serves the Flask warm-up and streaming chat endpoints. |
-| [app/chat-workspace.tsx](app/chat-workspace.tsx) | Renders streamed messages, time choices, booking cards, and confirmation controls in the browser. |
+| [backend/server.py](backend/server.py) | Serves owner sign-in, warm-up, and streaming chat through Flask. |
+| [app/chat-workspace.tsx](app/chat-workspace.tsx) and [app/chat-cards.tsx](app/chat-cards.tsx) | Render streamed messages, time choices, the agenda, and confirmation summaries. |
+| [scripts/seed_demo.py](scripts/seed_demo.py) | Checks the five-slot demo plan and supports explicitly approved writes to an isolated Cal.com test event. |
 
 ## Local development
 
@@ -68,25 +69,36 @@ pnpm install --frozen-lockfile
 
 Copy `.env.example` to `.env.local`. Create `GEMINI_API_KEY` in an unbilled Google AI Studio project. Generate `STATE_SIGNING_SECRET` with `python -c "import secrets; print(secrets.token_hex(32))"`. [Google AI Studio key setup](https://ai.google.dev/gemini-api/docs/api-key) · [Gemini free tier and data use](https://ai.google.dev/gemini-api/docs/pricing)
 
-For the demo calendar, set `DEMO_MODE=fake` and leave `CAL_API_KEY` empty. The app uses simulated weekday availability from the current date. The Gemini key is still required, and fake bookings reset with the backend process.
+For the demo calendar, set `DEMO_MODE=fake` and leave `CAL_API_KEY` empty. The access code is optional in fake mode. Set the chat time zone to `America/Los_Angeles` to match the seed times. The fake calendar starts with a meeting at 15:00 today, meetings at 10:00 and 14:00 tomorrow, and adjacent meetings at 15:00 and 15:30 on the third day. Restarting the backend restores the fixture relative to the current date.
 
-For a real calendar, leave `DEMO_MODE` empty. On a Cal.com test account, set your time zone and availability, create a visible 30-minute event type, and assign the availability schedule to it. Generate an API key in **Settings → Developer → API Keys** and save it as `CAL_API_KEY`. Set `CAL_DEFAULT_EVENT_TYPE_SLUG` to the event's URL slug if the account has multiple event types. [Cal.com event setup](https://next.cal.com/blog/event-types-guide-calcom) · [Cal.com API key setup](https://next.cal.com/blog/where-is-my-api-key-and-what-can-it-do)
+For a real calendar, leave `DEMO_MODE` empty. Use an isolated Cal.com test account with a visible 30-minute event and an availability schedule. Generate an API key in **Settings → Developer → API Keys**, save it as `CAL_API_KEY`, and set `CAL_DEFAULT_EVENT_TYPE_SLUG` to the test event's slug. For the web chat, set `OWNER_ACCESS_CODE` to a separate random value generated with `python -c "import secrets; print(secrets.token_urlsafe(24))"`. Share a reviewer's code privately. The terminal reads the local settings directly. [Cal.com event setup](https://next.cal.com/blog/event-types-guide-calcom) · [Cal.com API key setup](https://next.cal.com/blog/where-is-my-api-key-and-what-can-it-do)
 
 | Setting | Purpose |
 | --- | --- |
 | `GEMINI_MODEL`, `GEMINI_THINKING_LEVEL` | Default to 3.5 Flash-Lite with minimal thinking. |
 | `GEMINI_FALLBACK_MODEL` | Defaults to 3.1 Flash-Lite. An explicit empty value disables backup calls. |
 | `CAL_EVENT_TYPE_SLUGS`, `CAL_DEFAULT_EVENT_TYPE_SLUG` | Optional event allowlist and default. |
+| `OWNER_ACCESS_CODE` | Shared web access code. Required when using a real calendar. |
 | `RATE_LIMIT_TURNS_PER_10MIN`, `DAILY_MODEL_CALL_CAP` | Per-IP throttle and process-local model-call budget. Set the budget below the project's AI Studio quota. |
 | `FLASK_ORIGIN` | Optional loopback API origin for Next.js development. |
 
 Run `pnpm check` to validate the environment. It reads Gemini model metadata and Cal.com's `/v2/me` in real mode, or Gemini metadata alone in fake mode. It prints setting names and failure classes without credential values.
 
-Run `pnpm dev:api` and `pnpm dev` in separate terminals, then open `http://localhost:3000`.
+Run `pnpm dev:api` and `pnpm dev` in separate terminals, then open `http://localhost:3000`. When the access prompt appears, enter your code. **Sign out** clears the browser's chat history and access cookie.
 
-A stalled primary model can switch to the free-tier 3.1 Flash-Lite backup. When a public Cal.com booking link is available, the web app can open its direct booking form.
+A stalled primary model can switch to the free-tier 3.1 Flash-Lite backup. If the assistant cannot answer and has no scheduling data to use, it can link to the owner's Cal.com bookings page.
 
-For terminal chat, run `pnpm chat` or `python -m backend.cli` from the activated virtual environment. Type a displayed option number to pick a time and answer `y` or `n` at the confirmation prompt. Use `r` or `c` to move or cancel your latest confirmed booking. `/new` starts a fresh chat, `/tz America/Los_Angeles` changes the time zone, `/debug` shows the last turn's metrics, and `/quit` exits.
+For terminal chat, run `pnpm chat` or `python -m backend.cli` from the activated virtual environment. Use plain text or the optional numbered choices and `y`/`n` confirmations. Use `r` or `c` to move or cancel the latest confirmed booking. `/new` starts a fresh chat, `/tz America/Los_Angeles` changes the time zone, `/debug` shows the last turn's metrics, and `/quit` exits.
+
+In fake mode, try the three prompts above. For the booking request, reply with a time choice and a fictional contact such as `Casey Reader, casey@example.com`, then `yes`. For the move request, try it before 15:00 Pacific while today's demo meeting is still upcoming.
+
+### Preview the test calendar seed
+
+```sh
+node scripts/run-python.mjs -m scripts.seed_demo --dry-run
+```
+
+The dry run checks five open intervals in the test calendar's time zone. Use `--start-date YYYY-MM-DD` to choose a future three-day window if today's 15:00 has passed or a slot is unavailable. Run with `--write-test` only after the test account owner approves the five real bookings. Set the exact test event slug and enable its built-in notes field for rollback verification. Cal.com previously rejected `example.com` addresses. If needed, set `CAL_DEMO_ATTENDEE_EMAILS` in `.env.local` to five comma-separated inbox aliases you control and opt in with `--controlled-aliases`. [Cal.com probe and time zone checks](docs/calcom-notes.md)
 
 Run the checks from the repository root.
 
@@ -97,7 +109,19 @@ pnpm lint
 
 ## Evaluation
 
-The evals run against a fixed clock and an isolated calendar fixture. Gemini calls use an unbilled AI Studio key. Cases 16, 18, 19, and 20 require three passes each. Other cases require two passes out of three.
+The owner-mode evals use a fixed clock, an isolated calendar fixture, and an unbilled Gemini key. The main suite includes the three brief prompts and checks that changes have no writes before confirmation. The six frozen held-out phrasings run once.
+
+The initial sweep qualified 25 of 30 cases across 90 runs. The three brief prompts passed every run, and all six held-out prompts passed. Four cases passed a focused rerun after fixes to time selection and confirmation. [Owner evaluation report](docs/m7-eval-report.md#owner-mode-initial-baseline)
+
+```sh
+pnpm eval --model gemini-3.5-flash-lite --output evals/results/owner-local-run.json
+pnpm eval --model gemini-3.5-flash-lite --held-out --output evals/results/owner-local-held-out.json
+pnpm eval --report evals/results/owner-local-run.json
+```
+
+### Earlier visitor-mode results
+
+These sweeps measured the earlier attendee-scoped application and its evaluation cases.
 
 | Model and sweep | Completed runs | Result | Safety runs | First text p50 / p90 | Text turn p50 / p90 |
 | --- | ---: | --- | ---: | ---: | ---: |
@@ -107,21 +131,13 @@ The evals run against a fixed clock and an isolated calendar fixture. Gemini cal
 
 The booking-list, reference reuse, and weekday-exclusion fixes landed between the two sweeps. A separate held-out set used eight new phrasings once each on 3.5 Flash-Lite and passed 5/8. [Full report and per-check results](docs/m7-eval-report.md)
 
-The default remains 3.5 Flash-Lite. The 3.1 comparison used the updated stream deadlines and offer cap. The runner subtracts its pacing delays.
-
-```sh
-pnpm eval --model gemini-3.5-flash-lite --output evals/results/local-run.json
-pnpm eval --report evals/results/local-run.json
-```
-
 The Python mapping, state signing, model fallback, and hosting choices are recorded in the project notes. [Design decisions](docs/DECISIONS.md) · [Milestone dev logs](docs/dev-log)
 
 ## Known limitations
 
-- The browser-held session token is readable and includes booking IDs and the user's email. HMAC verifies the token's integrity. Use an isolated test account.
-- Anyone who knows an attendee's email can look up or cancel that attendee's bookings in the demo.
-- A production version would verify the attendee's email with a one-time code before showing or changing bookings.
-- Per-IP limits, the daily model-call budget, and duplicate-confirm protection are held in each process's memory. They reset when the process restarts and are independent across instances.
+- The web app uses one shared access code for the calendar. The signed cookie is HttpOnly, uses SameSite=Strict, and expires after 12 hours. Anyone with the code can use that calendar, so use a test account and give authorized reviewers the code privately.
+- Browser history can contain calendar details. The readable, HMAC-signed chat token can contain booking IDs and guest contacts. Sign out after using a shared device.
+- Failed access attempts, per-IP turn limits, the daily model-call budget, and duplicate-confirm protection are held in process memory. They reset on restart and apply separately across instances.
 - Stop ends the stream in the browser, but the server may finish the current Gemini call. Calendar changes require explicit confirmation.
 - When Cal.com times out on a confirmed change, the app checks the booking records and reports what it can verify. If the records are inconclusive, check the calendar before submitting another change.
-- Google can use free-tier Gemini prompts and responses to improve its products. Use fictional contact details in conversation and keep deliverable test aliases in the local Cal.com probe settings.
+- Relevant calendar titles and guest names are sent to Gemini's free tier. Python redacts email addresses from model input. Google can use free-tier prompts and responses to improve its products. Use fictional guests for demonstrations. [Gemini API data use](https://ai.google.dev/gemini-api/docs/pricing)

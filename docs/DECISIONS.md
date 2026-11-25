@@ -2,7 +2,21 @@
 
 ## Assignment requirements
 
-The confirmed LiveX brief requires an interactive Python chatbot that uses Cal.com’s REST API to book, view, cancel, and reschedule meetings through conversation. The web interface is a bonus. The submission includes repository access, a setup and run README, and a short recording within five days of receipt. The repository will be made public for submission after approval.
+> Meet your user: a busy founder who lives in their inbox and runs their day out of cal.com. They don't want forms or menus — they just want to type things like "book a 30-min intro with a candidate Thursday afternoon", "what's on my calendar tomorrow?", or "move my 3pm to later today" and have it handled. Your task is to build an interactive chatbot that lets this user manage their cal.com account through plain conversation. How you build the conversational layer is up to you. You are free to use any LLM provider.
+
+## Owner model
+
+The assistant manages the Cal.com account configured on the server. Booking lists use the authenticated account's calendar, with date bounds in the chat's time zone. Results are ordered by start time and indicate when the range contains more bookings than the reply can display. Short booking refs identify exact records in signed state. A move or cancellation requires a known upcoming ref, an explicit confirmation, and a fresh check of the Cal.com record. Each proposal freezes the booking UID, interval and event type shown for confirmation. Changes to that record require a new proposal.
+
+Python captures a single guest email from the user's message and stores it in the signed booking draft. The model's `propose_booking` tool has no email argument. Python attaches the draft address to the proposal and redacts email addresses before sending text to Gemini. Relevant booking titles and guest names go to Gemini so it can resolve references such as “my meeting with Jane.” The draft can carry the guest's name, notes, requested duration, and selected slot across turns. A guest email does not change the chat's identity or reset its history. A confirmed booking or dismissed booking proposal clears the draft.
+
+The signed state uses version 2. An older visitor token starts a fresh session, since its attendee identity cannot supply an owner booking draft. The terminal and browser use the same turn handler and accept contact details, time selections, and confirmations in conversation.
+
+When an owner asks to move a meeting within a window, the app shows eligible times and waits for a choice. Guest email updates also wait for a time choice when the draft has no selected opening. Relative offsets such as “an hour later” resolve against the existing booking's start.
+
+The web app verifies a shared `OWNER_ACCESS_CODE` with a constant-time comparison and rate-limits failed attempts by IP. A signed HttpOnly, SameSite=Strict cookie gates `/api/warm` and `/api/chat` and expires after 12 hours. Vercel sets the cookie's Secure attribute. Sign-out clears the cookie and browser chat history. The code is optional in fake mode, and the locally configured terminal runs directly.
+
+The fake calendar and the Cal.com seeder share five fictional bookings in the account's time zone. The live seeder defaults to a read-only check and requires explicit approval for `--write-test`. Its rollback marker comes from the test event's built-in notes field. [Read-only booking range and schedule verification](calcom-notes.md#owner-booking-ranges-and-calendar-time-zone)
 
 ## Python backend and Next.js frontend
 
@@ -47,21 +61,21 @@ Use half-open part-of-day windows. Add a shared-instant test at `2026-11-23T02:0
 
 Use Pydantic v2 in strict mode for request bodies, action variants, decoded state, and model tool arguments. The UI action discriminator and known tool name select their respective schemas. Reject unknown fields and wrong types, enforce the 2,000-character message cap, validate time zones and date bounds, and check referenced slots or bookings against verified state before a tool runs. Expose only Gemini's supported object, string, and enum schema subset. The existing Cal.com response validators stay in the client. [Pydantic strict mode](https://pydantic.dev/docs/validation/latest/concepts/strict_mode/)
 
-Serialize compact UTF-8 JSON and use the existing `base64url(payload).base64url(signature)` shape. Sign the encoded payload with standard-library `hmac` and SHA-256 using `STATE_SIGNING_SECRET`. Verify the signature with `hmac.compare_digest` before decoding or validating state. Keep the version, reference caps, and monotonic counters, and check a signed expiry. The session token is readable in the browser and contains booking IDs and the user's email. Treat it as sensitive and list that limitation in the README. The browser and model pass short refs to actions. Booking UIDs and start times are resolved from verified state, and Cal.com writes run only after confirmation.
+Serialize compact UTF-8 JSON and use the existing `base64url(payload).base64url(signature)` shape. Sign the encoded payload with standard-library `hmac` and SHA-256 using `STATE_SIGNING_SECRET`. Verify the signature with `hmac.compare_digest` before decoding or validating state. Keep the version, reference caps, and monotonic counters, and check a signed expiry. The session token is readable in the browser and can contain booking IDs and guest contacts. The browser and model pass short refs to actions. Booking UIDs and start times are resolved from verified state, and Cal.com writes run only after confirmation.
 
-The web chat accepts a short typed confirmation or dismissal for its visible proposal. A confirmation can include polite filler, while questions and replies that change the request follow the model path. The browser includes the card ID, and Python dispatches the same action as the card button only when it matches the signed pending proposal. A typed confirmation of a new booking with missing contact details prompts for those fields and leaves the proposal open. If the model proposes the same calendar action and details again, keep the original signed card and tell the user how to confirm it.
+The web chat accepts a short typed confirmation or dismissal for its visible proposal. A confirmation can include polite filler, while questions and replies that change the request follow the model path. The browser includes the card ID, and Python dispatches the same action as the card button only when it matches the signed pending proposal. For a new booking, collect missing guest details in chat before issuing the proposal. If the model proposes the same calendar action and details again, keep the original signed card and tell the user how to confirm it.
 
-For a direct new-booking request that asks to skip confirmation, the app prepares a proposal for the exact available time and still waits for a separate confirmation. When a booking change has already been denied by the app, a model stream error falls back to a code-written refusal.
+For a direct new-booking request that asks to skip confirmation, the app prepares a proposal for the exact available time after collecting guest details, then waits for a separate confirmation.
 
-Route personal schedule and calendar questions to the attendee's booking list. When an undated upcoming lookup needs an email, ask for the email used to book, remember the request in signed state, and resume it when the attendee supplies the address. Undated availability prefers starts from 08:00 through 19:59 in the selected time zone. Use other hours when the search has no daytime opening.
+Route schedule and calendar questions to the owner's booking list. When the request specifies local dates, prefetch the scoped range. Undated availability prefers starts from 08:00 through 19:59 in the selected time zone. Use other hours when the search has no daytime opening.
 
-`find_slots` requires `for_booking_ref`. An empty string requests ordinary availability. For a reschedule, validate the reference, the booking's status and start, and its membership for the session's attendee email before passing the real UID as `bookingUidToReschedule`. This lets a text request fetch the right slots without a prior UI action. Associate the returned refs with that booking so a proposal can validate the pairing.
+`find_slots` requires `for_booking_ref`. An empty string requests ordinary availability. For a reschedule, validate the signed reference, the booking's status, and its start before passing the real UID as `bookingUidToReschedule`. This lets a text request fetch the right slots without a prior UI action. Associate the returned refs with that booking so a proposal can validate the pairing.
 
 ### Streaming and development
 
 Validate a request before opening the stream. Flask returns a generator-backed `Response` with `Content-Type: application/x-ndjson; charset=utf-8` and `Cache-Control: no-store`. Serialize each event as one UTF-8 JSON line and yield it as it arrives. A single async turn task keeps the SDK stream and its deadline in one task. A bounded queue lets the synchronous Flask iterator yield events and signal cancellation on close. Test a client disconnect with an in-flight model stream, verify cancellation, and assert that its thread and task have exited. The terminal consumes the same async events directly. On a failed turn, preserve the last good interaction ID and pending call in `turn_end` as specified by the protocol. [Flask streaming](https://flask.palletsprojects.com/en/stable/patterns/streaming/)
 
-Run Next.js on `localhost:3000` and Flask on `127.0.0.1:5000` during development. A development-only Next.js rewrite forwards `/api/chat` and `/api/warm` to Flask. The browser uses relative same-origin URLs, and the Python process reads the private settings. Test that the first NDJSON event reaches the Next.js client before the final line. [Next.js rewrites](https://nextjs.org/docs/app/api-reference/config/next-config-js/rewrites)
+Run Next.js on `localhost:3000` and Flask on `127.0.0.1:5000` during development. A development-only Next.js rewrite forwards `/api/auth`, `/api/chat`, and `/api/warm` to Flask. The browser uses relative same-origin URLs, and the Python process reads the private settings. Test that the first NDJSON event reaches the Next.js client before the final line. [Next.js rewrites](https://nextjs.org/docs/app/api-reference/config/next-config-js/rewrites)
 
 ### Hosting the live link
 
@@ -71,7 +85,7 @@ Pin the approved direct dependencies `dateparser`, `tzdata`, and `pydantic` v2 i
 
 ## Eval acceptance and fallback
 
-**Approved November 22, 2026.** The fake calendar removes the intervals of active bookings from availability. During rescheduling, it excludes the one booking named by `bookingUidToReschedule` from that conflict check. Cases 3 and 20 specify explicit future times. Cases 16 and 18 fail on a proposal event, a Cal.com mutation, or a missing refusal. Report model proposal attempts that the application rejected as soft failures. Wording checks are reserved for outcomes without a structural signal, and report wording-only failures separately.
+**Approved November 22, 2026.** The fake calendar removes the intervals of active bookings from availability. During rescheduling, it excludes the one booking named by `bookingUidToReschedule` from that conflict check. In the visitor suite, cases 3 and 20 specified explicit future times, and cases 16 and 18 failed on a proposal event, a Cal.com mutation, or a missing refusal. Report model proposal attempts that the application rejected as soft failures. Wording checks are reserved for outcomes without a structural signal, and report wording-only failures separately.
 
 Before using backup generation with a pending tool call, probe both continuation shapes against the same stored primary interaction. If either shape cannot continue, use the backup only on requests without a `function_result` step and use the code-only answer otherwise. Report HTTP 429 counts per model during the evals.
 
@@ -79,7 +93,7 @@ Before using backup generation with a pending tool call, probe both continuation
 
 An unqualified hour from 1 through 7 is interpreted as PM. Hours 8 through 12 and explicit clock formats retain their written value. Prescan applies the same-day weekday rule after resolving the hour.
 
-The model input replaces email addresses, including fixture addresses, with a placeholder. The signed session retains the user's address, and case 3 checks the resolved proposal rather than a model argument. Runtime environment variables take precedence over `.env.local` defaults.
+The model input replaces email addresses, including fixture addresses, with a placeholder. In the earlier visitor model, the signed session retained the attendee's address, and case 3 checked the resolved proposal. Runtime environment variables take precedence over `.env.local` defaults.
 
 The browser disables slots emitted by failed text turns. If a confirmation loses a slot, the server returns fresh signed refs for up to three nearest openings and the browser leaves those alternatives selectable.
 
@@ -93,15 +107,15 @@ Run Flask turns on one process-owned event loop and reuse one SDK client. Setup 
 
 ## M6 timed-out calendar writes
 
-Reconcile each timed-out write with Cal.com before reporting its outcome. For create, look up the attendee's booking at the requested start. For cancel, re-read the original booking status. For reschedule, re-read the original booking and look for a distinct replacement at the requested start. Use the verified result to tell the user what happened.
+Reconcile each timed-out write with Cal.com before reporting its outcome. For create, look up the proposal guest's booking at the requested start. For cancel, re-read the original booking status. For reschedule, verify the original record and a distinct replacement with the original guest addresses. When the original has no guest address, require explicit booking linkage to verify its replacement.
 
 If the readback shows no change, keep the confirmation available for a manual retry. If the result is partial or inconclusive, retire the proposal and tell the user which part could be verified. Confirmation replays with the same signed request share the recorded outcome within one process. The booking search uses at most three pages of 100 attendee records, with incomplete searches treated as inconclusive.
 
 ## M6 model and browser fallback
 
-Make one attempt on the backup after a primary 503, timeout, or quota failure before any text streams. The verified 3.5 and 3.1 Flash-Lite pair can continue stored interactions in either direction. A different model pair can retry a fresh interaction without tool results. If the backup cannot run or fails too, use signed availability or booking data already collected. Keep the last working interaction ID and pending call for Retry. Offer the Cal.com booker when neither model can answer and the app has no usable scheduling options. [Gemini verification](gemini-notes.md#m6-live-backup-checks)
+Make one attempt on the backup after a primary 503, timeout, or quota failure before any text streams. The verified 3.5 and 3.1 Flash-Lite pair can continue stored interactions in either direction. A different model pair can retry a fresh interaction without tool results. If the backup cannot run or fails too, use signed availability or booking data already collected. Keep the last working interaction ID and pending call for Retry. Offer the Cal.com bookings page when neither model can answer and the app has no usable scheduling options. [Gemini verification](gemini-notes.md#m6-live-backup-checks)
 
-Load Cal.com's own embed script on demand using the public booking URL. This provides the approved booker without another package. Limit chat requests per IP over ten minutes and count primary and backup calls against a single daily budget that resets at midnight Pacific time. These counters and confirmation replay records are scoped to one process. [Official Cal.com embed](https://site.cal.com/embed)
+Limit chat requests per IP over ten minutes and count primary and backup calls against a single daily budget that resets at midnight Pacific time. These counters and confirmation replay records are scoped to one process.
 
 ## M5b latency changes
 
@@ -111,13 +125,15 @@ Show up to four matching new-booking openings from prefetch before the model res
 
 Retain the interaction ID while sending the 14-day calendar only when the model first receives it or the local date or time zone changes. Track slot and booking details already sent so unchanged details stay in the stored history. Reuse identical prefetched slot refs where they remain in signed state.
 
-The size probe measured a 2.49 s median first-text difference between the shortest and longest stored parents. Start a new stored interaction before a text turn when the last successful model call used more than 6,000 input tokens. Use a recap of the known name, email presence, the session attendee's active bookings in app state, and any open proposal. The next successful turn drops the old pending provider call and preserves the signed proposal. [Stored-history probe](gemini-notes.md#m5b-stored-history-size-probe)
+The size probe measured a 2.49 s median first-text difference between the shortest and longest stored parents. Start a new stored interaction before a text turn when the last successful model call used more than 6,000 input tokens. Rebuild context from the owner calendar bookings in app state, the booking draft when relevant, and the active proposal. The next successful turn drops the old pending provider call and preserves the signed proposal. [Stored-history probe](gemini-notes.md#m5b-stored-history-size-probe)
 
 ## Closed-window alternatives
 
 A completed new-booking lookup that misses the requested window or exact start shows up to three real alternatives from the 14-day availability window. The ranking prefers the same part of day on nearby dates, then other times on the requested day. Stale proposals use the same ranking on freshly checked availability. The alternative chips precede a single tool-free explanation on the normal response path.
 
 ## M7 review changes
+
+The booking-scope and contact-prompt examples below describe the earlier visitor model.
 
 Raise the output cap from 300 to 800 tokens. Treat `incomplete` with streamed text as a usable reply and label it as cut short. Continue from capped text-only replies on 3.5 and 3.1 Flash-Lite, where the live probe verified the interaction ID and retained history. Keep the prior model history for other capped replies. Record `model_down` reasons without provider message content. [Output-cap probe](gemini-notes.md#m7-review-output-cap-probe)
 
@@ -133,7 +149,7 @@ During the full baseline sweep, a repeated booking read created a second ref for
 
 Give the primary eight seconds to produce any stream event and keep the 20-second overall model limit. After text begins, raw activity resets an eight-second idle timer on either model. A timed-out partial reply keeps the last good interaction and shows its text with a cut-short notice. Limit slot pickers to the first four distinct refs in a reply across grouped and inline offers. Overflow times render as text.
 
-The fake calendar reuses the fixture's booking checks and mutations with weekdays from the live clock instead of a fixed eval schedule. It requires a Gemini key and a signing secret. Web chat and the widget have separate local histories, and reopening the widget preserves its chat. Debug events are browser-local and omit the terminal state token. [M8 verification](dev-log/m8-checks.md)
+The fake calendar reuses the fixture's booking checks and mutations with dates from the live clock. It requires a Gemini key and a signing secret. Debug events are browser-local and omit the final state token. [M8 verification](dev-log/m8-checks.md)
 
 ## M9 preparation
 

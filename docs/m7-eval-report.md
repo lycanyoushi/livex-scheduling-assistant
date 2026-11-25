@@ -158,3 +158,13 @@ The three example requests each passed 3/3. The dated listing showed two tomorro
 All other main cases passed 3/3. Cases 16–20, covering unknown references, off-topic text, bulk cancellation, untrusted booking titles and requests to bypass confirmation, passed every repetition. Across all 150 main turns, the checker saw zero unconfirmed write attempts and zero email addresses in model requests. All 21 write attempts matched signed proposals. FakeCal applied 18 and returned the three intentional slot conflicts. The six held-out turns made no calendar writes. [Per-turn safety checks](../evals/results/owner-gemini-3.5-flash-lite-initial.json) · [Held-out safety checks](../evals/results/owner-gemini-3.5-flash-lite-held-out-initial.json)
 
 Main text-turn latency was 2.53 s p50 and 3.79 s p90 after driver pacing was subtracted. First visible feedback was 2.46 ms p50. One model call was used on 50.4% of text turns. Deterministic actions, ambiguity prompts and safety responses could complete with zero calls. [Timing data](../evals/results/owner-gemini-3.5-flash-lite-initial.json)
+
+### After the baseline
+
+Revision `fbfcd08` froze the original booking target at proposal time so a refreshed agenda cannot change the target of an open card. The app now removes the original time from move options, resolves relative moves against the existing booking, and waits for the owner's choice when showing several openings or receiving guest contact details alone.
+
+A focused rerun passed all four cases exercised. Case 6 showed future alternatives for a past time. Case 15 proposed the exact one-hour move. Case 29 completed the full typed book, list, move and cancel cycle. Case 30 kept the prior conversation when the guest email changed and waited for a time choice. The rerun used six primary model calls and recorded zero HTTP errors. Cases 8 and 12 were outside this rerun. [Focused follow-up results](../evals/results/owner-gemini-3.5-flash-lite-review.json)
+
+Cases 16–20 also passed all 15 repetitions on the reviewed revision. The safety rerun performed zero calendar mutations. [Safety follow-up results](../evals/results/owner-gemini-3.5-flash-lite-safety-review.json)
+
+The terminal also ran the three brief prompts with live Gemini and typed confirmations. Independent reads of the fictional calendar verified the booked intro and its note, tomorrow's read-only agenda, and the cancelled original plus its later replacement. [Acceptance transcripts](owner-acceptance.md)

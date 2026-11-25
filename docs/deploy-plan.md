@@ -1,20 +1,32 @@
 # Vercel deployment plan
 
-`vercel.json` defines a Next.js service for `/` and `/widget-demo`, with `/api/*` routed to Flask's `wsgi:app` on the same origin. The rewrite preserves Flask's request path. Both services use the current repository root and explicitly select their framework. Python is pinned to 3.12, and the Flask function has a 120-second duration limit. The development loopback rewrite remains limited to `next dev`. [Vercel Services configuration](https://vercel.com/docs/services/config-reference) · [Vercel service routing](https://vercel.com/docs/services/routing) · [Python streaming](https://vercel.com/docs/functions/runtimes/python#streaming-python-functions)
+`vercel.json` routes the web app to Next.js and `/api/*` to Flask's `wsgi:app`. The browser uses the same origin for `/api/auth`, `/api/warm`, and `/api/chat`. Python is pinned to 3.12, and the Flask function has a 120-second duration limit. Local development uses Next.js loopback rewrites. [Vercel Services configuration](https://vercel.com/docs/services/config-reference) · [Vercel service routing](https://vercel.com/docs/services/routing) · [Python streaming](https://vercel.com/docs/functions/runtimes/python#streaming-python-functions)
 
-Local checks passed against Vercel's published JSON schema. The route check covered `/`, `/widget-demo`, a static asset, `/api/warm`, and `/api/chat`. A local WSGI smoke in fake mode served warm metadata and streamed status before `turn_end`. Both requests logged the same boot identifier.
+## Owner-mode Preview
 
-## After approval
+Revision `fbfcd08` is ready on Vercel Preview with `DEMO_MODE=fake` and the owner access code enabled. Production promotion requires separate approval. [Owner Preview](https://livex-scheduling-assistant-4o6me8vul-zenith-dbf8.vercel.app)
 
-1. Confirm the GitHub `origin` and the intended Vercel project. Push the reviewed commits and link an archive of the reviewed revision to Vercel. Deploy with `--environment preview` or `--environment production` to select the target explicitly. Keep Fluid compute enabled for the configured Flask duration. [Vercel Services overview](https://vercel.com/docs/services) · [Function duration limits](https://vercel.com/docs/functions/limitations#max-duration)
-2. Set Preview to `DEMO_MODE=fake`. Supply `GEMINI_API_KEY` from the unbilled project, a separate random `STATE_SIGNING_SECRET`, and a daily call cap below the project's quota. For the live Cal.com demonstration, configure the isolated test account's `CAL_API_KEY`, allowlist, and default 30-minute event type in the intended environment. Keep all secrets in Vercel's environment settings. [Vercel environment variables](https://vercel.com/docs/environment-variables)
-3. Open `/` and `/widget-demo` on the preview URL. Check `/api/warm` and `/api/chat` both hit Flask. Verify that the chat sends `application/x-ndjson`, `Cache-Control: no-store`, and a status line before `turn_end`. Use Stop during a streamed reply and compare the browser abort with the Flask runtime log. Repeat booking, listing, moving, and cancelling in fake mode.
-4. Capture the Python cold start from the first `flask_start` log and the first public `/api/warm` request. Compare the next chat's timing and check that both `/api/warm` and `/api/chat` log the same `boot` identifier before claiming that opening chat warmed the Flask instance. Repeat on a fresh instance and record the observed times.
-5. With the live environment pointed at the isolated Cal.com test event, verify a complete test booking cycle and clean up the synthetic bookings. Use the approved test inbox aliases for real invites and keep their addresses out of recordings and logs. Add the verified public URL and recording link to the README.
+The root and favicon returned HTTP 200. The retired widget route returned 404. Direct warm and chat requests returned 401 before sign-in, and the warm reply omitted host metadata. An invalid code returned 401. Signing in from the Preview origin set a Secure, HttpOnly, SameSite=Strict cookie. The authenticated warm request took 150 ms and returned fake-calendar metadata. Chat streamed tomorrow’s two meetings as NDJSON in one Gemini call. Signing out restored the 401 response.
 
-## Preview verification
+Local Chromium verified the access prompt, cross-tab sign-out, the compact five-meeting agenda and the typed guest confirmation. The terminal ran the exact brief prompts on live Gemini with fictional data, including confirmed booking and rescheduling. The real Cal.com checks stayed read-only. [Terminal transcripts](owner-acceptance.md) · [Initial owner evaluations](m7-eval-report.md#owner-mode-initial-baseline) · [Agenda screenshot](images/scheduling-demo.png)
 
-Vercel built both services from the shared root. Both pages loaded in Chromium, and `/api/warm` and `/api/chat` reached Flask. Chat responded with `application/x-ndjson` and `Cache-Control: no-store`. Status arrived at 100 ms, opening chips at 112 ms, and the first text at 1.12 s, before `turn_end` at 1.66 s. The browser booked, listed, rescheduled to a different time, and cancelled in fake mode. The final list returned zero active bookings.
+All 282 Python tests and 28 frontend tests passed. Lint, TypeScript, and the Next.js build passed. The focused owner rerun passed 4 of 4 cases, and the safety rerun passed 15 of 15 repetitions. [Follow-up evaluation](m7-eval-report.md#after-the-baseline)
+
+1. Confirm the GitHub `origin`, the reviewed revision, and the linked Vercel project. Set secrets in the Preview environment. Set `DEMO_MODE=fake`, a fresh random `OWNER_ACCESS_CODE` and `STATE_SIGNING_SECRET`, the unbilled project's `GEMINI_API_KEY`, and a daily call cap below that project's quota. Deploy with `vercel deploy --environment preview` and check the deployment target. Keep Fluid compute enabled for the configured Flask duration. [Vercel deploy CLI](https://vercel.com/docs/cli/deploy) · [Preview environment variables](https://vercel.com/docs/environment-variables#preview-environment-variables) · [Function duration limits](https://vercel.com/docs/functions/limitations#max-duration)
+2. Open the Preview in a fresh browser context. Check that the access prompt appears and that a direct request to `/api/warm` or `/api/chat` returns 401 with no calendar details. Exercise invalid-code handling and the per-IP cooldown. Sign in and verify the signed cookie is HttpOnly, SameSite=Strict, and Secure on HTTPS. The first signed-in warm request should show the host. Sign out and check that local history clears and both calendar endpoints again return 401.
+3. Set the chat time zone to Pacific for the seeded schedule. Run the three exact brief prompts and record the responses. Confirm that a list covering the seed dates displays compact agenda rows, that proposing a change makes zero calendar writes, and that a typed confirmation changes one booking. Run typed book, list, move, and cancel using the fake calendar. Capture the access prompt, agenda, and confirmation summary with fictional data.
+4. Check that chat returns `application/x-ndjson` and `Cache-Control: no-store`, with at least one useful event before `turn_end`. Test Stop during a streamed reply. Record the first authenticated `/api/warm` round trip and the runtime's `flask_start` setup time. Compare warm and chat boot IDs before attributing timing to a reused Flask instance.
+5. Record the verified Preview URL, test and eval totals, transcripts, and screenshots. Provide the shared app code to an authorized reviewer through a private channel. When Vercel Deployment Protection applies, provide authorized Vercel access separately. The app code belongs in neither the Preview URL nor the repository. [Vercel deployment protection](https://vercel.com/docs/deployment-protection)
+
+Real Cal.com checks use only the isolated test account. A real Preview requires `CAL_API_KEY`, the allowed test event, and the owner code in Preview settings. The seeder's dry run verifies the planned slots. Wait for explicit approval before running the live seeder or any real booking cycle. Keep the test aliases private. [Cal.com verification](calcom-notes.md)
+
+## Earlier visitor-model verification
+
+The results below record earlier releases on the attendee-scoped application.
+
+### Visitor Preview
+
+Vercel built both services from the shared root. The browser pages loaded in Chromium, and `/api/warm` and `/api/chat` reached Flask. Chat responded with `application/x-ndjson` and `Cache-Control: no-store`. Status arrived at 100 ms, opening chips at 112 ms, and the first text at 1.12 s, before `turn_end` at 1.66 s. The browser booked, listed, rescheduled to a different time, and cancelled in fake mode. The final list returned zero active bookings.
 
 Stop closed the browser stream in **25–27 ms** across two checks. Flask logged that both Gemini calls finished in about 1.9–2.1 s. The next browser turn completed normally. Calendar changes still require Confirm. [Vercel request cancellation](https://vercel.com/docs/functions/functions-api-reference#cancel-requests)
 
@@ -26,9 +38,9 @@ Stop closed the browser stream in **25–27 ms** across two checks. Flask logged
 
 In the browser run, the widget's `/api/warm` and the subsequent `/api/chat` logged the same Flask boot identifier.
 
-## Production verification
+### Visitor Production
 
-The CLI automatically assigned the first deployment to Production. It had no Gemini or Cal.com credentials and was removed before the verified release. The release deployed revision `30e1590` with `DEMO_MODE` unset and only the isolated 30-minute Cal.com test event allowed. Both public pages returned HTTP 200. `/api/warm` exposed only the verified test event, and `/api/chat` returned NDJSON with `Cache-Control: no-store`. [Live web chat](https://livex-scheduling-assistant.vercel.app) · [Live widget demo](https://livex-scheduling-assistant.vercel.app/widget-demo)
+The CLI automatically assigned the first deployment to Production. It had no Gemini or Cal.com credentials and was removed before the verified release. The release deployed revision `30e1590` with `DEMO_MODE` unset and only the isolated 30-minute Cal.com test event allowed. Both public pages returned HTTP 200. `/api/warm` exposed only the verified test event, and `/api/chat` returned NDJSON with `Cache-Control: no-store`.
 
 | Flow | Independent Cal.com check |
 | --- | --- |
@@ -61,4 +73,4 @@ The Cal.com test event's schedule is Monday through Friday, 09:00–17:00 in `Am
 
 ## Recording outline
 
-Show a text request and the first available times. Pick a time, fill in the contact fields, and type `yes please` in chat to confirm the booking. Say “I can confirm by typing or by clicking.” Verify the booking in Cal.com and list it in chat. Choose a different time and click **Confirm** to move the meeting. Cancel the replacement and verify that no fixture bookings remain. Show the taken-slot alternatives and a diagnostics view with zero model calls on a confirmation. Finish with a numbered choice in the Python terminal and the mobile widget. Aim for two to three minutes.
+Show the sign-in prompt, then resume after sign-in with the code off-screen. Type the three brief prompts and show the calendar agenda. Select a suggested time in text, provide a fictional guest's name and email in chat, then type `yes` on the confirmation summary. Move or cancel one meeting to show the same confirmation flow. Include the terminal version and the controls that are available as shortcuts. Aim for two to three minutes.
