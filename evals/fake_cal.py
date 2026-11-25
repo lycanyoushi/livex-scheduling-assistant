@@ -69,6 +69,8 @@ def _slot_edge(value: SlotBound, *, end: bool = False) -> datetime:
 class FakeCal:
     """Load fixed calendar data and isolate mutations within this instance."""
 
+    supports_outside_hours = False
+
     def __init__(
         self,
         *,
@@ -155,6 +157,26 @@ class FakeCal:
             if start < _as_utc(booking["end"]) and end > _as_utc(booking["start"]):
                 return True
         return any(start < occupied + self._duration and end > occupied for occupied in self._occupied)
+
+    def outside_hours_conflicts(self, start: datetime, end: datetime) -> tuple[str, ...]:
+        begin, finish = _as_utc(start), _as_utc(end)
+        if begin >= finish:
+            raise CalError("invalid", "Choose a time that ends after it starts.")
+        with self._lock:
+            titles = []
+            for booking in self._bookings.values():
+                if (booking["status"] not in self._blocking_statuses
+                        or begin >= _as_utc(booking["end"]) or finish <= _as_utc(booking["start"])):
+                    continue
+                guest = next((attendee["name"] for attendee in booking["attendees"] if attendee.get("name")), "")
+                titles.append(f"{booking['title']} with {guest}" if guest else booking["title"])
+            if any(begin < occupied + self._duration and finish > occupied for occupied in self._occupied):
+                titles.append("")
+            return tuple(titles)
+
+    def outside_working_hours(self, start: datetime, end: datetime) -> bool:
+        """The frozen fixture has openings but no separate working-hours schedule."""
+        return False
 
     def _scheduled_starts(self, begin: datetime, until: datetime) -> Iterable[datetime]:
         return (start for start in self._starts_in_order if begin <= start < until)
@@ -274,9 +296,10 @@ class FakeCal:
 
     def _require_free(
         self, start: datetime, now: datetime, uid_to_ignore: str | None = None, length: timedelta | None = None,
+        *, outside_hours: bool = False,
     ) -> None:
         length = length or self._duration
-        if start <= now or not self._is_scheduled_start(start) or not self._fits(start, length):
+        if start <= now or (not outside_hours and (not self._is_scheduled_start(start) or not self._fits(start, length))):
             raise CalError("invalid", "That time is outside the fixture availability.", status=400)
         if self._slot_blocked(start, uid_to_ignore, length):
             raise CalError("slot_taken", "That time is no longer available.", status=409)
@@ -292,13 +315,18 @@ class FakeCal:
         notes: str | None = None,
         notes_field: str | None = None,
         length_in_minutes: int | None = None,
+        outside_hours: bool = False,
     ) -> Booking:
         event = self._event_type(event_type_id)
         length = self._length(event, length_in_minutes)
         instant = _as_utc(start)
         now = _as_utc(self._clock())
         with self._lock:
-            self._require_free(instant, now, length=length)
+            if outside_hours and (
+                not self.supports_outside_hours or not self.outside_working_hours(instant, instant + length)
+            ):
+                raise CalError("invalid", "That time is not eligible for an outside-hours booking.", status=400)
+            self._require_free(instant, now, length=length, outside_hours=outside_hours)
             fault = self._create_faults.pop(instant, None)
             if fault is not None:
                 self._occupied.add(instant)

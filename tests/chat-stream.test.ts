@@ -134,7 +134,7 @@ it("sends recognized replies as text with only the active proposal ID attached",
   }
   for (const text of [
     "yes?", "yes, thanks?", "confirm it", "sounds good, but Friday", "go ahead instead", "don't book it",
-    "yes at 3pm", "yes, tomorrow", "ok 11/24", "sure Friday", "cancel that", "no thanks please", "surely",
+    "yes at 3pm", "yes, tomorrow", "ok 11/24", "sure Friday", "cancel that", "no thanks please", "surely", "Book it anyway",
     "yes" + " please".repeat(20),
   ]) {
     expect(typedInput(text, "P1"), text).toEqual({ kind: "text", text });

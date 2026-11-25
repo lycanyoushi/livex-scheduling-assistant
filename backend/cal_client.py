@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from http.client import HTTPException
 import json
+import re
 from threading import Lock
 import time
 from typing import Any, Literal, NotRequired, TypedDict, TypeVar, cast
@@ -106,6 +107,27 @@ class CalError(Exception):
         self.code = code
         self.status = status
         self.body = body
+
+
+def outside_hours_conflicts(calendar: object, start: datetime, end: datetime) -> tuple[str, ...]:
+    """Require an authoritative overlap read for an outside-hours proposal."""
+    check = getattr(calendar, "outside_hours_conflicts", None)
+    if not getattr(calendar, "supports_outside_hours", False) or not callable(check):
+        raise CalError("invalid", "Outside-hours booking is unavailable for this calendar.")
+    titles = check(start, end)
+    if not isinstance(titles, tuple) or any(not isinstance(title, str) for title in titles):
+        raise CalError("unavailable", "I couldn’t verify whether that time overlaps another booking.")
+    return titles
+
+
+def outside_hours_conflict_message(titles: tuple[str, ...]) -> str:
+    cleaned = []
+    for title in titles:
+        plain = " ".join(title.replace("[", "").replace("]", "").split())
+        plain = re.sub(r"\S+@\S+", "contact", plain)[:120].strip()
+        cleaned.append(f"“{plain}”" if plain else "another booking")
+    names = ", ".join(dict.fromkeys(cleaned)) if cleaned else "another booking"
+    return f"That time overlaps {names}. Choose a different time."
 
 
 @dataclass(frozen=True)
@@ -319,6 +341,8 @@ def _http_error(status: int, body: object) -> CalError:
 
 
 class CalClient:
+    supports_outside_hours = False
+
     def __init__(
         self,
         api_key: str,
@@ -518,7 +542,11 @@ class CalClient:
         notes: str | None = None,
         notes_field: str | None = None,
         length_in_minutes: int | None = None,
+        outside_hours: bool = False,
     ) -> Booking:
+        if outside_hours:
+            # Leave provider override flags disabled until the capability is verified.
+            raise CalError("invalid", "Outside-hours booking is unavailable for this Cal.com connection.")
         start_utc = _utc_iso(start)
         payload = {
             "start": start_utc,

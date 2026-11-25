@@ -122,6 +122,35 @@ class TerminalIntegrationTests(unittest.TestCase):
 
 
 class TerminalEventTests(unittest.IsolatedAsyncioTestCase):
+    async def test_outside_hours_offer_uses_explicit_text_and_warns_on_the_proposal(self):
+        outside = {**SLOT, "dayLabel": "Sat 28 Nov", "startLocalIso": "2026-11-28T13:30:00+08:00", "outsideHours": True}
+        proposal = {"id": "P1", "kind": "book", "title": "Fixture appointment", "slotRef": "S1",
+                    "whenLabel": "Sat 28 Nov, 13:30–14:00", "durationMinutes": 30,
+                    "timeZone": ZONE, "outsideHours": True}
+        service = TurnFixture([
+            {"type": "refs", "slots": {"S1": outside}},
+            {"type": "slot_chips", "refs": ["S1"], "allowMore": False},
+            {"type": "assistant_text", "text": "You asked for [[S1]]."},
+            terminal(),
+        ], [{"type": "proposal", "proposal": proposal}, terminal()])
+        output = StringIO()
+        chat = TerminalChat(service, ZONE, read=lambda _: "", output=output)
+
+        await chat.send({"kind": "text", "text": "Book Saturday at 13:30"})
+        self.assertEqual(chat.choices, {})
+        self.assertIsNone(chat._input("1"))
+        self.assertIsNone(chat.proposal)
+        self.assertIn("Outside your working hours · Sat 28 Nov 13:30–14:00", output.getvalue())
+        self.assertIn("Type Book it anyway", output.getvalue())
+        self.assertNotIn("[1]", output.getvalue())
+
+        choice = chat._input("Book it anyway")
+        self.assertEqual(choice, {"kind": "text", "text": "Book it anyway"})
+        await chat.send(choice)
+        self.assertEqual(chat._input("Book it anyway"), choice)
+        self.assertIn("Outside your working hours · Sat 28 Nov\nType yes or no", output.getvalue())
+        self.assertEqual(chat._input("yes")["proposalId"], "P1")
+
     async def test_inline_number_reuses_immediately_preceding_time_range(self):
         second = {**SLOT, "timeLabel": "14:30–15:00"}
         service = TurnFixture([

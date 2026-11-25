@@ -30,12 +30,12 @@ from backend.prescan import (
 )
 from backend.protocol import (
     CalCallMetrics, ChatRequest, ConfirmProposal, DismissProposal, ErrorEvent, ModelCallMetrics, RefsEvent, ServerEvent,
-    PickSlot, RequestCancel, RequestReschedule, SlotView, TextInput, TurnMetrics, UiAction,
+    PickSlot, RequestCancel, RequestReschedule, SlotChipsEvent, SlotView, TextInput, TurnMetrics, UiAction,
 )
 from backend.request_scope import SCOPE_REPLIES, unsupported_request
 from backend.slot_offers import SlotOfferLimit
 from backend.state import (
-    MAX_NOTES, BookingEntry, GuestDraft, ModelContext, NoActionYetOutcome, PendingCall, PendingChange, Proposal, SessionState, SlotSearch, StateError, new_state,
+    MAX_NOTES, BookingEntry, GuestDraft, ModelContext, NoActionYetOutcome, PendingCall, PendingChange, Proposal, SessionState, SlotEntry, SlotSearch, StateError, new_state,
     sign_state, verify_state,
 )
 from backend.time import parse_instant, slot_labels, utc_now
@@ -214,7 +214,7 @@ def _is_changeable(booking: BookingEntry, now: datetime) -> bool:
 def _visible_slots(state: SessionState, now: datetime) -> set[str]:
     available = set()
     for ref, slot in state.slots.items():
-        if parse_instant(slot.start_utc) <= now:
+        if slot.outside_hours or parse_instant(slot.start_utc) <= now:
             continue
         if slot.for_booking_ref is not None:
             booking = state.bookings.get(slot.for_booking_ref)
@@ -222,6 +222,12 @@ def _visible_slots(state: SessionState, now: datetime) -> set[str]:
                 continue
         available.add(ref)
     return available
+
+
+def _outside_hours_offer(tools: CalendarTools, slot: SlotEntry) -> tuple[RefsEvent, SlotChipsEvent]:
+    views = tools.register_slots([slot])
+    tools.state.outside_hours_offer = next(iter(views))
+    return {"type": "refs", "slots": views}, {"type": "slot_chips", "refs": list(views), "allowMore": False}
 
 
 def _slot_details(state: SessionState, ref: str) -> str:
@@ -735,6 +741,7 @@ class TurnService:
             if state.time_zone != request.time_zone:
                 state.last_offered_slots.clear()
                 state.last_slot_search = None
+                state.outside_hours_offer = None
             state.time_zone = request.time_zone
             starting_slots = set(state.slots)
             starting_proposal = state.proposal.id if state.proposal is not None else None
@@ -781,6 +788,7 @@ class TurnService:
             previous = deepcopy(state)
             if isinstance(request.input, TextInput):
                 action = _typed_proposal_action(request.input, state.proposal)
+                outside_requested = request.input.text.strip().casefold().rstrip(".!") == "book it anyway"
                 if unsupported:
                     metrics["path"] = "ui_action"
                     yield {"type": "assistant_text", "text": unsupported}
@@ -788,6 +796,14 @@ class TurnService:
                 elif action is not None:
                     metrics["path"] = "ui_action"
                     source = self._action_events(state, now, action, metrics)
+                elif outside_requested:
+                    metrics["path"] = "ui_action"
+                    if ref := state.outside_hours_offer:
+                        pick = PickSlot(type="pick_slot", slotRef=ref, outsideHours=True)
+                        source = self._action_events(state, now, pick, metrics)
+                    else:
+                        yield {"type": "assistant_text", "text": "Tell me the date and time so I can check that booking."}
+                        source = None
                 else:
                     if state.counters.turns >= 40:
                         raise TurnError("session_limit", "Start a new chat to continue.", retryable=False)
@@ -827,7 +843,8 @@ class TurnService:
             metrics["outcome"] == "ok" or metrics.get("fallback") == "code_only"
             or metrics.get("errorCode") == "slot_taken"
         ):
-            state.last_offered_slots = [ref for ref in offer_limit.offered if ref in state.slots]
+            state.last_offered_slots = [ref for ref in offer_limit.offered
+                                        if ref in state.slots and not state.slots[ref].outside_hours]
         retired: RefsEvent = {"type": "refs"}
         if cleared := starting_slots.difference(state.slots):
             retired["retiredSlots"] = sorted(cleared)
@@ -934,8 +951,11 @@ class TurnService:
         contact_only = state.proposal is None and draft is not None and draft.slot_ref is None and hints.email is not None and not (
             hints.intents or hints.dates
         )
+        draft_slot = state.slots.get(draft.slot_ref) if draft is not None and draft.slot_ref is not None else None
+        outside_contact = bool(draft_slot and draft_slot.outside_hours and draft.slot_ref == state.outside_hours_offer
+                               and parse_instant(draft_slot.start_utc) > now and not hints.timing_mentioned)
         finishing_contact = (
-            draft is not None and draft.slot_ref in _visible_slots(state, now)
+            draft is not None and (draft.slot_ref in _visible_slots(state, now) or outside_contact)
             and old_contact != draft.model_dump() and state.proposal is None and fast_path
         )
         if len(choices) > 1:
@@ -944,13 +964,21 @@ class TurnService:
             return
         if len(choices) == 1 or finishing_contact:
             metrics["path"] = "ui_action"
-            action = PickSlot(type="pick_slot", slotRef=choices[0] if choices else draft.slot_ref)
+            action = PickSlot(type="pick_slot", slotRef=choices[0] if choices else draft.slot_ref,
+                              outsideHours=bool(not choices and outside_contact))
             async with aclosing(self._action_events(state, now, action, metrics)) as events:
                 async for event in events:
                     yield event
             return
+        if hints.availability_request and state.outside_hours_offer is not None and state.proposal is None:
+            outside_ref = state.outside_hours_offer
+            state.outside_hours_offer = None
+            state.slots.pop(outside_ref, None)
+            if draft is not None and draft.slot_ref == outside_ref:
+                draft.slot_ref = None
         if exact_replacement or (lookup_followup and (replacing or _REVISE_TIME.search(text))):
             state.last_offered_slots.clear()
+            state.outside_hours_offer = None
             state.slots.clear()
             state.proposal = None
             if draft is not None:
@@ -1134,6 +1162,16 @@ class TurnService:
                 return
             period = f"{window.start:%H:%M}–{window.end:%H:%M}"
             day = f"on {plan.days[0]:%a %d %b %Y}" if len(plan.days) == 1 else "on those dates"
+            if closed := prefetched.closed_window:
+                yield {"type": "assistant_text", "text": closed.reason}
+                if displayed:
+                    yield {"type": "slot_chips", "refs": displayed, "note": "Nearest openings", "allowMore": False}
+                if closed.override is not None:
+                    for event in _outside_hours_offer(tools, closed.override):
+                        yield event
+                if not displayed and closed.override is None:
+                    yield {"type": "assistant_text", "text": "What other time works?"}
+                return
             if displayed:
                 yield {"type": "slot_chips", "refs": displayed, "note": f"Openings {day}, {period}", "allowMore": False}
             if prefetched.shorter_options:
@@ -1302,6 +1340,7 @@ class TurnService:
         ran_lookup = False
         lookup_error = None
         lookup_result = None
+        lookup_override = None
         lookup_count = 0
         allows_time_window = _WINDOW_LANGUAGE.search(text) is not None
         provider = self.model
@@ -1445,6 +1484,8 @@ class TurnService:
                 looked_up = call.name == "find_slots" and "slots" in outcome.result
                 if looked_up:
                     lookup_result = outcome.result
+                    closed = outcome.closed_window
+                    lookup_override = closed.override if closed is not None else None
                     lookup_count += 1
                     slots = [slot for slot in outcome.result["slots"] if slot["ref"] in state.slots]
                     outcome.result["slots"] = slots
@@ -1479,7 +1520,8 @@ class TurnService:
                     if new_options:
                         displayed.extend(new_options)
                         yield {"type": "slot_chips", "refs": new_options,
-                               "note": f"Openings {_checked_window_label(outcome.result, state.time_zone)}",
+                               "note": ("Nearest openings" if closed is not None else
+                                        f"Openings {_checked_window_label(outcome.result, state.time_zone)}"),
                                "allowMore": not ("requestedStart" in outcome.result or "requestedEnd" in outcome.result)}
                     outcome.result["shownRefs"] = new_options
                     if not call.arguments.get("for_booking_ref"):
@@ -1490,9 +1532,16 @@ class TurnService:
                                                                 time_zone=outcome.result.get("requestedTimeZone", state.time_zone),
                                                                 at=outcome.result.get("requestedStart"))
                     if grounded_availability:
-                        trusted_reply = (_openings_fallback(text, draft, move=is_change,
-                                                            alternatives=bool(outcome.result.get("nextOpenDate"))) if displayed else
-                                         f"No matching openings {_checked_window_label(outcome.result, state.time_zone)}. What other time works?")
+                        if closed is not None:
+                            trusted_reply = closed.reason
+                            if not displayed and lookup_override is None:
+                                trusted_reply += " What other time works?"
+                        elif displayed:
+                            trusted_reply = _openings_fallback(text, draft, move=is_change,
+                                                              alternatives=bool(outcome.result.get("nextOpenDate")))
+                        else:
+                            trusted_reply = (f"No matching openings {_checked_window_label(outcome.result, state.time_zone)}. "
+                                             "What other time works?")
                 else:
                     if call.name == "find_slots":
                         lookup_error = outcome.result.get("error")
@@ -1531,6 +1580,9 @@ class TurnService:
                     state.interaction_id, state.pending_call, state.last_model_input_tokens = original_history
                     state.counters.turns += 1
                     yield {"type": "assistant_text", "text": trusted_reply}
+                    if lookup_count == 1 and lookup_override is not None and protected_kind == "book":
+                        for event in _outside_hours_offer(tools, lookup_override):
+                            yield event
                     return
         if failure is not None:
             if failure.code == "interaction_expired":

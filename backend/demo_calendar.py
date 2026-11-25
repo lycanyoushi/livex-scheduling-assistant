@@ -59,6 +59,8 @@ def demo_bookings(first_day: date, time_zone: str) -> tuple[DemoBooking, ...]:
 class DemoCalendar(FakeCal):
     """Rolling demo availability and account-wide booking reads based on FakeCal."""
 
+    supports_outside_hours = True
+
     def __init__(
         self, *, clock: Callable[[], datetime] = utc_now, time_zone: str = DEFAULT_DEMO_TIME_ZONE,
     ) -> None:
@@ -97,6 +99,10 @@ class DemoCalendar(FakeCal):
 
     def _close(self, day: date) -> datetime:
         return datetime.combine(day, _WORKDAY[1], self._host_zone).astimezone(timezone.utc)
+
+    def outside_working_hours(self, start: datetime, end: datetime) -> bool:
+        local = parse_instant(start).astimezone(self._host_zone)
+        return local.weekday() >= 5 or local.time() < _WORKDAY[0] or parse_instant(end) > self._close(local.date())
 
     def _starts_on(self, day: date) -> Iterator[datetime]:
         if day.weekday() >= 5:

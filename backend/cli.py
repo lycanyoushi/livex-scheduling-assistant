@@ -28,6 +28,7 @@ _UNVERIFIED_WRITES = {"write_unverified", "reschedule_partial"}
 _PROPOSAL_TITLES = {"book": "Book this meeting?", "cancel": "Cancel this meeting?", "reschedule": "Move this meeting?"}
 _RESULT_LABELS = {"booked": "Meeting booked", "cancelled": "Meeting cancelled", "rescheduled": "Meeting moved"}
 _CAL_BOOKINGS_URL = "https://app.cal.com/bookings/upcoming"
+_OUTSIDE_HOURS = "Outside your working hours"
 
 
 def _windows_zone() -> str | None:
@@ -110,8 +111,10 @@ class _TurnDisplay:
         return f"[{self.slot_number(ref)}] {slot['dayLabel']} {slot['timeLabel']}"
 
     def label(self, ref: str, preceding: str) -> ReferenceLabel:
-        if ref in self.slots:
-            if repeats_time(preceding, self.slots[ref]["timeLabel"]):
+        if slot := self.slots.get(ref):
+            if slot.get("outsideHours"):
+                return ReferenceLabel(f"{slot['dayLabel']} {slot['timeLabel']}")
+            if repeats_time(preceding, slot["timeLabel"]):
                 return ReferenceLabel(f"[{self.slot_number(ref)}]", compact=True)
             return ReferenceLabel(self.slot_label(ref))
         if ref in self.bookings:
@@ -161,7 +164,11 @@ class _TurnDisplay:
                 if event.get("note"):
                     self.chat.write(event["note"])
                 for ref in event["refs"]:
-                    if ref in self.slots:
+                    slot = self.slots.get(ref)
+                    if slot and slot.get("outsideHours"):
+                        self.chat.write(f"{_OUTSIDE_HOURS} · {slot['dayLabel']} {slot['timeLabel']}")
+                        self.chat.write("Type Book it anyway to choose this time.")
+                    elif slot:
                         self.recovery_refs.add(ref)
                         self.chat.write(self.slot_label(ref))
                 for ref in event.get("plainRefs", ()):
@@ -204,7 +211,8 @@ class _TurnDisplay:
         elif success:
             chat.slots = _recent(self.slots, MAX_SLOTS)
             chat.bookings = _recent(self.bookings, MAX_BOOKINGS)
-            chat.choices = {number: ref for ref, number in self.numbers.items() if ref in chat.slots}
+            chat.choices = {number: ref for ref, number in self.numbers.items()
+                            if ref in chat.slots and not chat.slots[ref].get("outsideHours")}
             for ref in dict.fromkeys(self.listed):
                 booking = self.bookings.get(ref)
                 if booking is not None and (self.result is None or ref != self.result[1]["ref"]):
@@ -224,6 +232,8 @@ class _TurnDisplay:
                 proposal = self.proposal
                 chat.write(_PROPOSAL_TITLES[proposal["kind"]])
                 chat.write(f"{proposal['title']} · {proposal['whenLabel']} · {proposal['durationMinutes']} min · {proposal['timeZone']}")
+                if proposal.get("outsideHours"):
+                    chat.write(f"{_OUTSIDE_HOURS} · {proposal['whenLabel'].partition(', ')[0]}")
                 guest = proposal.get("name") or self.bookings.get(proposal.get("bookingRef", ""), {}).get("guestName")
                 if guest:
                     chat.write(f"Guest: {guest}")
@@ -307,7 +317,7 @@ class TerminalChat:
             return _ui(action, proposalId=self.proposal["id"])
         if text.isdecimal():
             ref = self.choices.get(int(text)) if len(text) <= 8 else None
-            if ref is not None:
+            if ref is not None and not self.slots.get(ref, {}).get("outsideHours"):
                 return _ui("pick_slot", slotRef=ref)
             self.write("Choose a displayed time option.")
             return None
@@ -321,7 +331,7 @@ class TerminalChat:
             self.write("Use a message of 2,000 characters or fewer.")
             return None
         source = {"kind": "text", "text": text}
-        if self.proposal is not None:
+        if self.proposal is not None and text.casefold().rstrip(".! ") != "book it anyway":
             source["proposalId"] = self.proposal["id"]
         return source
 

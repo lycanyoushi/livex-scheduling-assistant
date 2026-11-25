@@ -249,17 +249,25 @@ class PrefetchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.model.calls, 0)
 
     async def test_empty_window_never_reuses_earlier_openings_or_calls_the_model(self):
-        service = self.service(LocalHoursCalendar("2026-12-02T09:00", "2026-12-02T11:00"))
+        calendar = LocalHoursCalendar("2026-12-02T09:00", "2026-12-02T11:00")
+        service = self.service(calendar)
         earlier = await self.collect(service, "Show me openings on Dec 2")
+        earlier_state = verify_state(earlier[-1]["stateToken"], KEY, NOW)
         model_calls = self.model.calls
+        calendar.starts = [datetime.fromisoformat("2026-12-02T15:30:00+08:00")]
         events = await self.collect(
             service, "Find openings between 13:00 and 15:00 on Dec 2", earlier[-1]["stateToken"],
         )
-        self.assertFalse(any(event["type"] in {"slot_chips", "proposal", "booking_result"} for event in events))
-        self.assertIn("Wed 02 Dec 2026, 13:00–15:00", next(event["text"] for event in events if event["type"] == "assistant_text"))
+        self.assertFalse(any(event["type"] in {"proposal", "booking_result"} for event in events))
+        reply = next(event["text"] for event in events if event["type"] == "assistant_text")
+        self.assertIn("13:00–15:00 window on Wed 2 Dec", reply)
+        [choice] = next(event["refs"] for event in events if event["type"] == "slot_chips")
+        slots = next(event["slots"] for event in events if "slots" in event)
+        self.assertEqual(slots[choice]["startLocalIso"], "2026-12-02T15:30:00+08:00")
         signed = verify_state(events[-1]["stateToken"], KEY, NOW)
-        self.assertFalse(signed.last_offered_slots)
-        self.assertEqual(signed.interaction_id, verify_state(earlier[-1]["stateToken"], KEY, NOW).interaction_id)
+        self.assertEqual(signed.last_offered_slots, [choice])
+        self.assertNotIn(choice, earlier_state.last_offered_slots)
+        self.assertEqual(signed.interaction_id, earlier_state.interaction_id)
         self.assertEqual(self.model.calls, model_calls)
 
     async def test_booking_window_offers_the_full_duration_when_the_calendar_supports_it(self):

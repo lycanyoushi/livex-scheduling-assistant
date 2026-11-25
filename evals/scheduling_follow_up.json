@@ -423,6 +423,516 @@
           }
         }
       ]
+    },
+    {
+      "id": 312,
+      "category": "D",
+      "name": "Singapore Saturday offers the same two-hour range on nearby working days",
+      "turns": [
+        {
+          "user": "Can I add to my schedule a meeting with Avery Example, avery.range@example.com, on 12 Dec from 1100 to 1300?",
+          "checks": {
+            "refs_within": {
+              "kind": "slot",
+              "local_starts": [
+                "2026-12-11T11:00",
+                "2026-12-14T11:00"
+              ],
+              "min": 2,
+              "max": 2,
+              "signed_duration_minutes": 120
+            },
+            "proposal_kind": null,
+            "max_model_calls": 0,
+            "forbidden_tools": [
+              "*"
+            ],
+            "calendar_availability": [
+              {
+                "local_start": "2026-12-11T11:00",
+                "status": "available"
+              },
+              {
+                "local_start": "2026-12-14T11:00",
+                "status": "available"
+              },
+              {
+                "local_start": "2026-12-12T11:00",
+                "status": "unavailable"
+              }
+            ],
+            "cal_reads": [
+              {
+                "operation": "slots",
+                "duration": 120
+              }
+            ],
+            "reply_patterns": [
+              "(?i)\\bSat(?:urday)?\\s+12\\s+Dec(?:ember)?\\b.{0,80}\\bno bookable hours\\b"
+            ],
+            "guest_draft_email": "avery.range@example.com"
+          }
+        },
+        {
+          "action": {
+            "type": "pick_slot",
+            "slot_from_turn": 1,
+            "local_start": "2026-12-11T11:00"
+          },
+          "checks": {
+            "refs_within": {
+              "kind": "slot",
+              "source": "offers_or_proposal",
+              "local_starts": [
+                "2026-12-11T11:00"
+              ],
+              "min": 1,
+              "max": 1,
+              "signed_duration_minutes": 120
+            },
+            "proposal_kind": "book",
+            "proposal_name": "Avery Example",
+            "proposal_email": "avery.range@example.com",
+            "proposal_duration_minutes": 120,
+            "max_model_calls": 0
+          }
+        },
+        {
+          "user": "yes please",
+          "proposal_from_turn": 2,
+          "checks": {
+            "refs_within": null,
+            "proposal_kind": null,
+            "max_model_calls": 0,
+            "booking_result": {
+              "kind": "booked",
+              "local_start": "2026-12-11T11:00"
+            },
+            "cal_writes": [
+              {
+                "operation": "create_booking",
+                "local_start": "2026-12-11T11:00",
+                "name": "Avery Example",
+                "email": "avery.range@example.com",
+                "length_in_minutes": 120
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": 313,
+      "category": "D",
+      "name": "The same Singapore Friday request shows an available two-hour choice",
+      "turns": [
+        {
+          "user": "Can I add to my schedule a meeting with Avery Example, avery.range@example.com, on 11 Dec from 1100 to 1300?",
+          "checks": {
+            "refs_within": {
+              "kind": "slot",
+              "local_starts": [
+                "2026-12-11T11:00"
+              ],
+              "min": 1,
+              "max": 1,
+              "signed_duration_minutes": 120
+            },
+            "proposal_kind": null,
+            "max_model_calls": 0,
+            "forbidden_tools": [
+              "*"
+            ],
+            "calendar_availability": [
+              {
+                "local_start": "2026-12-11T11:00",
+                "status": "available"
+              }
+            ],
+            "cal_reads": [
+              {
+                "operation": "slots",
+                "duration": 120
+              }
+            ],
+            "guest_draft_email": "avery.range@example.com"
+          }
+        }
+      ]
+    },
+    {
+      "id": 314,
+      "category": "D",
+      "name": "Los Angeles Saturday falls back to real two-hour openings at a different local time",
+      "time_zone": "America/Los_Angeles",
+      "fixture_overrides": {
+        "open_local_starts": [
+          "2026-12-10T19:00",
+          "2026-12-13T19:00"
+        ]
+      },
+      "turns": [
+        {
+          "user": "Could I add to my schedule a meeting with Avery Example, avery.range@example.com, on 12 Dec from 1100 to 1300?",
+          "checks": {
+            "refs_within": {
+              "kind": "slot",
+              "local_starts": [
+                "2026-12-10T19:00",
+                "2026-12-13T19:00"
+              ],
+              "min": 2,
+              "max": 2,
+              "signed_duration_minutes": 120
+            },
+            "proposal_kind": null,
+            "max_model_calls": 0,
+            "forbidden_tools": [
+              "*"
+            ],
+            "calendar_availability": [
+              {
+                "local_start": "2026-12-10T19:00",
+                "status": "available"
+              },
+              {
+                "local_start": "2026-12-13T19:00",
+                "status": "available"
+              },
+              {
+                "local_start": "2026-12-12T11:00",
+                "status": "unavailable"
+              }
+            ],
+            "cal_reads": [
+              {
+                "operation": "slots",
+                "duration": 120
+              }
+            ],
+            "reply_patterns": [
+              "(?i)\\bSat(?:urday)?\\s+12\\s+Dec(?:ember)?\\b.{0,80}\\bno bookable hours\\b"
+            ],
+            "guest_draft_email": "avery.range@example.com"
+          }
+        }
+      ]
+    },
+    {
+      "id": 315,
+      "category": "D",
+      "name": "Putting a meeting on the calendar accepts a dashed full range",
+      "turns": [
+        {
+          "user": "Put a meeting with Avery Example, avery.range@example.com, on my calendar on 11 Dec 11:00-13:00",
+          "checks": {
+            "refs_within": {
+              "kind": "slot",
+              "local_starts": [
+                "2026-12-11T11:00"
+              ],
+              "min": 1,
+              "max": 1,
+              "signed_duration_minutes": 120
+            },
+            "proposal_kind": null,
+            "max_model_calls": 0,
+            "forbidden_tools": [
+              "*"
+            ],
+            "calendar_availability": [
+              {
+                "local_start": "2026-12-11T11:00",
+                "status": "available"
+              }
+            ],
+            "cal_reads": [
+              {
+                "operation": "slots",
+                "duration": 120
+              }
+            ],
+            "guest_draft_email": "avery.range@example.com"
+          }
+        }
+      ]
+    },
+    {
+      "id": 316,
+      "category": "D",
+      "name": "Setting up a meeting in a busy window offers same-day openings of the same length",
+      "fixture_overrides": {
+        "active_bookings": [
+          "occupied_friday_midday"
+        ],
+        "open_local_starts": [
+          "2026-12-11T09:00",
+          "2026-12-11T11:00",
+          "2026-12-11T14:00"
+        ]
+      },
+      "turns": [
+        {
+          "user": "Set up a meeting with Avery Example on 11 Dec 11:00–13:00",
+          "checks": {
+            "refs_within": {
+              "kind": "slot",
+              "local_starts": [
+                "2026-12-11T09:00",
+                "2026-12-11T14:00"
+              ],
+              "min": 2,
+              "max": 2,
+              "signed_duration_minutes": 120
+            },
+            "proposal_kind": null,
+            "max_model_calls": 0,
+            "forbidden_tools": [
+              "*"
+            ],
+            "calendar_availability": [
+              {
+                "local_start": "2026-12-11T09:00",
+                "status": "available"
+              },
+              {
+                "local_start": "2026-12-11T14:00",
+                "status": "available"
+              },
+              {
+                "local_start": "2026-12-11T11:00",
+                "status": "unavailable"
+              }
+            ],
+            "cal_reads": [
+              {
+                "operation": "slots",
+                "duration": 120
+              }
+            ],
+            "reply_patterns": [
+              "(?i)\\b11:00[–—-]13:00\\b.{0,80}\\b(?:taken|outside|busy|unavailable)\\b"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": 317,
+      "category": "D",
+      "name": "Penciling in a meeting on a closed day keeps its length when the same range is unavailable",
+      "fixture_overrides": {
+        "open_local_starts": [
+          "2026-12-10T09:00",
+          "2026-12-14T14:00"
+        ]
+      },
+      "turns": [
+        {
+          "user": "Pencil in a call with Avery Example on Dec 12 from 11am to 1pm",
+          "checks": {
+            "refs_within": {
+              "kind": "slot",
+              "local_starts": [
+                "2026-12-10T09:00",
+                "2026-12-14T14:00"
+              ],
+              "min": 2,
+              "max": 2,
+              "signed_duration_minutes": 120
+            },
+            "proposal_kind": null,
+            "max_model_calls": 0,
+            "forbidden_tools": [
+              "*"
+            ],
+            "calendar_availability": [
+              {
+                "local_start": "2026-12-10T09:00",
+                "status": "available"
+              },
+              {
+                "local_start": "2026-12-14T14:00",
+                "status": "available"
+              },
+              {
+                "local_start": "2026-12-12T11:00",
+                "status": "unavailable"
+              }
+            ],
+            "cal_reads": [
+              {
+                "operation": "slots",
+                "duration": 120
+              }
+            ],
+            "reply_patterns": [
+              "(?i)\\bSat(?:urday)?\\s+12\\s+Dec(?:ember)?\\b.{0,80}\\bno bookable hours\\b"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": 318,
+      "category": "D",
+      "name": "Arranging a call requests the stated whole interval",
+      "turns": [
+        {
+          "user": "Can you arrange a call with Avery Example Dec 11 from 11:00 to 13:00?",
+          "checks": {
+            "refs_within": {
+              "kind": "slot",
+              "local_starts": [
+                "2026-12-11T11:00"
+              ],
+              "min": 1,
+              "max": 1,
+              "signed_duration_minutes": 120
+            },
+            "proposal_kind": null,
+            "max_model_calls": 0,
+            "forbidden_tools": [
+              "*"
+            ],
+            "calendar_availability": [
+              {
+                "local_start": "2026-12-11T11:00",
+                "status": "available"
+              }
+            ],
+            "cal_reads": [
+              {
+                "operation": "slots",
+                "duration": 120
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": 319,
+      "category": "D",
+      "name": "Adding a meeting from 11 to 1 keeps the full range",
+      "turns": [
+        {
+          "user": "Add a meeting with Avery Example from 11 to 1 on Dec 11",
+          "checks": {
+            "refs_within": {
+              "kind": "slot",
+              "local_starts": [
+                "2026-12-11T11:00"
+              ],
+              "min": 1,
+              "max": 1,
+              "signed_duration_minutes": 120
+            },
+            "proposal_kind": null,
+            "max_model_calls": 0,
+            "forbidden_tools": [
+              "*"
+            ],
+            "calendar_availability": [
+              {
+                "local_start": "2026-12-11T11:00",
+                "status": "available"
+              }
+            ],
+            "cal_reads": [
+              {
+                "operation": "slots",
+                "duration": 120
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": 320,
+      "category": "D",
+      "name": "Expressing a wish to schedule preserves a whole two-hour range",
+      "turns": [
+        {
+          "user": "I want to schedule a meeting with Avery Example on Dec 11 from 11am to 1pm.",
+          "checks": {
+            "refs_within": {
+              "kind": "slot",
+              "local_starts": [
+                "2026-12-11T11:00"
+              ],
+              "min": 1,
+              "max": 1,
+              "signed_duration_minutes": 120
+            },
+            "proposal_kind": null,
+            "max_model_calls": 0,
+            "forbidden_tools": [
+              "*"
+            ],
+            "calendar_availability": [
+              {
+                "local_start": "2026-12-11T11:00",
+                "status": "available"
+              }
+            ],
+            "cal_reads": [
+              {
+                "operation": "slots",
+                "duration": 120
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": 321,
+      "category": "D",
+      "name": "Asking for anything between two times is an openings window",
+      "turns": [
+        {
+          "user": "Anything between 2 and 5 on 11 Dec?",
+          "checks": {
+            "refs_within": {
+              "kind": "slot",
+              "local_starts": [
+                "2026-12-11T14:00",
+                "2026-12-11T14:30",
+                "2026-12-11T15:00",
+                "2026-12-11T16:30"
+              ],
+              "min": 4,
+              "max": 4,
+              "signed_duration_minutes": 30
+            },
+            "proposal_kind": null,
+            "max_model_calls": 0,
+            "forbidden_tools": [
+              "*"
+            ],
+            "calendar_availability": [
+              {
+                "local_start": "2026-12-11T14:00",
+                "status": "available"
+              },
+              {
+                "local_start": "2026-12-11T14:30",
+                "status": "available"
+              },
+              {
+                "local_start": "2026-12-11T15:00",
+                "status": "available"
+              },
+              {
+                "local_start": "2026-12-11T16:30",
+                "status": "available"
+              }
+            ]
+          }
+        }
+      ]
     }
   ]
 }

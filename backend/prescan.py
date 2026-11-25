@@ -37,9 +37,11 @@ CLOCK = (r"(?:(?P<marker>at|a\s+las)\s+)?(?P<hour>[0-2]?\d)"
 ATTACHED_TIME = re.compile(r"^[,\s]*" + CLOCK, re.IGNORECASE)
 LEADING_TIME = re.compile(r"(?<![\w:])" + CLOCK + r"[,\s]*$", re.IGNORECASE)
 _WINDOW_CLOCK = r"(?:\d{3,4}|\d{1,2}(?::\d{2})?(?:\s*(?:am|pm))?)\b(?!:)"
+_DASH_CLOCK = r"\d{1,2}:\d{2}(?:\s*(?:am|pm))?\b"
 _TIME_WINDOW = re.compile(
-    rf"\b(?:(?P<from>from)|between)\s+(?P<start>{_WINDOW_CLOCK})\s+"
-    rf"(?(from)to|and)\s+(?P<end>{_WINDOW_CLOCK})",
+    rf"\b(?:(?:(?P<from>from)|(?P<between>between))\s+|(?={_DASH_CLOCK}\s*[-–—]))"
+    rf"(?P<start>{_WINDOW_CLOCK})(?(from)\s+to\s+|(?(between)\s+and\s+|\s*[-–—]\s*(?={_DASH_CLOCK})))"
+    rf"(?P<end>{_WINDOW_CLOCK})",
 )
 _UNREAD_DATE_OR_TIME = re.compile(
     rf"[\d–—-]|\b(?:{MONTH}|{'|'.join(WEEKDAYS)}|{'|'.join(RELATIVE)}|"
@@ -88,7 +90,7 @@ PARTS: dict[PartOfDay, re.Pattern[str]] = {
     "afternoon": re.compile(r"\b(?:afternoon|por la tarde)\b", re.IGNORECASE),
     "evening": re.compile(r"\b(?:evening|por la noche)\b", re.IGNORECASE),
 }
-_PERSONAL_SCHEDULE = re.compile(r"\bmy\s+schedule\b")
+_PERSONAL_SCHEDULE = re.compile(r"\b(?:my|our)\s+schedule\b", re.I)
 INTENTS = {
     "book": re.compile(r"\b(?:book|schedule|meet|meeting|call|slots?|available|free|time|reservar)\b", re.I),
     "list": re.compile(
@@ -100,11 +102,22 @@ INTENTS = {
     "cancel": re.compile(r"\b(?:cancel|call off|drop|cancelar)\b", re.I),
     "reschedule": re.compile(r"\b(?:reschedule|move|push|change the time|reprogramar)\b", re.I),
 }
-BOOKING_REQUEST = re.compile(r"\b(?:book|schedule|reserve|reservar)\b", re.I)
+_CALENDAR_TARGET = re.compile(r"\b(?:to|on|in|into)\s+(?:my|our|the)\s+(?:schedule|calendar)\b", re.I)
+_MEETING_OBJECT = (
+    r"(?:(?:an?|another)\s+)?"
+    r"(?:(?:new|quick|short|introductory|follow[- ]up|\d{1,4}\s*[- ]?\s*(?:min(?:ute)?s?|h(?:ou)?rs?))\s+){0,2}"
+    r"(?:meeting|call|appointment|intro|chat)s?\b(?!\s+(?:notes?|agenda|details|reminder|description)\b)"
+)
+BOOKING_REQUEST = re.compile(
+    r"\b(?:book|(?<!\bmy )(?<!\bour )schedule|reserve|reservar|pencil\s+in)\b"
+    rf"|\b(?:add|put|set\s+up|arrange)\s+(?:{_CALENDAR_TARGET.pattern}\s+)?{_MEETING_OBJECT}",
+    re.I,
+)
 AVAILABILITY_REQUEST = re.compile(
     r"\b(?:availability|openings?|slots?|available|free times?|horarios?|disponibles?)\b"
     r"|\b(?:show|see|find|check|offer)\b[^.!?\n]{0,45}\b(?:times?|options?)\b"
-    r"|\b(?:morning|afternoon|evening)\s+(?:options?|times?)\b",
+    r"|\b(?:morning|afternoon|evening)\s+(?:options?|times?)\b"
+    r"|\b(?:any(?:thing)?|something)\s+between\b",
     re.I,
 )
 TIME_REQUEST = re.compile(
@@ -119,7 +132,7 @@ EXPLANATION = re.compile(
     re.I,
 )
 EXISTING_BOOKING = re.compile(
-    r"\b(?:my|our)\s+(?:(?:existing|current|upcoming|scheduled)\s+)?(?:bookings?|meetings?|appointments?|calendar)\b",
+    r"\b(?:my|our)\s+(?:(?:existing|current|upcoming|scheduled)\s+)?(?:bookings?|meetings?|appointments?)\b",
     re.I,
 )
 _MOVE_DESTINATION = re.compile(r"\b(?:reschedule|move|push|change the time)\b[^.!?\n]*?\bto\s+", re.I)
@@ -406,8 +419,7 @@ def _availability_request(
         )
     if EXPLANATION.search(text) or EXISTING_BOOKING.search(text):
         return False
-    if (BOOKING_REQUEST.search(_PERSONAL_SCHEDULE.sub(" ", text)) or AVAILABILITY_REQUEST.search(text)
-            or TIME_REQUEST.search(text)):
+    if BOOKING_REQUEST.search(text) or AVAILABILITY_REQUEST.search(text) or TIME_REQUEST.search(text):
         return True
     if dates and DATED_FOLLOWUP.match(text):
         return True
@@ -431,8 +443,10 @@ def prescan(text: str, *, now: datetime, time_zone: str) -> PrescanResult:
     text_without_email = without_email.casefold()
     positive, excluded, weekdays, unresolved = _exclusions(text_without_email, reference)
     booking_text = _PERSONAL_SCHEDULE.sub(" ", text_without_email)
+    booking_requests = tuple(BOOKING_REQUEST.finditer(positive))
+    booking_intent = bool(booking_requests or INTENTS["book"].search(booking_text))
     intents = tuple(name for name, pattern in INTENTS.items()
-                    if pattern.search(booking_text if name == "book" else text_without_email))
+                    if (booking_intent if name == "book" else pattern.search(text_without_email)))
     is_move = "reschedule" in intents
     destination = _MOVE_DESTINATION.search(positive) if is_move else None
     source = positive[:destination.end()] if destination else positive
@@ -498,8 +512,8 @@ def prescan(text: str, *, now: datetime, time_zone: str) -> PrescanResult:
     if bounds is not None and availability:
         start, end = _window_time(bounds["start"]), _window_time(bounds["end"])
         if start is not None and end is not None and start < end:
-            full_meeting = bool(bounds["from"] and len(dates) == 1 and duration_minutes is None
-                                and BOOKING_REQUEST.search(positive) and not AVAILABILITY_REQUEST.search(positive))
+            full_meeting = bool(not bounds["between"] and len(dates) == 1 and duration_minutes is None
+                                and booking_requests and not AVAILABILITY_REQUEST.search(positive))
             time_window = TimeWindow(start, end, full_meeting)
         elif start is not None and end is not None:
             # "11pm to 12pm" ends before it starts; ask instead of guessing.
@@ -513,7 +527,9 @@ def prescan(text: str, *, now: datetime, time_zone: str) -> PrescanResult:
         move_delay_minutes = amount * (60 if move_delay[2].startswith("hour") else 1)
         read_window.append(move_delay.span())
     unread = list(positive)
-    for booking in BOOKING_REQUEST.finditer(positive):
+    if booking_requests:
+        read.extend(match.span() for match in _CALENDAR_TARGET.finditer(positive))
+    for booking in booking_requests:
         before_verb = positive[:booking.start()].rstrip()
         if before_verb.split()[-1:] == ["to"]:
             read.append((len(before_verb) - 2, booking.start()))

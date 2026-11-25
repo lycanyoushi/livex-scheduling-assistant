@@ -2,7 +2,7 @@
 
 import re
 
-from backend.prescan import EMAIL
+from backend.prescan import BOOKING_REQUEST, EMAIL
 
 
 _BOOKING_ACTION = re.compile(
@@ -33,7 +33,8 @@ _GUEST_COUNT = re.compile(
 _ADD_GUEST = re.compile(
     r"\b(?:add|include|invite|cc|copy)\b[^.!?\n]{0,60}\b"
     r"(?:(?:another|additional|extra|one more|second)\s+(?:guest|attendee|person)"
-    r"|(?:to|on)\s+(?:my|the|that|this|our)\s+(?:meeting|booking|appointment|call))\b",
+    r"|(?:to|on)\s+(?:my|the|that|this|our)\s+(?:meeting|booking|appointment|call|"
+    r"\d{1,2}(?::[0-5]\d)?\s*(?:am|pm)|\d{1,2}:[0-5]\d))\b",
 )
 _ADD_TO_DRAFT = re.compile(
     r"\b(?:also|and)\s+(?:add|invite|include|cc|copy)\b"
@@ -79,7 +80,7 @@ def unsupported_request(text: str, *, collecting_guest: bool = False) -> str | N
     lower = without_addresses.casefold()
     if _CALENDAR_BLOCK.search(lower):
         return _BLOCK_REPLY
-    booking = _BOOKING_ACTION.search(lower)
+    booking = BOOKING_REQUEST.search(lower) or _BOOKING_ACTION.search(lower)
     if _CHANGE_ACTION.search(lower) and _SERIES_TARGET.search(lower):
         return "I can help change one occurrence at a time. Which meeting should I change?"
     if (booking or collecting_guest or re.search(r"\bat\s+\d", lower)) and (

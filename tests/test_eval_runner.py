@@ -12,8 +12,9 @@ from unittest.mock import AsyncMock, patch
 from backend.model import ModelCompletion, ModelError, ModelText, ToolCall
 from evals.checker import EvalError, check_turn, confirms_signed_proposal, observed_availability, render, safe_reason
 from evals.runner import (
-    COMPARISON_MODEL, DEFAULT_MODEL, SPEC_PATH, Pacing, Trace, TracingModel, aggregate, approved_spec, case_report, checkpoint,
-    TracedCalendar, held_out_cases, model_profile, regression_cases, run_case, suite_fixture_path, turn_payload,
+    COMPARISON_MODEL, DEFAULT_MODEL, ORIGINAL_FOLLOW_UP_IDS, RANGE_FOLLOW_UP_IDS, SPEC_PATH, Pacing, Trace, TracingModel,
+    aggregate, approved_spec, case_report, checkpoint, TracedCalendar, held_out_cases, held_out_report_matches,
+    model_profile, regression_cases, run_case, suite_fixture_path, turn_payload,
 )
 
 
@@ -290,8 +291,11 @@ class EvalRunnerTests(TestCase):
 
     def test_follow_up_uses_a_separate_weekday_calendar_with_grounded_availability(self):
         suite = "scheduling_follow_up"
-        cases = held_out_cases(self.spec, suite=suite)
+        cases = [case for case in held_out_cases(self.spec, suite=suite) if case["id"] in ORIGINAL_FOLLOW_UP_IDS]
         self.assertEqual([case["category"] for case in cases], ["A"] * 6 + ["B"] * 3 + ["C"] * 2)
+        digest = "d885d056ead4e0bfae92c9bdd39eff742288f273982b135052ea199aa8f37d68"
+        self.assertTrue(held_out_report_matches(suite, [case["id"] for case in cases], digest))
+        self.assertFalse(held_out_report_matches(suite, [*ORIGINAL_FOLLOW_UP_IDS, *RANGE_FOLLOW_UP_IDS], digest))
         path = suite_fixture_path(self.spec, suite)
         self.assertNotEqual(path, suite_fixture_path(self.spec, "scheduling_held_out"))
         fixture = json.loads(path.read_text(encoding="utf-8"))
@@ -314,6 +318,20 @@ class EvalRunnerTests(TestCase):
         self.assertEqual(observed_availability(calendar.reads, at_four, zone),
                          {"covering_reads": 1, "statuses": ["available"]})
         self.assertEqual(observed_availability(calendar.reads, "2026-11-27T08:00", zone)["statuses"], [])
+
+    def test_range_follow_up_cases_pass_offline_on_their_separate_fixture(self):
+        suite = "scheduling_follow_up"
+        cases = [case for case in held_out_cases(self.spec, suite=suite) if case["id"] in RANGE_FOLLOW_UP_IDS]
+        self.assertEqual([case["id"] for case in cases], list(RANGE_FOLLOW_UP_IDS))
+        original = suite_fixture_path(self.spec, suite)
+        for case in cases:
+            with self.subTest(case=case["id"]):
+                path = suite_fixture_path(self.spec, suite, case_id=case["id"])
+                self.assertNotEqual(path, original)
+                fixture = json.loads(path.read_text(encoding="utf-8"))
+                turns = run_case(self.spec, case, fixture, None, None, None, model_name=DEFAULT_MODEL, fixture_path=path)
+                failures = [item for turn in turns.values() for item in turn["checks"] if item["result"] != "pass"]
+                self.assertEqual(case_report(case, 1, turns)["status"], "pass", failures)
 
     def test_new_comparison_uses_flash_lite_minimal_once(self):
         profile = model_profile(self.spec, COMPARISON_MODEL)

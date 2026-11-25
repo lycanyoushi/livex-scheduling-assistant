@@ -62,6 +62,7 @@ def _omit_missing(value: object) -> bool:
 class PickSlot(_WireModel):
     type: Literal["pick_slot"]
     slot_ref: SlotRef
+    outside_hours: bool = Field(default=False, exclude_if=lambda value: not value)
 
 
 class MoreSlots(_WireModel):
@@ -130,6 +131,7 @@ class SlotView(TypedDict):
     dayLabel: str
     timeLabel: str
     startLocalIso: str
+    outsideHours: NotRequired[bool]
 
 
 class BookingView(TypedDict):
@@ -151,6 +153,7 @@ class ProposalView(TypedDict):
     whenLabel: str
     timeZone: str
     durationMinutes: int
+    outsideHours: NotRequired[bool]
     slotRef: NotRequired[str]
     bookingRef: NotRequired[str]
     name: NotRequired[str]

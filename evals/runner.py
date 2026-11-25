@@ -36,12 +36,15 @@ from scripts.local_environment import load_local_environment
 
 SPEC_PATH = Path(__file__).with_name("conversations.yaml")
 HELD_OUT_PATH = SPEC_PATH.with_name("owner_held_out.json")
+ORIGINAL_FOLLOW_UP_IDS = range(301, 312)
+RANGE_FOLLOW_UP_IDS = range(312, 322)
 HELD_OUT_SPECS = {
     "held_out": (HELD_OUT_PATH, range(101, 107)),
     "scheduling_held_out": (SPEC_PATH.with_name("scheduling_held_out.json"), range(201, 221)),
-    "scheduling_follow_up": (SPEC_PATH.with_name("scheduling_follow_up.json"), range(301, 312)),
+    "scheduling_follow_up": (SPEC_PATH.with_name("scheduling_follow_up.json"), range(301, 322)),
 }
 FOLLOW_UP_FIXTURE = "fake_cal_scheduling_follow_up.json"
+RANGE_FOLLOW_UP_FIXTURE = "fake_cal_scheduling_ranges.json"
 APPROVED_CASE_IDS = range(1, 32)
 REGRESSION_SPECS = {
     "regression_spec_sha256": (SPEC_PATH.with_name("regressions.yaml"), (32,)),
@@ -64,6 +67,7 @@ SUPPORTED_CHECKS = {
     "booking_cards", "retired_booking_refs", "picked_slot_from_turn", "proposal_name", "proposal_booking_from_turn",
     "proposal_fixture_booking",
     "guest_draft_email", "continue_previous_interaction", "reply_forbidden_patterns", "calendar_availability",
+    "proposal_duration_minutes",
 }
 SUPPORTED_TEMPLATES = {None, "booked", "cancelled", "rescheduled", "slot_taken", "model_down_slots"}
 
@@ -101,6 +105,11 @@ def validate_case_checks(cases):
             require(set(rules) <= SUPPORTED_CHECKS and rules.get("reply_language") in {None, "es"},
                     "Unhandled evaluation check.")
             require(rules.get("template") in SUPPORTED_TEMPLATES, "Unhandled evaluation template.")
+            refs = rules.get("refs_within") or {}
+            if "signed_duration_minutes" in refs:
+                duration = refs["signed_duration_minutes"]
+                require(refs["kind"] == "slot" and type(duration) is int and 1 <= duration <= 1440,
+                        "Malformed signed slot duration assertion.")
             for expected in rules.get("calendar_availability", []):
                 require(set(expected) == {"local_start", "status"}
                         and expected["status"] in {"available", "unavailable"}
@@ -139,9 +148,25 @@ def held_out_cases(spec, *, suite="held_out"):
     return cases
 
 
-def suite_fixture_path(spec, suite):
-    name = FOLLOW_UP_FIXTURE if suite == "scheduling_follow_up" else spec["calendar_fixture"]
+def suite_fixture_path(spec, suite, *, case_id=None):
+    if suite == "scheduling_follow_up":
+        name = RANGE_FOLLOW_UP_FIXTURE if case_id in RANGE_FOLLOW_UP_IDS else FOLLOW_UP_FIXTURE
+    else:
+        name = spec["calendar_fixture"]
     return SPEC_PATH.with_name(name)
+
+
+def held_out_report_matches(suite, case_ids, digest):
+    source = HELD_OUT_SPECS[suite][0].read_bytes()
+    if sha256(source).hexdigest() == digest:
+        return True
+    if suite != "scheduling_follow_up" or case_ids != list(ORIGINAL_FOLLOW_UP_IDS):
+        return False
+    # Reports from before the appended range cases remain verifiable against their unchanged input.
+    archived = json.loads(source)
+    archived["cases"] = [case for case in archived["cases"] if case["id"] in ORIGINAL_FOLLOW_UP_IDS]
+    original = (json.dumps(archived, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    return sha256(original).hexdigest() == digest
 
 
 def validate_regressions(regressions, spec, case_ids):
@@ -657,7 +682,9 @@ def run(spec, cases, repeats, profile, output, call_cap, reference=None, *, suit
     mandatory = set(spec["runs"]["default"]["must_pass_every_repetition"])
     minimum = min(repeats, profile["minimum_passing_repetitions"])
     fixture_path = suite_fixture_path(spec, suite)
-    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    range_fixture_ids = {case_id for case_id in case_ids if case_id in RANGE_FOLLOW_UP_IDS}
+    range_path = suite_fixture_path(spec, suite, case_id=min(range_fixture_ids)) if range_fixture_ids else fixture_path
+    fixtures = {path: json.loads(path.read_text(encoding="utf-8")) for path in {fixture_path, range_path}}
     expected_text_turns = repeats * sum("user" in turn for case in cases for turn in case["turns"])
     document = {
         "schema_version": 1, "calendar_mode": "owner", "model": model_name, "thinking": profile["thinking_level"],
@@ -671,6 +698,8 @@ def run(spec, cases, repeats, profile, output, call_cap, reference=None, *, suit
     }
     if suite in HELD_OUT_SPECS:
         document["held_out_sha256"] = sha256(HELD_OUT_SPECS[suite][0].read_bytes()).hexdigest()
+    if range_path != fixture_path:
+        document["range_fixture_sha256"] = sha256(range_path.read_bytes()).hexdigest()
     document.update(regression_hashes(case_ids))
 
     def save():
@@ -695,8 +724,9 @@ def run(spec, cases, repeats, profile, output, call_cap, reference=None, *, suit
                     document["in_progress"] = case_report(case, repetition, turns)
                     save()
                 try:
-                    turns = run_case(spec, case, fixture, primary, backup, loop, model_name=model_name,
-                                     pacing=pacing, on_turn=save_turn, fixture_path=fixture_path, capture_dialogue=(
+                    path = range_path if case["id"] in range_fixture_ids else fixture_path
+                    turns = run_case(spec, case, fixtures[path], primary, backup, loop, model_name=model_name,
+                                     pacing=pacing, on_turn=save_turn, fixture_path=path, capture_dialogue=(
                                          suite in {"scheduling_held_out", "scheduling_follow_up"}
                                          or repetition == 1 and case["id"] in {10, 24, 25}
                                      ))
@@ -735,7 +765,7 @@ def main():
     frozen.add_argument("--scheduling-held-out", action="store_const", dest="suite", const="scheduling_held_out",
                         help="Run the 20 frozen scheduling cases once on the default model.")
     frozen.add_argument("--scheduling-follow-up", action="store_const", dest="suite", const="scheduling_follow_up",
-                        help="Run the 11 frozen scheduling follow-up cases once on the default model.")
+                        help="Run the scheduling follow-up cases once on the default model.")
     parser.add_argument("--repeats", choices=range(1, 4), type=int, help="Override the model's reviewed repetition count.")
     parser.add_argument("--refresh-spec", action="store_true", help="Regenerate the JSON snapshots from YAML offline.")
     parser.add_argument("--yaml-python", help="Existing Python interpreter with PyYAML for --refresh-spec only.")
@@ -756,11 +786,16 @@ def main():
         suite = document.get("suite")
         held_out = suite in HELD_OUT_SPECS
         if held_out:
-            require(document["held_out_sha256"] == sha256(HELD_OUT_SPECS[suite][0].read_bytes()).hexdigest(),
+            require(held_out_report_matches(suite, document["case_ids"], document["held_out_sha256"]),
                     "The held-out spec differs.")
         if suite == "scheduling_follow_up":
             require(document["fixture_sha256"] == sha256(suite_fixture_path(spec, suite).read_bytes()).hexdigest(),
                     "The follow-up calendar fixture differs.")
+            extended = next((case_id for case_id in document["case_ids"] if case_id in RANGE_FOLLOW_UP_IDS), None)
+            if extended is not None:
+                path = suite_fixture_path(spec, suite, case_id=extended)
+                require(document.get("range_fixture_sha256") == sha256(path.read_bytes()).hexdigest(),
+                        "The follow-up range fixture differs.")
         for field, digest in regression_hashes(document["case_ids"]).items():
             require(document.get(field) == digest, "The regression spec differs.")
         profile = model_profile(spec, document["model"], held_out)

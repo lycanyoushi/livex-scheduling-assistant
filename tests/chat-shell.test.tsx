@@ -85,6 +85,27 @@ it("marks the selected opening while leaving other available times usable", () =
   expect(historical).not.toContain("Asia/Singapore");
 });
 
+it("offers the outside-hours time only through an explicit Book it anyway button", () => {
+  const outside = { dayLabel: "Sat 28 Nov", timeLabel: "13:00–13:30",
+    startLocalIso: "2026-11-28T13:00:00+08:00", outsideHours: true };
+  const slots = { S1: outside };
+  const html = renderToStaticMarkup(createElement(SlotChips, {
+    refs: ["S1"], slots, timeZone: "Asia/Singapore", available: () => true, allowMore: true, onAction: () => {},
+  }));
+  expect(html).toContain('aria-label="Outside your working hours"');
+  expect(html).toContain("Sat 28 Nov at 13:00–13:30 · Asia/Singapore");
+  expect(html).toMatch(/<button\b[^>]*aria-describedby="[^"]+">Book it anyway<\/button>/);
+  expect(html).not.toContain("data-slot-key");
+  expect(html).not.toContain("More times");
+
+  const inline = renderToStaticMarkup(createElement(RefText, {
+    parts: [{ ref: "S1" }], views: { slots, bookings: {} }, currentBookings: {}, listedBookings: [],
+    slotAvailable: () => true, bookingAvailable: () => false, showMore: true, onAction: () => {},
+  }));
+  expect(inline).toContain("Sat 28 Nov at 13:00–13:30");
+  expect(inline).not.toContain("<button");
+});
+
 it("leaves explicit booking mentions as text and disables controls on historical cards", () => {
   const view = {
     ref: "B2", title: "Synthetic meeting", whenLabel: "Fri 27 Nov, 9:00 am", status: "accepted", attendees: [],
@@ -146,10 +167,10 @@ it("summarizes the guest and displays both move times in the proposal's time zon
   expect(html).not.toMatch(/<(form|input|textarea)\b/);
 });
 
-it("shows a booking summary with the guest details collected in chat", () => {
+it("shows chat-supplied guest details and highlights an outside-hours booking before confirmation", () => {
   const proposal = { id: "P2", kind: "book" as const, title: "Synthetic meeting", whenLabel: "Fri 27 Nov, 9:00 am",
     timeZone: "UTC", durationMinutes: 30, slotRef: "S2" };
-  const render = (details: { name?: string; email?: string; notes?: string }) => renderToStaticMarkup(createElement(ConfirmCard, {
+  const render = (details: { name?: string; email?: string; notes?: string; outsideHours?: boolean }) => renderToStaticMarkup(createElement(ConfirmCard, {
     proposal: { ...proposal, ...details },
     active: true, submitting: false, onAction: () => {},
   }));
@@ -163,6 +184,11 @@ it("shows a booking summary with the guest details collected in chat", () => {
   expect(html).toContain(">Not now</button>");
   expect(html).toContain("You can also type yes or no in chat.");
   expect(html).not.toMatch(/<(form|input|textarea)\b/);
+  expect(html).not.toContain("Outside your working hours");
+
+  const outside = render({ name: "Nova Fixture", email: "nova@example.com", outsideHours: true });
+  expect(outside).toContain("Outside your working hours · Fri 27 Nov");
+  expect(outside).toMatch(/aria-describedby="[^"]+outside-hours">Confirm<\/button>/);
 
   const incomplete = render({ name: "Nova Fixture" });
   expect(incomplete).toContain("Nova Fixture");

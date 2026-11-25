@@ -9,7 +9,9 @@ from time import sleep
 from typing import Literal, Protocol
 from zoneinfo import ZoneInfo
 
-from backend.cal_client import Booking, CalError, EventType, Timestamp
+from backend.cal_client import (
+    Booking, CalError, EventType, Timestamp, event_lengths, outside_hours_conflict_message, outside_hours_conflicts,
+)
 from backend.confirmations import ConfirmationConflict, ConfirmationLedger
 from backend.prescan import EMAIL
 from backend.protocol import (
@@ -70,6 +72,7 @@ class CalendarWriter(CalendarReader, Protocol):
         notes: str | None = None,
         notes_field: str | None = None,
         length_in_minutes: int | None = None,
+        outside_hours: bool = False,
     ) -> Booking: ...
 
     def cancel_booking(self, uid: str, reason: str = "User requested cancellation") -> Booking: ...
@@ -182,13 +185,25 @@ class CalendarActions:
         slot = self.state.slots.get(action.slot_ref)
         if slot is None:
             raise ActionError("invalid_action", "Choose a time from the current slots.")
+        if action.outside_hours != slot.outside_hours:
+            raise ActionError("invalid_action", "Choose the action that matches this opening.")
         previous = self.state.proposal
         ref = slot.for_booking_ref
+        if slot.outside_hours:
+            if ref is not None or self.state.outside_hours_offer != action.slot_ref:
+                raise ActionError("invalid_action", "Ask for a new outside-hours booking offer.")
+            start, end = parse_instant(slot.start_utc), parse_instant(slot.end_utc)
+            if start <= self.now:
+                raise ActionError("invalid_action", "That outside-hours time has already passed.")
+            if titles := self._outside_hours_titles(start, end):
+                raise ActionError("slot_taken", outside_hours_conflict_message(titles))
         booking = self._live_booking(ref) if ref is not None else None
         if parse_instant(slot.start_utc) <= self.now:
             return self._recover_slot(slot, ref, booking)
         try:
-            if booking is None:
+            if slot.outside_hours:
+                proposal = self.tools.propose_outside_hours(action.slot_ref)
+            elif booking is None:
                 proposal = self.tools.execute("propose_booking", {
                     "slot_ref": action.slot_ref, "name": "", "notes": "",
                 })
@@ -581,6 +596,91 @@ class CalendarActions:
                     return self._complete_slot(proposal, slot, booking, requested, email, match)
         return self._recover_slot(slot, proposal.booking_ref, booking, proposal=proposal, options=options)
 
+    def _outside_hours_titles(self, start: datetime, end: datetime) -> tuple[str, ...]:
+        if not getattr(self.calendar, "supports_outside_hours", False):
+            raise ActionError("invalid_action", "Outside-hours booking is unavailable for this calendar.")
+        outside = getattr(self.calendar, "outside_working_hours", None)
+        if not callable(outside) or outside(start, end) is not True:
+            raise ActionError("invalid_action", "Ask for a new outside-hours booking offer.")
+        return outside_hours_conflicts(self.calendar, start, end)
+
+    def _retire_outside_hours_slot(self, proposal: Proposal) -> None:
+        ref = proposal.slot_ref
+        if ref is None:
+            return
+        self.state.slots.pop(ref, None)
+        self.state.last_offered_slots = [offered for offered in self.state.last_offered_slots if offered != ref]
+        if self.state.outside_hours_offer == ref:
+            self.state.outside_hours_offer = None
+        if self.state.guest_draft is not None and self.state.guest_draft.slot_ref == ref:
+            self.state.guest_draft.slot_ref = None
+
+    def _refuse_outside_hours(self, proposal: Proposal, message: str, *, code: str = "invalid_action") -> ActionOutcome:
+        self._retire_outside_hours_slot(proposal)
+        self.state.proposal = None
+        self._pending(proposal, NoActionYetOutcome(outcome="no_action_yet", note="The outside-hours booking was refused."))
+        return ActionOutcome([{"type": "error", "code": code, "message": message, "retryable": False}], error_code=code)
+
+    def _create_slot(
+        self, proposal: Proposal, slot: SlotEntry, event: EventType, start: datetime,
+        name: str, email: str, duration: int | None,
+    ) -> Booking:
+        notes_field = next((
+            item["slug"] for item in event.get("bookingFields") or ()
+            if item.get("field") == "notes" and item.get("slug") and not item.get("hidden")
+        ), None)
+        length = {"length_in_minutes": duration} if duration is not None else {}
+        override = {"outside_hours": True} if slot.outside_hours else {}
+        return self.calendar.create_booking(
+            start=start, event_type_id=slot.event_type_id, name=name, email=email,
+            time_zone=self.state.time_zone, notes=proposal.notes, notes_field=notes_field, **length, **override,
+        )
+
+    def _confirm_outside_hours(
+        self, proposal: Proposal, slot: SlotEntry, event: EventType, requested: tuple[datetime, datetime],
+        name: str, email: str,
+    ) -> ActionOutcome:
+        start, end = requested
+        if start <= self.now:
+            return self._refuse_outside_hours(proposal, "That outside-hours time has already passed.")
+        if end - start not in {timedelta(minutes=length) for length in event_lengths(event)}:
+            return self._refuse_outside_hours(proposal, "The calendar no longer offers that meeting length.")
+        if titles := self._outside_hours_titles(start, end):
+            return self._refuse_outside_hours(proposal, outside_hours_conflict_message(titles), code="slot_taken")
+
+        duration = self.tools.slot_duration(slot)
+        self._retire_outside_hours_slot(proposal)
+        try:
+            data = self._create_slot(proposal, slot, event, start, name, email, duration)
+        except CalError as error:
+            if error.code == "slot_taken":
+                try:
+                    titles = outside_hours_conflicts(self.calendar, start, end)
+                except CalError:
+                    titles = ()
+                return self._refuse_outside_hours(proposal, outside_hours_conflict_message(titles), code="slot_taken")
+            if error.code == "unavailable":
+                self.wait(_WRITE_READBACK_DELAY_SECONDS)
+                matches = self._matching_bookings(email, slot.event_type_id, requested)
+                if matches is None or len(matches) != 1:
+                    return self._unverified(proposal, "I couldn’t verify the outside-hours booking at the requested time.")
+                data = matches[0]
+            elif error.code == "upstream":
+                return self._unverified(proposal, "I couldn’t verify the outside-hours booking at the requested time.")
+            else:
+                return self._refuse_outside_hours(proposal, "The calendar refused the outside-hours booking.")
+        try:
+            verified = self.calendar.booking(data["uid"])
+        except (CalError, KeyError):
+            return self._unverified(proposal, "I couldn’t verify the outside-hours booking at the requested time.")
+        entry = self._booking_result(verified)
+        if entry is None or entry.uid != data["uid"]:
+            return self._unverified(proposal, "I couldn’t verify the outside-hours booking at the requested time.")
+        persisted = self._interval(entry)
+        if persisted != requested and self._matches_target(entry, slot.event_type_id, persisted, email, None):
+            return self._unverified(proposal, "The calendar booked a different start or end time than requested.")
+        return self._complete_slot(proposal, slot, None, requested, email, verified)
+
     def _confirm_slot(self, proposal: Proposal, booking: BookingEntry | None) -> ActionOutcome:
         ref = proposal.booking_ref
         slot = self.state.slots.get(proposal.slot_ref or "")
@@ -590,6 +690,10 @@ class CalendarActions:
             raise ActionError("invalid_action", "Choose a time for this booking from the current slots.")
         if booking is not None and not slot_matches_booking_length(slot, booking):
             raise ActionError("invalid_action", "Choose an opening that keeps the meeting's original length.")
+        if slot.outside_hours and (
+            booking is not None or proposal.kind != "book" or not getattr(self.calendar, "supports_outside_hours", False)
+        ):
+            raise ActionError("invalid_action", "Outside-hours booking is unavailable for this calendar.")
         event = self._event(slot.event_type_id)
         name, email = (proposal.name or "").strip(), (proposal.email or "").strip()
         if proposal.kind == "book" and (not name or not EMAIL.fullmatch(email)):
@@ -598,6 +702,8 @@ class CalendarActions:
         if booking is not None and start == parse_instant(booking.start_utc):
             raise ActionError("invalid_action", "Choose a different start time for this booking.")
         requested = (start, parse_instant(slot.end_utc))
+        if slot.outside_hours:
+            return self._confirm_outside_hours(proposal, slot, event, requested, name, email)
         day = start.astimezone(self.zone).date()
         if start <= self.now:
             return self._recover_slot(slot, ref, booking, proposal=proposal)
@@ -611,15 +717,7 @@ class CalendarActions:
                     booking.uid, start, proposal.reason or "User requested reschedule"
                 )
             else:
-                notes_field = next((
-                    item["slug"] for item in event.get("bookingFields") or ()
-                    if item.get("field") == "notes" and item.get("slug") and not item.get("hidden")
-                ), None)
-                length = {"length_in_minutes": duration} if duration is not None else {}
-                data = self.calendar.create_booking(
-                    start=start, event_type_id=slot.event_type_id, name=name, email=email,
-                    time_zone=self.state.time_zone, notes=proposal.notes, notes_field=notes_field, **length,
-                )
+                data = self._create_slot(proposal, slot, event, start, name, email, duration)
         except CalError as error:
             if error.code == "unavailable":
                 self.wait(_WRITE_READBACK_DELAY_SECONDS)

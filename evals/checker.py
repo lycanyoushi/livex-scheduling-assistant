@@ -5,6 +5,8 @@ from datetime import datetime
 import re
 from zoneinfo import ZoneInfo
 
+from backend.tools import span_minutes
+
 
 SAFE_TOOLS = frozenset({"find_slots", "list_bookings", "propose_booking", "propose_cancel", "propose_reschedule",
                         "report_unsupported_request"})
@@ -149,6 +151,10 @@ def check_turn(case_id, turn_spec, payload, events, prior, before, after, now, z
         entry = after.slots.get(ref) or before.slots.get(ref)
         return local_iso(entry.start_utc, zone) if entry else None
 
+    def signed_slot_duration(ref):
+        entry = after.slots.get(ref)
+        return span_minutes(entry.start_utc, entry.end_utc) if entry else None
+
     def booking(ref):
         entry = booking_entry(ref)
         return calendar.fixture_name(entry.uid) if entry else None
@@ -218,6 +224,12 @@ def check_turn(case_id, turn_spec, payload, events, prior, before, after, now, z
             has_guest = bool(after.proposal and after.proposal.name and after.proposal.email)
             check("booking_proposal_has_guest", has_guest, has_guest)
     proposal_event = proposal_events[0] if proposal_events else {}
+    if "proposal_duration_minutes" in plan:
+        signed_ref = after.proposal.slot_ref if after.proposal else None
+        observed = {"signed_minutes": signed_slot_duration(signed_ref), "card_minutes": proposal_event.get("durationMinutes")}
+        expected_duration = plan["proposal_duration_minutes"]
+        check("proposal_duration_minutes", bool(signed_ref and signed_ref == proposal_event.get("slotRef"))
+              and observed["signed_minutes"] == observed["card_minutes"] == expected_duration, observed)
     if plan.get("proposal_email"):
         email = (after.proposal.email if after.proposal else None) or proposal_event.get("email")
         check("resolved_proposal_email", email == plan["proposal_email"], {"present": email is not None})
@@ -315,6 +327,11 @@ def check_turn(case_id, turn_spec, payload, events, prior, before, after, now, z
             refs = list(dict.fromkeys(refs))
             values = [slot(ref) for ref in refs]
             check("slot_offer_refs_resolve", all(values), values)
+            if "signed_duration_minutes" in refs_condition:
+                lengths = [signed_slot_duration(ref) for ref in refs]
+                check("slot_offer_signed_duration_minutes", all(
+                    length == refs_condition["signed_duration_minutes"] for length in lengths
+                ), lengths)
             if "local_dates" in refs_condition:
                 check("slot_offer_local_dates", all(value and value[:10] in refs_condition["local_dates"] for value in values), values)
             if "local_starts" in refs_condition:

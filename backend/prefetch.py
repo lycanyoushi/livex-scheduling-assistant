@@ -22,7 +22,7 @@ from backend.prescan import PART_HOURS, DateHint, PartOfDay, PrescanResult, Time
 from backend.protocol import CalCallMetrics
 from backend.state import BookingEntry, SessionState, SlotEntry
 from backend.time import local_bounds, parse_instant
-from backend.tools import WARM_SLOT_DAYS, CalendarTools, ToolRejected, is_daytime, last_bookable_day, nearest_slots, preferred_daytime_slots
+from backend.tools import ClosedWindow, WARM_SLOT_DAYS, CalendarTools, ToolRejected, is_daytime, last_bookable_day, nearest_slots, preferred_daytime_slots
 
 
 PREFETCH_BUDGET_SECONDS = 1.2
@@ -187,6 +187,7 @@ class _SlotResults:
     alternatives: list[SlotEntry] = field(default_factory=list)
     unavailable_event: str | None = None
     shorter_options: bool = False
+    closed_window: ClosedWindow | None = None
 
 
 def _prefetch_slots(tools: CalendarTools, plan: PrefetchPlan) -> _SlotResults:
@@ -195,23 +196,26 @@ def _prefetch_slots(tools: CalendarTools, plan: PrefetchPlan) -> _SlotResults:
     shorter_options = False
     if target is not None:
         event_id = target.event_type_id
-        if not any(event["id"] == event_id for event in tools.event_types()):
+        event = next((item for item in tools.event_types() if item["id"] == event_id), None)
+        if event is None:
             return _SlotResults()
         # A move keeps the meeting's own length.
+        minutes = target.length_minutes
         duration = tools.query_duration(event_id, target.length_minutes)
     else:
         draft = tools.state.guest_draft
         minutes = draft.duration_minutes if draft else None
         try:
-            event_id = tools.event_for_duration(minutes)["id"]
+            event = tools.event_for_duration(minutes)
         except ToolRejected as error:
             return _SlotResults(unavailable_event=str(error))
         if window is not None and window.full_meeting:
             try:
-                event_id = tools.event_for_duration(window.minutes)["id"]
+                event = tools.event_for_duration(window.minutes)
                 minutes = window.minutes
             except ToolRejected:
                 shorter_options = True
+        event_id = event["id"]
         duration = tools.query_duration(event_id, minutes)
     zone = ZoneInfo(tools.time_zone)
     first_warm_date, last_warm_date = _warm_dates(tools.now, zone)
@@ -226,12 +230,13 @@ def _prefetch_slots(tools: CalendarTools, plan: PrefetchPlan) -> _SlotResults:
     day_slots: dict[date, list[SlotEntry]] = defaultdict(list)
     daytime_slots: dict[date, list[SlotEntry]] = defaultdict(list)
     warm_entries = None
+    window_day_entries = []
     offer_alternatives = plan.show_openings and target is None and window is None
     hours = PART_HOURS.get(plan.part_of_day)
     for first, last in ranges:
         is_warm_range = (first, last) == (first_warm_date, last_warm_date)
         entries = tools.read_slot_entries(
-            event_id, first, last, "any" if offer_alternatives and is_warm_range else plan.part_of_day,
+            event_id, first, last, "any" if window is not None or (offer_alternatives and is_warm_range) else plan.part_of_day,
             target.ref if target is not None else None,
             target.uid if target is not None else None,
             duration=duration,
@@ -241,8 +246,13 @@ def _prefetch_slots(tools: CalendarTools, plan: PrefetchPlan) -> _SlotResults:
         for entry in entries:
             instant = parse_instant(entry.start_utc)
             local = instant.astimezone(zone)
-            if window is not None and not window.contains(local, parse_instant(entry.end_utc).astimezone(zone)):
-                continue
+            if window is not None and local.date() in wanted_days:
+                window_day_entries.append(entry)
+            if window is not None:
+                end = parse_instant(entry.end_utc)
+                if (not window.contains(local, end.astimezone(zone))
+                        or end - instant != timedelta(minutes=minutes or event["lengthInMinutes"])):
+                    continue
             if local.date() in wanted_days and (hours is None or hours[0] <= local.hour < hours[1]):
                 if target is not None and (
                     instant == target.start
@@ -255,6 +265,14 @@ def _prefetch_slots(tools: CalendarTools, plan: PrefetchPlan) -> _SlotResults:
                     daytime_slots[local.date()].append(entry)
 
     day_slots = daytime_slots or day_slots
+    if plan.show_openings and window is not None and not day_slots and not shorter_options:
+        closed = tools.read_closed_window(
+            event_id, min(wanted_days), max(wanted_days), window.start, window.end, window_day_entries,
+            minutes=minutes or event["lengthInMinutes"], duration=duration, zone=zone,
+            booking_ref=target.ref if target is not None else None, booking_uid=target.uid if target is not None else None,
+            plan_whole_meeting=window.full_meeting,
+        )
+        return _SlotResults(alternatives=closed.alternatives, closed_window=closed)
     if offer_alternatives:
         requested_times: dict[date, set[time | None]] = defaultdict(set)
         for hint in plan.times:
@@ -327,6 +345,7 @@ class PrefetchResult:
     more_bookings: bool = False
     unavailable_event: str | None = None
     shorter_options: bool = False
+    closed_window: ClosedWindow | None = None
 
 
 _Entries = _SlotResults | tuple[list[BookingEntry], bool]
@@ -439,4 +458,5 @@ class Prefetcher:
             more_bookings=bookings[1] if bookings is not None else False,
             unavailable_event=availability.unavailable_event if availability is not None else None,
             shorter_options=availability.shorter_options if availability is not None else False,
+            closed_window=availability.closed_window if availability is not None else None,
         )

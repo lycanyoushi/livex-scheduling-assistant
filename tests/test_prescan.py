@@ -2,7 +2,7 @@ from datetime import date, datetime, time, timedelta
 import unittest
 from zoneinfo import ZoneInfo
 
-from backend.prescan import ATTACHED_TIME, DateHint, _requested_time, prescan, warm_prescan
+from backend.prescan import ATTACHED_TIME, BOOKING_REQUEST, DateHint, TimeWindow, _requested_time, prescan, warm_prescan
 
 
 ZONES = ("Asia/Singapore", "America/New_York")
@@ -184,6 +184,7 @@ class PrescanTests(unittest.TestCase):
     def test_personal_schedule_and_calendar_requests_are_listing_only(self):
         for phrase in (
             "my schedule", "  Show me my schedule  ", "What's my schedule", "What’s my schedule?",
+            "What’s on my schedule?", "What is on my schedule?",
             "What's on my calendar?", "What’s on my calendar?", "What's my calendar", "What’s my calendar",
             "What is on my calendar?", "on my calendar",
         ):
@@ -203,12 +204,48 @@ class PrescanTests(unittest.TestCase):
                 hints = self.scan(phrase, ZONES[0])
                 self.assertEqual(hints.intents, ("book",))
                 self.assertTrue(hints.availability_request)
-        self.assertEqual(self.scan("Schedule a meeting on my calendar", ZONES[0]).intents, ("book",))
+        on_calendar = self.scan("Schedule a meeting on my calendar", ZONES[0])
+        self.assertEqual(on_calendar.intents, ("book",))
+        self.assertTrue(on_calendar.availability_request)
 
         for phrase in ("Show me my schedule and schedule a meeting", "Book a meeting, then show me my schedule"):
             with self.subTest(phrase=phrase):
                 self.assertEqual(self.scan(phrase, ZONES[0]).intents, ("book", "list"))
         self.assertEqual(self.scan("Show me my schedule and cancel this", ZONES[0]).intents, ("list", "cancel"))
+
+    def test_booking_phrases_bind_the_full_requested_interval(self):
+        requests = (
+            ("Can I add to my schedule a meeting with Avery Example on 12 Dec from 1100 to 1300?", 12),
+            ("Can I add to my schedule a meeting with Avery Example on 11 Dec from 1100 to 1300?", 11),
+            ("Put a meeting with Avery Example on my calendar on 11 Dec 11:00-13:00", 11),
+            ("I want to schedule a meeting with Avery Example on Dec 11 from 11 to 1", 11),
+            ("Add a meeting from 11 to 1 on Dec 11", 11),
+            ("Set up a meeting Dec 11 11:00–13:00", 11),
+            ("Pencil in a chat on Dec 11 from 11am to 1pm", 11),
+            ("Arrange a call on Dec 11 from 11:00 to 13:00", 11),
+            ("Add a meeting to my schedule on 2026-12-11 from 11am to 1pm", 11),
+        )
+        for zone in ZONES:
+            for phrase, day in requests:
+                with self.subTest(phrase=phrase, zone=zone):
+                    hints = self.scan(phrase, zone)
+                    self.assertEqual(hints.intents, ("book",))
+                    self.assertTrue(hints.availability_request)
+                    self.assertTrue(hints.date_time_complete)
+                    self.assertEqual(hints.dates, (DateHint(date(2026, 12, day)),))
+                    self.assertEqual(hints.time_window, TimeWindow(time(11), time(13), full_meeting=True))
+                    self.assertEqual(hints.time_window.minutes, 120)
+
+    def test_openings_and_existing_guest_edits_do_not_request_a_whole_meeting(self):
+        for phrase in ("Anything between 2 and 5 on 11 Dec?", "Show openings Dec 11, 14:00–17:00"):
+            with self.subTest(phrase=phrase):
+                hints = self.scan(phrase, ZONES[0])
+                self.assertTrue(hints.availability_request)
+                self.assertEqual(hints.time_window, TimeWindow(time(14), time(17)))
+        for phrase in ("Add Avery to my 3pm", "Add Avery to my meeting", "Add a meeting note to my call"):
+            with self.subTest(phrase=phrase):
+                self.assertIsNone(BOOKING_REQUEST.search(phrase))
+                self.assertFalse(self.scan(phrase, ZONES[0]).availability_request)
 
     def test_english_and_spanish_calendar_spans(self):
         warm_prescan()
@@ -239,11 +276,11 @@ class PrescanTests(unittest.TestCase):
             "Find openings between 11:00 and 13:00 on Dec 2",
             "Book a meeting on Thursday afternoon",
             "Find openings next week except Monday",
+            "Set up a meeting Dec 2 11:00–13:00",
         )
         unread = (
             "Book a meeting on Dec 2 at 1030",
             "Find openings on Dec 2 from 1100 until 1300",
-            "Set up a meeting Dec 2 11:00–13:00",
             "Check next Tuesday or the week after",
             "Book a two hour meeting tomorrow",
             "See what is open Thu afternoon",

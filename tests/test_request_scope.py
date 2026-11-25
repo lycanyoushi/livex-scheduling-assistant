@@ -14,6 +14,9 @@ class RequestScopeTests(unittest.TestCase):
             "Book iris@example.com and lee@example.com for an intro.",
             "Book a call for three people.",
             "Add Morgan to that meeting.",
+            "Add Avery to my 3pm.",
+            "Include Avery in the introduction. Add them to my 15:00 call.",
+            "Add a meeting to my schedule with Avery and Rowan.",
         ):
             with self.subTest(phrase=phrase):
                 reply = unsupported_request(phrase)
@@ -29,6 +32,7 @@ class RequestScopeTests(unittest.TestCase):
             "Book a monthly check-in with a candidate.",
             "Reserve time for a meeting series.",
             "Book a meeting with Kim on Tuesdays at 2pm.",
+            "Pencil in a weekly call with Kim.",
         ):
             with self.subTest(phrase=phrase):
                 reply = unsupported_request(phrase)
@@ -60,6 +64,7 @@ class RequestScopeTests(unittest.TestCase):
             "Reserve a time between Monday and Wednesday.",
             "Book a meeting about the quarterly roadmap with Iris.",
             "What times do I have open for lunch tomorrow?",
+            "Put a meeting with Avery Example on my calendar on 11 Dec 11:00-13:00",
         ):
             with self.subTest(phrase=phrase):
                 self.assertIsNone(unsupported_request(phrase))

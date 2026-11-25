@@ -1,7 +1,7 @@
 import { type KeyboardEvent, type ReactNode, useEffect, useId, useRef, useState } from "react";
 import {
   ArrowRight, CalendarCheck, CalendarClock, CalendarDays, CalendarPlus, Check, ChevronDown, ChevronRight,
-  CircleCheck, Clock3, Globe, UserRound, Video, X, type LucideIcon,
+  CircleCheck, Clock3, Globe, TriangleAlert, UserRound, Video, X, type LucideIcon,
 } from "lucide-react";
 
 import { calendarFile, googleCalendarLink, safeMeetingLink } from "./calendar-export";
@@ -21,6 +21,7 @@ export const PRIMARY_BUTTON = `${OUTLINE_BUTTON} bg-primary text-primary-foregro
 
 const SLOT_TARGET = "min-h-11 min-w-11 font-medium leading-snug focus-visible:outline-2 focus-visible:outline-ring disabled:text-muted-foreground disabled:opacity-55";
 const CARD = "rounded-2xl border border-border bg-card p-4 shadow-xs sm:p-5";
+const OUTSIDE_HOURS = "Outside your working hours";
 const RESULT_LABELS: Record<BookingResult["kind"], string> = {
   booked: "Meeting booked",
   cancelled: "Meeting cancelled",
@@ -88,6 +89,7 @@ export function ConfirmCard({ proposal, originalBooking, active, submitting, onA
   onAction: SendAction;
 }) {
   const headingId = useId();
+  const warningId = `${headingId}-outside-hours`;
   const { title, icon: TitleIcon } = PROPOSAL_STYLE[proposal.kind];
   const { dayLabel, timeLabel } = whenParts(proposal.whenLabel);
   const duration = `${proposal.durationMinutes} min`;
@@ -110,6 +112,12 @@ export function ConfirmCard({ proposal, originalBooking, active, submitting, onA
         <h2 id={headingId} className="text-lg font-semibold" aria-label={PROPOSAL_LABELS[proposal.kind]}>{title}</h2>
       </div>
       <p className="mt-3 font-medium">{proposal.title}</p>
+      {proposal.outsideHours && (
+        <p id={warningId} className="mt-2 flex items-start gap-2 text-sm text-amber-800 dark:text-amber-300">
+          <TriangleAlert size={16} className="mt-0.5 shrink-0" aria-hidden="true" />
+          <span>{OUTSIDE_HOURS} · {dayLabel}</span>
+        </p>
+      )}
       {move && (
         <div className="mt-3 grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2 rounded-xl bg-primary/5 p-3 text-sm sm:gap-4">
           <div>
@@ -139,6 +147,7 @@ export function ConfirmCard({ proposal, originalBooking, active, submitting, onA
           className={proposal.kind === "cancel" ? `${OUTLINE_BUTTON} bg-red-700 text-white hover:bg-red-800` : PRIMARY_BUTTON}
           type="button"
           disabled={disabled}
+          aria-describedby={proposal.outsideHours ? warningId : undefined}
           onClick={() => onAction({ type: "confirm_proposal", proposalId: proposal.id })}
         >
           {working ? "Working…" : "Confirm"}
@@ -444,13 +453,35 @@ export function SlotChips({ refs, plainRefs = [], slots, note, timeZone, selecte
   allowMore: boolean;
   onAction: SendAction;
 }) {
+  const timeId = useId();
+  const overrideRef = refs.length === 1 ? refs[0] : undefined;
+  const override = overrideRef ? slots[overrideRef] : undefined;
+  if (overrideRef && override?.outsideHours) {
+    return (
+      <div role="group" aria-label={OUTSIDE_HOURS} className={`${CARD} border-amber-600/25 bg-amber-500/5`}>
+        <p className="flex items-center gap-2 text-sm font-semibold text-amber-800 dark:text-amber-300">
+          <TriangleAlert size={17} aria-hidden="true" />
+          {OUTSIDE_HOURS}
+        </p>
+        <p id={timeId} className="mt-1 text-sm text-muted-foreground">
+          {override.dayLabel} at {override.timeLabel}{timeZone && ` · ${slotZoneLabel(timeZone, override)}`}
+        </p>
+        <button type="button" className={`${OUTLINE_BUTTON} mt-3 border border-border bg-card`}
+          aria-describedby={timeId} disabled={!available(overrideRef)}
+          onClick={() => onAction({ type: "pick_slot", slotRef: overrideRef, outsideHours: true })}>
+          Book it anyway
+        </button>
+      </div>
+    );
+  }
+
   const days = new Map<string, { refId: string; slot: SlotView }[]>();
   const visible: SlotView[] = [];
   const choices = new Set(refs);
   const hasSelection = selectedRef !== undefined && choices.has(selectedRef);
   for (const refId of new Set([...refs, ...plainRefs])) {
     const slot = slots[refId];
-    if (!slot) continue;
+    if (!slot || slot.outsideHours) continue;
     visible.push(slot);
     const day = days.get(slot.dayLabel) ?? [];
     day.push({ refId, slot });
@@ -481,7 +512,7 @@ export function SlotChips({ refs, plainRefs = [], slots, note, timeZone, selecte
           </div>
         </div>
       ))}
-      {allowMore && refs.some((ref) => slots[ref]) && (
+      {allowMore && refs.some((ref) => slots[ref] && !slots[ref].outsideHours) && (
         <div><MoreTimes slots={visible} available={refs.some(available)} onAction={onAction} /></div>
       )}
     </div>
@@ -534,7 +565,8 @@ export function RefText({ parts, views, currentBookings, listedBookings, slotAva
   showMore: boolean;
   onAction: SendAction;
 }) {
-  const slotRefs = parts.flatMap((part) => "ref" in part && views.slots[part.ref] ? [part.ref] : []);
+  const slotRefs = parts.flatMap((part) =>
+    "ref" in part && views.slots[part.ref] && !views.slots[part.ref].outsideHours ? [part.ref] : []);
   const hasSelection = selectedRef !== undefined && slotRefs.includes(selectedRef);
 
   function renderLine(line: ReferencePart[]) {
@@ -553,6 +585,7 @@ export function RefText({ parts, views, currentBookings, listedBookings, slotAva
         return bold ? <strong key={index}>{part.text}</strong> : <span key={index}>{part.text}</span>;
       }
       const slot = views.slots[part.ref];
+      if (slot?.outsideHours) return <span key={index}>{slot.dayLabel} at {slot.timeLabel}</span>;
       if (slot) return <TimeChip key={index} refId={part.ref} slot={slot} includeDay selected={part.ref === selectedRef}
         dimmed={hasSelection && part.ref !== selectedRef} available={slotAvailable(part.ref)} onAction={onAction} />;
       const booking = views.bookings[part.ref];

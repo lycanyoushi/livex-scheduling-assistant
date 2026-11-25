@@ -94,6 +94,7 @@ class SlotEntry(_TimeRange):
     event_type_id: _EventTypeId
     fetched_at: _EpochSeconds
     for_booking_ref: BookingRef | None = None
+    outside_hours: bool = False
 
 
 class BookingEntry(_TimeRange):
@@ -203,6 +204,7 @@ class SessionState(_StateModel):
     pending_change: PendingChange | None = None
     last_slot_search: SlotSearch | None = None
     last_offered_slots: Annotated[list[SlotRef], Field(max_length=4)] = Field(default_factory=list)
+    outside_hours_offer: SlotRef | None = None
     slots: Annotated[dict[SlotRef, SlotEntry], Field(max_length=MAX_SLOTS)] = Field(default_factory=dict)
     bookings: Annotated[dict[BookingRef, BookingEntry], Field(max_length=MAX_BOOKINGS)] = Field(default_factory=dict)
     counters: Counters = Field(default_factory=Counters)
@@ -219,6 +221,7 @@ class SessionState(_StateModel):
         self.guest_draft = None
         self.last_slot_search = None
         self.last_offered_slots.clear()
+        self.outside_hours_offer = None
         kept = self.proposal.slot_ref if keep_proposal and self.proposal is not None else None
         self.slots = {kept: self.slots[kept]} if kept is not None and kept in self.slots else {}
 

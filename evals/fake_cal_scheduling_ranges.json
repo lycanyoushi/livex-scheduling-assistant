@@ -1,0 +1,79 @@
+{
+  "schema_version": 1,
+  "profile": {
+    "id": 9000,
+    "username": "fixture-host",
+    "name": "Fixture Host",
+    "email": "host@example.com",
+    "timeZone": "Asia/Singapore"
+  },
+  "event_types": [
+    {
+      "id": 9001,
+      "ownerId": 9000,
+      "slug": "30-minute-meeting",
+      "title": "30 Minute Meeting",
+      "lengthInMinutes": 30,
+      "hidden": false,
+      "bookingUrl": "https://example.com/fixture-host/30-minute-meeting",
+      "bookingFields": [
+        {
+          "field": "notes",
+          "slug": "notes"
+        }
+      ],
+      "lengthInMinutesOptions": [
+        30,
+        120
+      ]
+    }
+  ],
+  "availability": {
+    "event_type_id": 9001,
+    "time_zone": "Asia/Singapore",
+    "duration_minutes": 30,
+    "occupancy": {
+      "blocking_statuses": [
+        "accepted",
+        "pending"
+      ],
+      "interval": "half_open",
+      "exclude_booking_query_parameter": "bookingUidToReschedule"
+    },
+    "local_starts_by_date": {
+      "2026-12-10": [
+        "09:00"
+      ],
+      "2026-12-11": [
+        "09:00",
+        "11:00",
+        "14:00",
+        "14:30",
+        "15:00",
+        "16:30"
+      ],
+      "2026-12-14": [
+        "11:00",
+        "14:00"
+      ]
+    }
+  },
+  "bookings": {
+    "occupied_friday_midday": {
+      "uid": "fixture-range-occupied-friday-midday",
+      "title": "Fixture lunch meeting",
+      "eventTypeId": 9001,
+      "start": "2026-12-11T03:00:00Z",
+      "end": "2026-12-11T04:00:00Z",
+      "status": "accepted",
+      "attendees": [
+        {
+          "name": "Dana Example",
+          "email": "dana.range@example.com",
+          "timeZone": "Asia/Singapore"
+        }
+      ]
+    }
+  },
+  "faults": {}
+}

@@ -1,5 +1,5 @@
 export type UiAction =
-  | { type: "pick_slot"; slotRef: string }
+  | { type: "pick_slot"; slotRef: string; outsideHours?: true }
   | { type: "more_slots"; fromDate?: string }
   | { type: "confirm_proposal"; proposalId: string }
   | { type: "dismiss_proposal"; proposalId: string }
@@ -32,7 +32,7 @@ export function proposalDecision(input: ChatInput): "confirm" | "dismiss" | unde
   return undefined;
 }
 
-export type SlotView = { dayLabel: string; timeLabel: string; startLocalIso: string };
+export type SlotView = { dayLabel: string; timeLabel: string; startLocalIso: string; outsideHours?: boolean };
 export type BookingView = {
   ref: string;
   title: string;
@@ -51,6 +51,7 @@ export type ProposalView = {
   whenLabel: string;
   timeZone: string;
   durationMinutes: number;
+  outsideHours?: boolean;
   slotRef?: string;
   bookingRef?: string;
   name?: string;
