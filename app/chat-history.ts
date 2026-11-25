@@ -32,17 +32,16 @@ export type ChatHistory = {
 
 type BrowserStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 
-export function ownerHistoryKey(embedded: boolean, codeRequired: boolean): string {
-  return `livex.owner.${codeRequired ? "" : "demo."}${embedded ? "widget" : "chat"}.v1`;
+export function ownerHistoryKey(codeRequired: boolean): string {
+  return codeRequired ? "livex.owner.chat.v1" : "livex.owner.demo.chat.v1";
 }
 
 export function clearOwnerHistory(): void {
   const storage = browserStorage();
   if (!storage) return;
   for (const key of [
-    ownerHistoryKey(false, true), ownerHistoryKey(true, true),
-    ownerHistoryKey(false, false), ownerHistoryKey(true, false),
-    "livex.chat.v1", "livex.widget.v1",
+    ownerHistoryKey(true), ownerHistoryKey(false),
+    "livex.owner.widget.v1", "livex.owner.demo.widget.v1", "livex.chat.v1", "livex.widget.v1",
   ]) clearHistory(storage, key);
 }
 

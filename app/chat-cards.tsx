@@ -210,6 +210,11 @@ const BOOKING_STATUS: Record<string, string> = {
   pending: "bg-amber-100 text-amber-800 dark:bg-amber-400/15 dark:text-amber-300",
   cancelled: "bg-red-100/75 text-red-800 dark:bg-red-400/10 dark:text-red-300",
 };
+const BOOKING_BUTTON = "inline-flex min-h-11 items-center rounded-md border border-border px-3 text-sm font-medium text-muted-foreground hover:bg-primary/5 hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring disabled:opacity-50";
+
+function manageableBooking(status: string) {
+  return status === "accepted" || status === "pending";
+}
 
 export function BookingCard({ booking, result, available, linksAvailable, onAction }: {
   booking: BookingView;
@@ -224,12 +229,11 @@ export function BookingCard({ booking, result, available, linksAvailable, onActi
   }, [result]);
 
   const status = booking.status.toLowerCase();
-  const canManage = status === "accepted" || status === "pending";
+  const canManage = manageableBooking(status);
   const join = canManage && linksAvailable ? safeMeetingLink(booking.meetingUrl) : undefined;
   const google = canManage && linksAvailable ? googleCalendarLink(booking) : undefined;
   const statusLabel = status === "accepted" ? "Confirmed" : status.charAt(0).toUpperCase() + status.slice(1).replaceAll("_", " ");
   const { dayLabel, timeLabel } = whenParts(booking.whenLabel);
-  const button = "inline-flex min-h-11 items-center rounded-md border border-border px-3 text-sm font-medium text-muted-foreground hover:bg-primary/5 hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring disabled:opacity-50";
   const ResultIcon = result === "booked" ? CircleCheck : result === "rescheduled" ? CalendarClock : X;
 
   return (
@@ -242,7 +246,12 @@ export function BookingCard({ booking, result, available, linksAvailable, onActi
         </div>
       )}
       <div className="flex flex-wrap items-start justify-between gap-2">
-        <p className="font-semibold wrap-anywhere">{booking.title}</p>
+        <div className="min-w-0">
+          <p className="font-semibold wrap-anywhere">{booking.guestName || booking.title}</p>
+          {booking.guestName && booking.title !== booking.guestName && (
+            <p className="mt-0.5 text-sm text-muted-foreground wrap-anywhere">{booking.title}</p>
+          )}
+        </div>
         <span className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${BOOKING_STATUS[status] ?? "bg-primary/10 text-ring"}`}>{statusLabel}</span>
       </div>
       <div className="mt-2 grid gap-1.5">
@@ -252,17 +261,68 @@ export function BookingCard({ booking, result, available, linksAvailable, onActi
       </div>
       {canManage && (
         <div className="mt-3 flex flex-wrap items-center gap-2">
-          {join && <a className={`${button} gap-1.5`} href={join} target="_blank" rel="noreferrer"><Video size={15} aria-hidden="true" />Join</a>}
-          {google && <CalendarDropdown booking={booking} google={google} button={button} />}
-          <button className={button} type="button" disabled={!available} onClick={() => onAction({ type: "request_reschedule", bookingRef: booking.ref })}>
+          {join && <a className={`${BOOKING_BUTTON} gap-1.5`} href={join} target="_blank" rel="noreferrer"><Video size={15} aria-hidden="true" />Join</a>}
+          {google && <CalendarDropdown booking={booking} google={google} button={BOOKING_BUTTON} />}
+          <button className={BOOKING_BUTTON} type="button" disabled={!available} onClick={() => onAction({ type: "request_reschedule", bookingRef: booking.ref })}>
             Reschedule
           </button>
-          <button className={button} type="button" disabled={!available} onClick={() => onAction({ type: "request_cancel", bookingRef: booking.ref })}>
+          <button className={BOOKING_BUTTON} type="button" disabled={!available} onClick={() => onAction({ type: "request_cancel", bookingRef: booking.ref })}>
             Cancel
           </button>
         </div>
       )}
     </article>
+  );
+}
+
+export function BookingAgenda({ bookings, available, onAction }: {
+  bookings: BookingView[];
+  available: IsAvailable;
+  onAction: SendAction;
+}) {
+  const id = useId();
+  const days = new Map<string, { booking: BookingView; timeLabel: string }[]>();
+  for (const booking of bookings) {
+    const { dayLabel, timeLabel } = whenParts(booking.whenLabel);
+    const startDay = dayLabel.split(" – ", 1)[0];
+    const rows = days.get(startDay) ?? [];
+    rows.push({ booking, timeLabel });
+    days.set(startDay, rows);
+  }
+
+  return (
+    <ul aria-label="Meetings" className="divide-y divide-border overflow-hidden rounded-2xl border border-border bg-card shadow-xs">
+      {[...days].map(([day, rows]) => (
+        <li key={day}>
+          <h2 className="bg-primary/5 px-3.5 py-2.5 text-sm font-semibold sm:px-4">{day}</h2>
+          <ul className="divide-y divide-border">
+            {rows.map(({ booking, timeLabel }) => {
+              const timeId = `${id}-${booking.ref}-time`;
+              const titleId = `${id}-${booking.ref}-title`;
+              const disabled = !available(booking.ref) || !manageableBooking(booking.status.toLowerCase());
+              const detailIds = `${titleId} ${timeId}`;
+              return (
+                <li key={booking.ref} className="grid min-w-0 grid-cols-[max-content_minmax(0,1fr)] items-center gap-x-3 gap-y-2 px-3.5 py-2.5 sm:px-4 lg:grid-cols-[max-content_minmax(0,1fr)_auto]">
+                  <time id={timeId} dateTime={booking.startUtc} className="self-start text-xs leading-5 whitespace-nowrap text-muted-foreground tabular-nums sm:text-sm">
+                    {timeLabel || booking.whenLabel}
+                  </time>
+                  <div id={titleId} className="min-w-0 wrap-anywhere">
+                    <p className="text-sm leading-5 font-semibold">{booking.title}</p>
+                    {booking.guestName && <p className="text-xs text-muted-foreground sm:text-sm">{booking.guestName}</p>}
+                  </div>
+                  <div className="col-start-2 flex flex-wrap gap-1.5 lg:col-start-3">
+                    <button type="button" className={BOOKING_BUTTON} aria-describedby={detailIds} disabled={disabled}
+                      onClick={() => onAction({ type: "request_reschedule", bookingRef: booking.ref })}>Reschedule</button>
+                    <button type="button" className={BOOKING_BUTTON} aria-describedby={detailIds} disabled={disabled}
+                      onClick={() => onAction({ type: "request_cancel", bookingRef: booking.ref })}>Cancel</button>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        </li>
+      ))}
+    </ul>
   );
 }
 

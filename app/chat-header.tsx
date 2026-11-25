@@ -35,7 +35,7 @@ function exactZone(query: string): string | undefined {
 
 export function ChatHeader({
   hostName, demoMode, timeZone, onTimeZoneChange, onNewChat, busy,
-  debugEnabled, debugOpen, onDebugToggle, embedded = false, onClose, onSignOut,
+  debugEnabled, debugOpen, onDebugToggle, onSignOut,
 }: {
   hostName?: string;
   demoMode: boolean;
@@ -46,8 +46,6 @@ export function ChatHeader({
   debugEnabled: boolean;
   debugOpen: boolean;
   onDebugToggle: () => void;
-  embedded?: boolean;
-  onClose?: () => void;
   onSignOut?: () => void;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
@@ -65,7 +63,7 @@ export function ChatHeader({
     : [];
   if (exact && !zones.includes(exact)) zones.unshift(exact);
   const matchingZone = exact ?? (zones.length === 1 ? zones[0] : undefined);
-  const subtitle = `Books on ${hostName ? `${hostName}'s` : "the host's"} calendar`;
+  const subtitle = `Managing ${hostName ? `${hostName}'s` : "your"} Cal.com`;
 
   function openPicker() {
     setQuery("");
@@ -81,7 +79,7 @@ export function ChatHeader({
 
   return (
     <header className="sticky top-0 z-10 shrink-0 border-b border-border bg-card">
-      <div className={`mx-auto flex max-w-4xl flex-wrap items-center justify-between gap-x-4 gap-y-1 px-4 py-2.5 ${embedded ? "" : "sm:px-8 sm:py-3"}`}>
+      <div className="mx-auto flex max-w-4xl flex-wrap items-center justify-between gap-x-4 gap-y-1 px-4 py-2.5 sm:px-8 sm:py-3">
         <div className="flex min-w-0 flex-1 basis-44 items-center gap-3">
           <AssistantAvatar />
           <div className="min-w-0">
@@ -100,7 +98,7 @@ export function ChatHeader({
             aria-haspopup="dialog" aria-expanded={open} onClick={openPicker}
             className="inline-flex min-h-11 max-w-full min-w-0 cursor-pointer items-center gap-2 rounded-full border border-border px-3 text-xs font-medium text-muted-foreground tabular-nums hover:border-ring/50 hover:text-ring focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-default disabled:opacity-50">
             <Globe className="size-4 shrink-0" aria-hidden="true" />
-            <span className={`truncate ${embedded ? "max-w-28" : "max-w-32 sm:max-w-44"}`}>{timeZone.replaceAll("_", " ")}</span>
+            <span className="max-w-32 truncate sm:max-w-44">{timeZone.replaceAll("_", " ")}</span>
           </button>
           <div className="group/new-chat relative">
             <button type="button" disabled={busy} className={ICON_BUTTON} aria-label="New chat" onClick={onNewChat}>
@@ -118,9 +116,6 @@ export function ChatHeader({
           )}
           {onSignOut && <button type="button" className={ICON_BUTTON} aria-label="Sign out" title="Sign out" onClick={onSignOut}>
             <LogOut className="size-[18px]" aria-hidden="true" />
-          </button>}
-          {onClose && <button type="button" className={ICON_BUTTON} aria-label="Close" title="Close" onClick={onClose}>
-            <X className="size-5" aria-hidden="true" />
           </button>}
         </div>
       </div>

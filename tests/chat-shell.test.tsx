@@ -2,8 +2,9 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { expect, it } from "vitest";
 
-import { BookerFallback, calEmbedLink, safePublicBookingUrl } from "../app/booker-fallback";
-import { BookingCard, ConfirmCard, RefText, SlotChips } from "../app/chat-cards";
+import { BookerFallback } from "../app/booker-fallback";
+import { BookingAgenda, BookingCard, ConfirmCard, RefText, SlotChips } from "../app/chat-cards";
+import { ChatHeader } from "../app/chat-header";
 import ChatWorkspace from "../app/chat-workspace";
 import Home from "../app/page";
 
@@ -17,6 +18,21 @@ it("renders the chat with an enabled, labeled composer and an empty draft", () =
   expect(html).toMatch(/<textarea\b[^>]*\bid="chat-message"[^>]*>/);
   expect(html).not.toMatch(/<textarea\b[^>]*\bdisabled=""/);
   expect(html).toMatch(/<button\b(?=[^>]*\btype="submit")(?=[^>]*\baria-label="Send")(?=[^>]*\bdisabled="")[^>]*>/);
+});
+
+it("shows the owner's calendar subtitle and the four example requests", () => {
+  const header = renderToStaticMarkup(createElement(ChatHeader, {
+    hostName: "Demo Calendar", demoMode: true, timeZone: "UTC", busy: false, debugEnabled: false,
+    debugOpen: false, onDebugToggle: () => {}, onNewChat: () => {}, onTimeZoneChange: () => {},
+  }));
+  expect(header).toContain("Managing Demo Calendar&#x27;s Cal.com");
+  const html = renderToStaticMarkup(createElement(ChatWorkspace));
+  expect(html).toContain("What do you need done on your calendar?</h1>");
+  for (const prompt of ["book a 30-min intro with a candidate Thursday afternoon", "what&#x27;s on my calendar tomorrow?",
+    "move my 3pm to later today", "Cancel my 4pm tomorrow"]) {
+    expect(html).toContain(`aria-label="${prompt}"`);
+    expect(html).toContain(`>${prompt}</span>`);
+  }
 });
 
 it("shows only the access gate while checking for a signed-in owner", () => {
@@ -159,7 +175,7 @@ it("shows a booking summary with the guest details collected in chat", () => {
 
 it("uses status colors, a booking banner and a calendar dropdown", () => {
   const booking = { ref: "B1", title: "Fixture meeting", whenLabel: "Fri 27 Nov, 9:00 am", status: "accepted",
-    attendees: [], startUtc: "2026-11-27T09:00:00Z", endUtc: "2026-11-27T09:30:00Z" };
+    guestName: "Nova Fixture", attendees: [], startUtc: "2026-11-27T09:00:00Z", endUtc: "2026-11-27T09:30:00Z" };
   const render = (status: string) => renderToStaticMarkup(createElement(BookingCard, {
     booking: { ...booking, status }, available: true, linksAvailable: true, onAction: () => {},
     result: status === "accepted" ? "booked" : undefined,
@@ -167,6 +183,8 @@ it("uses status colors, a booking banner and a calendar dropdown", () => {
 
   const accepted = render("accepted");
   expect(accepted).toContain("Meeting booked</h2>");
+  expect(accepted.indexOf(">Nova Fixture</p>")).toBeGreaterThan(-1);
+  expect(accepted.indexOf(">Nova Fixture</p>")).toBeLessThan(accepted.indexOf(">Fixture meeting</p>"));
   expect(accepted).toContain('text-emerald-300">Confirmed</span>');
   expect(accepted).toContain("lucide-calendar-days");
   expect(accepted).toContain(">9:00 am</span>");
@@ -178,6 +196,28 @@ it("uses status colors, a booking banner and a calendar dropdown", () => {
   expect(render("pending")).toContain('text-amber-300">Pending</span>');
   expect(render("cancelled")).toContain('text-red-300">Cancelled</span>');
   expect(render("cancelled")).not.toContain("Add to calendar");
+});
+
+it("groups an agenda by the local start day and keeps accessible actions for every row", () => {
+  const bookings = [
+    { ref: "B1", title: "First meeting", guestName: "Avery Fixture", whenLabel: "Fri 27 Nov, 9:00 am" },
+    { ref: "B2", title: "Second meeting", guestName: "Nova Fixture", whenLabel: "Fri 27 Nov – Sat 28 Nov, 11:45 pm–12:15 am" },
+    { ref: "B3", title: "Third meeting", guestName: "Riley Fixture", whenLabel: "Sat 28 Nov, 10:00 am" },
+    { ref: "B4", title: "Fourth meeting", guestName: "Ellis Fixture", whenLabel: "Sat 28 Nov, 12:00 pm" },
+  ].map((booking) => ({ ...booking, status: "accepted", attendees: [], startUtc: "2026-11-27T09:00:00Z", endUtc: "2026-11-27T09:30:00Z" }));
+  const html = renderToStaticMarkup(createElement(BookingAgenda, {
+    bookings, available: (ref) => ref !== "B3", onAction: () => {},
+  }));
+
+  expect(html).toContain('aria-label="Meetings"');
+  expect(html).toMatch(/Fri 27 Nov<\/h2>.*First meeting.*Second meeting.*Sat 28 Nov<\/h2>.*Third meeting.*Fourth meeting/);
+  expect(html).toMatch(/<time\b[^>]*dateTime="2026-11-27T09:00:00Z"[^>]*>9:00 am<\/time>/i);
+  expect(html).toContain("11:45 pm–12:15 am</time>");
+  expect(html).toContain("Riley Fixture</p>");
+  expect(html.match(/>Reschedule<\/button>/g)).toHaveLength(4);
+  expect(html.match(/>Cancel<\/button>/g)).toHaveLength(4);
+  expect(html.match(/aria-describedby="[^" ]+-B3-title [^" ]+-B3-time" disabled=""/g)).toHaveLength(2);
+  expect(html).not.toContain("<article");
 });
 
 it("renders safe bullets, bold and line breaks around clickable slot references", () => {
@@ -199,18 +239,9 @@ it("renders safe bullets, bold and line breaks around clickable slot references"
   expect(html).toContain("<div><span>Last line.</span></div>");
 });
 
-it("provides a regular safe booking link and leaves the Cal.com script unloaded on the server", () => {
-  const url = "https://cal.com/fixture-host/intro?email=nova@example.com#private";
-  expect(safePublicBookingUrl(url)).toBe("https://cal.com/fixture-host/intro");
-  expect(calEmbedLink(url)).toBe("fixture-host/intro");
-  const html = renderToStaticMarkup(createElement(BookerFallback, {
-    bookingUrl: url, warming: false, open: true, onClose: () => {},
-  }));
-  expect(html).toContain('aria-label="Book directly"');
-  expect(html).toContain('href="https://cal.com/fixture-host/intro"');
-  expect(html).not.toContain("nova@example.com");
-  expect(html).not.toContain("<script");
-  expect(calEmbedLink("https://booking.example.com/fixture/intro")).toBeNull();
-  expect(safePublicBookingUrl("javascript:alert(1)")).toBeNull();
-  expect(safePublicBookingUrl("https://fixture@cal.com/fixture/intro")).toBeNull();
+it("links to the owner's Cal.com bookings dashboard", () => {
+  const html = renderToStaticMarkup(createElement(BookerFallback));
+  expect(html).toContain("Open Cal.com bookings");
+  expect(html).toContain('href="https://app.cal.com/bookings/upcoming" target="_blank" rel="noopener noreferrer"');
+  expect(html).not.toMatch(/<(script|iframe|dialog)\b/);
 });

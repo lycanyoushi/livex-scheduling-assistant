@@ -19,8 +19,8 @@ import {
   unverifiedWrite,
   withoutRetiredBookings,
 } from "./chat-protocol";
-import { BookerFallback, safePublicBookingUrl } from "./booker-fallback";
-import { BookingCard, ConfirmCard, OUTLINE_BUTTON, RefText, SlotChips } from "./chat-cards";
+import { BookerFallback } from "./booker-fallback";
+import { BookingAgenda, BookingCard, ConfirmCard, OUTLINE_BUTTON, RefText, SlotChips } from "./chat-cards";
 import { ChatDebug, type DebugSnapshot } from "./chat-debug";
 import { AssistantAvatar, ChatHeader } from "./chat-header";
 import {
@@ -31,10 +31,10 @@ import {
 const EMPTY_VIEWS: ReferenceViews = { slots: {}, bookings: {} };
 const RATE_LIMITED = "Too many requests right now. Wait a moment, then retry.";
 const SUGGESTIONS = [
-  { title: "Book a meeting", prompt: "Book a 30-minute meeting", label: "Book a 30-min meeting", icon: CalendarPlus },
-  { title: "View meetings", prompt: "What meetings do I have?", label: "What's on my calendar?", icon: CalendarDays },
-  { title: "Reschedule", prompt: "Reschedule my meeting", label: "Reschedule my next meeting", icon: CalendarClock },
-  { title: "Cancel a meeting", prompt: "Cancel my meeting", label: "Cancel my meeting", icon: CalendarX },
+  { title: "Book a meeting", prompt: "book a 30-min intro with a candidate Thursday afternoon", icon: CalendarPlus },
+  { title: "View meetings", prompt: "what's on my calendar tomorrow?", icon: CalendarDays },
+  { title: "Reschedule", prompt: "move my 3pm to later today", icon: CalendarClock },
+  { title: "Cancel a meeting", prompt: "Cancel my 4pm tomorrow", icon: CalendarX },
 ];
 const LAST_EVENT_LIMIT = 200;
 const ICON_TARGET = "inline-grid size-11 shrink-0 cursor-pointer place-items-center focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-default disabled:opacity-45";
@@ -58,17 +58,15 @@ function AssistantRow({ children }: { children: ReactNode }) {
 }
 
 export default function ChatWorkspace({
-  embedded = false, onClose, onAccessExpired, onSignOut, historyKey,
+  onAccessExpired, onSignOut, historyKey,
 }: {
-  embedded?: boolean;
-  onClose?: () => void;
   onAccessExpired?: () => void;
   onSignOut?: () => void;
   historyKey?: string;
 }) {
-  const storageKey = historyKey ?? ownerHistoryKey(embedded, true);
-  const titleId = embedded ? "widget-chat-title" : "chat-title";
-  const messageId = embedded ? "widget-chat-message" : "chat-message";
+  const storageKey = historyKey ?? ownerHistoryKey(true);
+  const titleId = "chat-title";
+  const messageId = "chat-message";
   const [draft, setDraft] = useState("");
   const [turns, setTurns] = useState<TurnRecord[]>([]);
   const [activeProposal, setActiveProposal] = useState<ActiveProposal | null>(null);
@@ -76,17 +74,13 @@ export default function ChatWorkspace({
   const [session, setSession] = useState(0);
   const [timeZone, setTimeZone] = useState("UTC");
   const [ready, setReady] = useState(false);
-  const [host, setHost] = useState<{ hostName?: string; avatarUrl?: string; demoMode: boolean }>({ demoMode: false });
+  const [host, setHost] = useState<{ hostName?: string; demoMode: boolean }>({ demoMode: false });
   const [debugEnabled, setDebugEnabled] = useState(false);
   const [debugOpen, setDebugOpen] = useState(false);
   const [debug, setDebug] = useState<DebugSnapshot | null>(null);
   const [behindLatest, setBehindLatest] = useState(false);
   const [activeKind, setActiveKind] = useState<ChatInput["kind"] | null>(null);
   const [status, setStatus] = useState("");
-  const [bookingUrl, setBookingUrl] = useState<string | null>(null);
-  const [booker, setBooker] = useState<"unused" | "open" | "closed">("unused");
-  const [warming, setWarming] = useState(true);
-  const [warmAttempt, setWarmAttempt] = useState(0);
   const token = useRef<string | null>(null);
   const savedViews = useRef(EMPTY_VIEWS);
   const nextTurnId = useRef(1);
@@ -135,27 +129,20 @@ export default function ChatWorkspace({
       void fetch(`/api/warm?${query}`, { cache: "no-store", signal: controller.signal })
         .then((response) => {
           if (response.status === 401) onAccessExpired?.();
-          return response.ok ? response.json() as Promise<{
-            bookingUrl?: unknown; hostName?: string; avatarUrl?: string; demoMode?: boolean;
-          }> : null;
+          return response.ok ? response.json() as Promise<{ hostName?: string; demoMode?: boolean }> : null;
         })
         .then((metadata) => {
-          if (!controller.signal.aborted) {
-            setBookingUrl(safePublicBookingUrl(metadata?.bookingUrl));
-            if (metadata) setHost({ hostName: metadata.hostName, avatarUrl: metadata.avatarUrl,
-                                    demoMode: metadata.demoMode === true });
+          if (!controller.signal.aborted && metadata) {
+            setHost({ hostName: metadata.hostName, demoMode: metadata.demoMode === true });
           }
         })
-        .catch(() => {})
-        .finally(() => {
-          if (!controller.signal.aborted) setWarming(false);
-        });
+        .catch(() => {});
     }, 0);
     return () => {
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [ready, timeZone, warmAttempt, onAccessExpired]);
+  }, [ready, timeZone, onAccessExpired]);
 
   useEffect(() => {
     const log = transcript.current;
@@ -397,14 +384,6 @@ export default function ChatWorkspace({
     void sendTurn({ kind: "ui", action });
   }
 
-  function openBooker() {
-    setBooker("open");
-    if (!bookingUrl && !warming) {
-      setWarming(true);
-      setWarmAttempt((previous) => previous + 1);
-    }
-  }
-
   function sendDraft(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const text = draft.trim();
@@ -433,22 +412,19 @@ export default function ChatWorkspace({
 
   function changeTimeZone(zone: string) {
     if (request.current || zone === timeZone || !validTimeZone(zone)) return;
-    setWarming(true);
     setTimeZone(zone);
   }
 
-  const Container = embedded ? "div" : "main";
   const latestTurn = turns.at(-1);
   const waitingForText = sending && !latestTurn?.text.trim();
   const selectedRef = activeProposal?.value.slotRef ?? turns.findLast((turn) =>
-    turn.session === session && turn.input.kind === "ui" && turn.input.action.type === "pick_slot" && turn.proposal,
+    turn.session === session && turn.proposal?.slotRef,
   )?.proposal?.slotRef;
   return (
-    <Container className={`relative flex min-h-0 flex-col overflow-hidden bg-background ${embedded ? "h-full" : "h-dvh"}`}>
+    <main className="relative flex h-dvh min-h-0 flex-col overflow-hidden bg-background">
       <ChatHeader {...host} timeZone={timeZone} onTimeZoneChange={changeTimeZone} onNewChat={newChat}
         busy={sending} debugEnabled={debugEnabled} debugOpen={debugOpen}
-        onDebugToggle={() => setDebugOpen((visible) => !visible)} embedded={embedded} onClose={onClose}
-        onSignOut={onSignOut} />
+        onDebugToggle={() => setDebugOpen((visible) => !visible)} onSignOut={onSignOut} />
 
       <section
         ref={transcript}
@@ -460,16 +436,16 @@ export default function ChatWorkspace({
           setBehindLatest(!followsTranscript.current);
         }}
       >
-        <div className={`mx-auto flex min-h-full w-full max-w-3xl flex-col px-3.5 py-5 ${embedded ? "" : "sm:px-7 sm:py-8"}`}>
+        <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col px-3.5 py-5 sm:px-7 sm:py-8">
           {turns.length ? <h1 id={titleId} className="sr-only">Scheduling conversation</h1> : (
-            <div className={`my-auto grid justify-items-center gap-5 py-4 text-center ${embedded ? "" : "sm:gap-7 sm:py-8"}`}>
-              <AssistantAvatar className={embedded ? "size-11" : "size-12 sm:size-14"} />
-              <h1 id={titleId} className={`max-w-[34rem] font-semibold leading-[1.25] tracking-[-0.035em] ${embedded ? "text-[1.35rem]" : "text-[1.65rem] sm:text-[2.25rem]"}`}>
-                Hi! I can book, show, reschedule or cancel meetings.
+            <div className="my-auto grid justify-items-center gap-5 py-4 text-center sm:gap-7 sm:py-8">
+              <AssistantAvatar className="size-12 sm:size-14" />
+              <h1 id={titleId} className="max-w-[34rem] text-[1.65rem] leading-[1.25] font-semibold tracking-[-0.035em] sm:text-[2.25rem]">
+                What do you need done on your calendar?
               </h1>
-              <div role="group" aria-label="Suggested prompts" className={`grid w-full max-w-[36rem] grid-cols-1 gap-2 ${embedded ? "" : "sm:grid-cols-2 sm:gap-3"}`}>
-                {SUGGESTIONS.map(({ title, prompt, label, icon: Icon }) => (
-                  <button key={prompt} type="button" aria-label={label}
+              <div role="group" aria-label="Suggested prompts" className="grid w-full max-w-[36rem] grid-cols-1 gap-2 sm:grid-cols-2 sm:gap-3">
+                {SUGGESTIONS.map(({ title, prompt, icon: Icon }) => (
+                  <button key={prompt} type="button" aria-label={prompt}
                     className="group flex min-h-14 cursor-pointer items-center gap-3 rounded-2xl border border-border bg-card px-3 py-2.5 text-left transition-colors hover:border-ring/45 hover:bg-ring/5 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring sm:px-4"
                     onClick={() => void sendTurn({ kind: "text", text: prompt })}>
                     <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-ring/10 text-ring" aria-hidden="true">
@@ -496,6 +472,7 @@ export default function ChatWorkspace({
               const currentBookings = sameSession ? currentViews.bookings : EMPTY_VIEWS.bookings;
               const parts = splitReferenceText(turn.text, sending && isLatest);
               const listed = listedBookingRefs(turn.listedBookings, turn.views.bookings);
+              const listedBookings = listed.map((ref) => currentBookings[ref] ?? turn.views.bookings[ref]);
               const emptyList = turn.listedBookings?.length === 0 && turn.controls === "all";
               const hasAssistant = Boolean(parts.length || turn.groups.length || listed.length || emptyList ||
                 turn.results.length || turn.error || turn.proposal);
@@ -539,14 +516,17 @@ export default function ChatWorkspace({
                           onAction={takeAction}
                         />
                       )}
-                      {listed.length > 0 && (
+                      {listedBookings.length > 3 && (
+                        <BookingAgenda bookings={listedBookings} available={bookingAvailable} onAction={takeAction} />
+                      )}
+                      {listedBookings.length > 0 && listedBookings.length <= 3 && (
                         <ul aria-label="Meetings" className="grid gap-2.5">
-                          {listed.map((ref) => (
-                            <li key={ref}>
+                          {listedBookings.map((booking) => (
+                            <li key={booking.ref}>
                               <BookingCard
-                                booking={currentBookings[ref] ?? turn.views.bookings[ref]}
-                                available={bookingAvailable(ref)}
-                                linksAvailable={Boolean(currentBookings[ref])}
+                                booking={booking}
+                                available={bookingAvailable(booking.ref)}
+                                linksAvailable={Boolean(currentBookings[booking.ref])}
                                 onAction={takeAction}
                               />
                             </li>
@@ -588,11 +568,7 @@ export default function ChatWorkspace({
                                   Retry
                                 </button>
                               )}
-                              {turn.error.fallback === "booker" && (
-                                <button type="button" className={`${OUTLINE_BUTTON} mt-2 border border-border bg-card`} onClick={openBooker}>
-                                  Book directly
-                                </button>
-                              )}
+                              {turn.error.fallback === "booker" && <BookerFallback />}
                             </div>
                           </div>
                         </div>
@@ -632,7 +608,7 @@ export default function ChatWorkspace({
       </section>
 
       <form aria-label="Message composer" onSubmit={sendDraft}
-        className={`relative mx-auto w-full max-w-3xl shrink-0 bg-background px-3.5 pt-2 pb-[max(0.75rem,env(safe-area-inset-bottom))] ${embedded ? "" : "sm:px-7 sm:pb-5"}`}>
+        className="relative mx-auto w-full max-w-3xl shrink-0 bg-background px-3.5 pt-2 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:px-7 sm:pb-5">
         {behindLatest && (
           <button type="button" aria-label="↓ Latest messages" title="Latest messages"
             className={`${ICON_TARGET} absolute -top-12 right-5 rounded-full border border-border bg-card text-muted-foreground shadow-md hover:text-ring sm:right-8`}
@@ -678,10 +654,7 @@ export default function ChatWorkspace({
           Nothing is booked or changed until you confirm.
         </p>
       </form>
-      {booker !== "unused" && (
-        <BookerFallback bookingUrl={bookingUrl} warming={warming} open={booker === "open"} onClose={() => setBooker("closed")} />
-      )}
       {debugEnabled && debugOpen && <ChatDebug snapshot={debug} onClose={() => setDebugOpen(false)} />}
-    </Container>
+    </main>
   );
 }

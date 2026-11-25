@@ -1,6 +1,5 @@
 "use client";
 
-import { X } from "lucide-react";
 import { type FormEvent, useCallback, useEffect, useId, useRef, useState } from "react";
 
 import { OUTLINE_BUTTON, PRIMARY_BUTTON } from "./chat-cards";
@@ -20,7 +19,7 @@ async function readAccess(response: Response): Promise<"locked" | "owner" | "dem
   return state.required ? "owner" : "demo";
 }
 
-export default function OwnerAccess({ embedded = false, onClose }: { embedded?: boolean; onClose?: () => void }) {
+export default function OwnerAccess() {
   const [access, setAccess] = useState<Access>("checking");
   const [signingIn, setSigningIn] = useState(false);
   const [error, setError] = useState("");
@@ -136,20 +135,12 @@ export default function OwnerAccess({ embedded = false, onClose }: { embedded?: 
   }
 
   if (access === "owner" || access === "demo") {
-    return <ChatWorkspace key={access} embedded={embedded} onClose={onClose}
-      historyKey={ownerHistoryKey(embedded, access === "owner")}
+    return <ChatWorkspace key={access} historyKey={ownerHistoryKey(access === "owner")}
       onAccessExpired={expireAccess} onSignOut={access === "owner" ? signOut : undefined} />;
   }
 
-  const Container = embedded ? "div" : "main";
   return (
-    <Container className={`relative grid min-w-0 place-items-center overflow-y-auto bg-background p-4 ${embedded ? "h-full" : "min-h-dvh"}`}>
-      {onClose && (
-        <button type="button" aria-label="Close" title="Close" onClick={onClose}
-          className="absolute top-3 right-3 grid size-11 place-items-center rounded-lg text-muted-foreground hover:bg-ring/10 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring">
-          <X className="size-5" aria-hidden="true" />
-        </button>
-      )}
+    <main className="grid min-h-dvh min-w-0 place-items-center overflow-y-auto bg-background p-4">
       <section className="grid w-full max-w-sm gap-4 rounded-2xl border border-border bg-card p-5 shadow-sm sm:p-7">
         <AssistantAvatar className="size-12" />
         <h1 className="text-xl font-semibold tracking-tight">Owner access</h1>
@@ -183,6 +174,6 @@ export default function OwnerAccess({ embedded = false, onClose }: { embedded?: 
           </>
         )}
       </section>
-    </Container>
+    </main>
   );
 }

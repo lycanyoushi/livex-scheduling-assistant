@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { type ChatHistory, clearHistory, loadHistory, saveHistory } from "../app/chat-history";
+import { type ChatHistory, clearHistory, loadHistory, ownerHistoryKey, saveHistory } from "../app/chat-history";
 
 function storage() {
   const values = new Map<string, string>();
@@ -18,13 +18,14 @@ const history: ChatHistory = {
     text: "No upcoming meetings.", controls: "all", views, groups: [], results: [] }],
 };
 
-it("restores the zone, token, transcript and refs without crossing widget and page storage", () => {
+it("restores the zone, token, transcript and refs without crossing owner and demo storage", () => {
   const store = storage();
-  saveHistory(store, "page", history);
-  expect(loadHistory(store, "page")).toEqual(history);
-  expect(loadHistory(store, "widget")).toBeNull();
-  clearHistory(store, "page");
-  expect(loadHistory(store, "page")).toBeNull();
+  const owner = ownerHistoryKey(true);
+  saveHistory(store, owner, history);
+  expect(loadHistory(store, owner)).toEqual(history);
+  expect(loadHistory(store, ownerHistoryKey(false))).toBeNull();
+  clearHistory(store, owner);
+  expect(loadHistory(store, owner)).toBeNull();
 });
 
 it("ignores malformed history and never revives a confirmation whose active record was cleared", () => {
