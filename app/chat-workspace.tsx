@@ -25,7 +25,7 @@ import { ChatDebug, type DebugSnapshot } from "./chat-debug";
 import { AssistantAvatar, ChatHeader } from "./chat-header";
 import {
   type ActiveProposal, type TurnError, type TurnRecord,
-  browserStorage, clearHistory, loadHistory, saveHistory, validTimeZone,
+  browserStorage, clearHistory, loadHistory, ownerHistoryKey, saveHistory, validTimeZone,
 } from "./chat-history";
 
 const EMPTY_VIEWS: ReferenceViews = { slots: {}, bookings: {} };
@@ -57,8 +57,16 @@ function AssistantRow({ children }: { children: ReactNode }) {
   );
 }
 
-export default function ChatWorkspace({ embedded = false, onClose }: { embedded?: boolean; onClose?: () => void }) {
-  const storageKey = embedded ? "livex.widget.v1" : "livex.chat.v1";
+export default function ChatWorkspace({
+  embedded = false, onClose, onAccessExpired, onSignOut, historyKey,
+}: {
+  embedded?: boolean;
+  onClose?: () => void;
+  onAccessExpired?: () => void;
+  onSignOut?: () => void;
+  historyKey?: string;
+}) {
+  const storageKey = historyKey ?? ownerHistoryKey(embedded, true);
   const titleId = embedded ? "widget-chat-title" : "chat-title";
   const messageId = embedded ? "widget-chat-message" : "chat-message";
   const [draft, setDraft] = useState("");
@@ -125,9 +133,12 @@ export default function ChatWorkspace({ embedded = false, onClose }: { embedded?
       const query = new URLSearchParams({ timeZone });
       // Warming up the calendar is independent of the chat turn.
       void fetch(`/api/warm?${query}`, { cache: "no-store", signal: controller.signal })
-        .then((response) => response.ok ? response.json() as Promise<{
-          bookingUrl?: unknown; hostName?: string; avatarUrl?: string; demoMode?: boolean;
-        }> : null)
+        .then((response) => {
+          if (response.status === 401) onAccessExpired?.();
+          return response.ok ? response.json() as Promise<{
+            bookingUrl?: unknown; hostName?: string; avatarUrl?: string; demoMode?: boolean;
+          }> : null;
+        })
         .then((metadata) => {
           if (!controller.signal.aborted) {
             setBookingUrl(safePublicBookingUrl(metadata?.bookingUrl));
@@ -144,7 +155,7 @@ export default function ChatWorkspace({ embedded = false, onClose }: { embedded?
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [ready, timeZone, warmAttempt]);
+  }, [ready, timeZone, warmAttempt, onAccessExpired]);
 
   useEffect(() => {
     const log = transcript.current;
@@ -219,6 +230,10 @@ export default function ChatWorkspace({ embedded = false, onClose }: { embedded?
           input,
         }),
       });
+      if (response.status === 401 && onAccessExpired) {
+        onAccessExpired();
+        return;
+      }
       if (response.status === 429) {
         if (debugEnabled) setDebug({ metrics: null, events: [{ type: "http_error", status: 429 }], omittedEvents: 0 });
         updateTurn((turn) => ({ ...turn, error: {
@@ -432,7 +447,8 @@ export default function ChatWorkspace({ embedded = false, onClose }: { embedded?
     <Container className={`relative flex min-h-0 flex-col overflow-hidden bg-background ${embedded ? "h-full" : "h-dvh"}`}>
       <ChatHeader {...host} timeZone={timeZone} onTimeZoneChange={changeTimeZone} onNewChat={newChat}
         busy={sending} debugEnabled={debugEnabled} debugOpen={debugOpen}
-        onDebugToggle={() => setDebugOpen((visible) => !visible)} embedded={embedded} onClose={onClose} />
+        onDebugToggle={() => setDebugOpen((visible) => !visible)} embedded={embedded} onClose={onClose}
+        onSignOut={onSignOut} />
 
       <section
         ref={transcript}

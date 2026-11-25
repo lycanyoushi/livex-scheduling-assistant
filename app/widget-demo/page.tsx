@@ -4,12 +4,12 @@ import { ArrowUpRight, MessageCircle } from "lucide-react";
 import { type MouseEvent, useId, useLayoutEffect, useRef, useState } from "react";
 
 import { PRIMARY_BUTTON } from "../chat-cards";
-import ChatWorkspace from "../chat-workspace";
+import OwnerAccess from "../owner-access";
 
 function showChatPanel(panel: HTMLDialogElement | null) {
   if (!panel || panel.open) return;
   panel.showModal();
-  panel.querySelector<HTMLButtonElement>('header button[aria-label="Close"]')?.focus();
+  panel.querySelector<HTMLButtonElement>('button[aria-label="Close"]')?.focus();
 }
 
 export default function WidgetDemo() {
@@ -49,7 +49,7 @@ export default function WidgetDemo() {
       <dialog ref={panel} aria-labelledby={titleId} onClose={() => opener.current?.focus()}
         className="fixed inset-0 m-0 h-dvh max-h-none w-full max-w-none overflow-hidden bg-background text-foreground backdrop:bg-black/30 min-[641px]:inset-auto min-[641px]:right-6 min-[641px]:bottom-6 min-[641px]:h-[min(640px,calc(100dvh-3rem))] min-[641px]:w-[400px] min-[641px]:rounded-2xl min-[641px]:border min-[641px]:border-border min-[641px]:shadow-2xl">
         <h2 id={titleId} className="sr-only">Scheduling chat</h2>
-        {hasOpened && <ChatWorkspace embedded onClose={() => panel.current?.close()} />}
+        {hasOpened && <OwnerAccess embedded onClose={() => panel.current?.close()} />}
       </dialog>
     </>
   );
