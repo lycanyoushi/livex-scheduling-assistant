@@ -81,6 +81,18 @@ class SchedulingFollowupTests(unittest.IsolatedAsyncioTestCase):
         next_events = await self.turn(service, "Can we check 10 instead?", events[-1]["stateToken"])
         self.assertEqual(self.chosen_starts(next_events), ["2026-11-27T09:00"])
 
+    async def test_explicit_zone_in_followup_can_replace_previous_zone(self):
+        model = FakeModel((self.find("friday", "2026-11-27", "12:00"),),
+                          (self.find("tokyo", "2026-11-27", "12:00", time_zone="Asia/Tokyo"),))
+        service = self.service(model)
+        first = await self.turn(service, "Check Friday at noon")
+        state = verify_state(first[-1]["stateToken"], SECRET, NOW)
+        self.assertEqual(state.last_slot_search.time_zone, ZONE)
+
+        revised = await self.turn(service, "How about noon Tokyo time?", first[-1]["stateToken"])
+        self.assertEqual(self.chosen_starts(revised), ["2026-11-27T11:00"])
+        self.assertEqual([call["ok"] for call in revised[-1]["metrics"]["toolCalls"]], [True])
+
     async def test_unsupported_request_retires_a_prior_confirmation(self):
         model = FakeModel()
         service = self.service(model)

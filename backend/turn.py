@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import Counter
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import aclosing
 from contextvars import ContextVar
 from copy import deepcopy
@@ -849,7 +849,7 @@ class TurnService:
                                and not EXPLANATION.search(text)
                                and (hints.dates or replacing or _REVISE_TIME.search(text)
                                     or (hints.needs_interpretation and (hints.timing_mentioned or DATED_FOLLOWUP.search(text)))))
-        date_anchor = previous_search if lookup_followup and not hints.date_mentioned else None
+        date_anchor = previous_search if lookup_followup and not (hints.date_mentioned or hints.time_zone_mentioned) else None
         if not change and "list" not in hints.intents and hints.past_date_requested:
             state.clear_time_choices()
             state.proposal = None
@@ -1289,6 +1289,16 @@ class TurnService:
         text_parts: list[str] = []
         argument_errors: Counter[str] = Counter()
         verified_slots: set[str] | None = set() if requires_slot_lookup else None
+        published_slots = set(slot_refs)
+
+        def current_tool_events(events: list[ServerEvent]) -> Iterator[ServerEvent]:
+            for event in events:
+                if event["type"] == "refs" and "slots" in event:
+                    slots = {ref: view for ref, view in event["slots"].items() if ref in state.slots}
+                    published_slots.update(slots)
+                    event = {**event, "slots": slots}
+                yield event
+
         ran_lookup = False
         lookup_error = None
         lookup_result = None
@@ -1410,6 +1420,15 @@ class TurnService:
                                needs_selection=not (tools.required_book_slot or tools.required_change_slot))
                 for call in calls
             ))
+            # Parallel reads register their refs before any outcome is rendered.
+            # A later allocation in this or a subsequent batch can evict an earlier ref.
+            if evicted := published_slots.difference(state.slots):
+                published_slots.difference_update(evicted)
+                displayed = [ref for ref in displayed if ref not in evicted]
+                if verified_slots is not None:
+                    verified_slots.difference_update(evicted)
+                yield {"type": "refs", "retiredSlots": sorted(evicted)}
+            state.last_offered_slots = [ref for ref in state.last_offered_slots if ref in state.slots]
             steps = []
             for call, outcome in zip(calls, outcomes, strict=True):
                 if message := outcome.result.get("unsupportedRequest"):
@@ -1419,13 +1438,17 @@ class TurnService:
                     state.proposal = None
                     state.counters.turns += 1
                     state.interaction_id, state.pending_call, state.last_model_input_tokens = original_history
+                    if published_slots:
+                        yield {"type": "refs", "retiredSlots": sorted(published_slots)}
                     yield {"type": "assistant_text", "text": message}
                     return
                 looked_up = call.name == "find_slots" and "slots" in outcome.result
                 if looked_up:
                     lookup_result = outcome.result
                     lookup_count += 1
-                    choices = [slot["ref"] for slot in outcome.result["slots"]]
+                    slots = [slot for slot in outcome.result["slots"] if slot["ref"] in state.slots]
+                    outcome.result["slots"] = slots
+                    choices = [slot["ref"] for slot in slots]
                     if not ran_lookup:
                         retired = set(displayed).difference(choices)
                         for ref in retired:
@@ -1436,6 +1459,7 @@ class TurnService:
                         if draft and draft.slot_ref in retired:
                             draft.slot_ref = None
                         if retired:
+                            published_slots.difference_update(retired)
                             yield {"type": "refs", "retiredSlots": sorted(retired)}
                         displayed = [ref for ref in displayed if ref in choices]
                         verified_slots = set()
@@ -1449,7 +1473,7 @@ class TurnService:
                     verified_slots.update(choices)
                     if draft and choices and not call.arguments.get("for_booking_ref") and "durationMinutes" in outcome.result:
                         draft.duration_minutes = outcome.result["durationMinutes"]
-                    for event in outcome.events:
+                    for event in current_tool_events(outcome.events):
                         yield event
                     new_options = [ref for ref in choices if ref not in displayed][:max(0, 4 - len(displayed))]
                     if new_options:
@@ -1472,7 +1496,7 @@ class TurnService:
                 else:
                     if call.name == "find_slots":
                         lookup_error = outcome.result.get("error")
-                    for event in outcome.events:
+                    for event in current_tool_events(outcome.events):
                         yield event
                 if outcome.proposal:
                     state.pending_change = None

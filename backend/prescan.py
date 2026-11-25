@@ -195,6 +195,7 @@ class PrescanResult:
     date_mentioned: bool = False
     reversed_window: tuple[time, time] | None = None
     exact_clock_mentioned: bool = False
+    time_zone_mentioned: bool = False
 
     @property
     def needs_interpretation(self) -> bool:
@@ -574,6 +575,7 @@ def prescan(text: str, *, now: datetime, time_zone: str) -> PrescanResult:
         date_mentioned,
         reversed_window,
         exact_clock_mentioned,
+        bool(named_zone),
     )
 
 
