@@ -13,6 +13,8 @@ _HOST_ZONE = ZoneInfo("America/Los_Angeles")
 
 
 class DemoCalendar(FakeCal):
+    """Rolling demo availability and account-wide booking reads based on FakeCal."""
+
     def __init__(self, *, clock: Callable[[], datetime] = utc_now) -> None:
         super().__init__(clock=clock)
 

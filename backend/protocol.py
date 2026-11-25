@@ -152,6 +152,7 @@ class BookingView(TypedDict):
     whenLabel: str
     status: str
     attendees: list[str]
+    guestName: NotRequired[str]
     meetingUrl: NotRequired[str]
     startUtc: str
     endUtc: str

@@ -76,6 +76,14 @@ class UserState(_StateModel):
     conversation_name: ContactName | None = None
 
 
+class GuestDraft(_StateModel):
+    name: ContactName | None = None
+    email: ContactEmail | None = None
+    notes: ContactNotes | None = None
+    duration_minutes: Annotated[int, Field(gt=0, le=1440)] | None = None
+    slot_ref: SlotRef | None = None
+
+
 class _TimeRange(_StateModel):
     start_utc: _UtcTimestamp
     end_utc: _UtcTimestamp
@@ -98,6 +106,7 @@ class BookingEntry(_TimeRange):
     title: Annotated[str, StringConstraints(max_length=512)]
     status: Annotated[str, StringConstraints(min_length=1, max_length=64)]
     attendee_emails: Annotated[list[ContactEmail], Field(max_length=32)]
+    guest_name: ContactName | None = None
     event_type_id: _EventTypeId | None = None
     meeting_url: Annotated[str, StringConstraints(max_length=2_048)] | None = None
 
@@ -174,6 +183,7 @@ class SessionState(_StateModel):
     time_zone: TimeZoneName
     expires_at: Annotated[int, Field(gt=0)]
     user: UserState = Field(default_factory=UserState)
+    guest_draft: GuestDraft | None = None
     slots: Annotated[dict[SlotRef, SlotEntry], Field(max_length=MAX_SLOTS)] = Field(default_factory=dict)
     bookings: Annotated[dict[BookingRef, BookingEntry], Field(max_length=MAX_BOOKINGS)] = Field(default_factory=dict)
     counters: Counters = Field(default_factory=Counters)

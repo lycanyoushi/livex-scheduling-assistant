@@ -191,6 +191,50 @@ class CalClientTests(unittest.TestCase):
         self.assertEqual(len(self.transport.calls), 4)
         self.assertEqual(self.query_for(0), {"sortStart": ["asc"], "limit": ["20"]})
 
+    def test_booking_date_bounds_are_sent_as_utc_with_cursor_pagination(self):
+        empty_page = success([], pagination={"nextCursor": None, "hasMore": False})
+        client = self.make_client(empty_page, empty_page)
+        client.list_bookings(
+            after_start=datetime.fromisoformat(f"{DAY}T10:00:00-08:00"),
+            before_end=f"{DAY}T19:30:00+01:00",
+            limit=10,
+            cursor="later+page=",
+        )
+        self.assertEqual(
+            self.query_for(0),
+            {
+                "afterStart": [START],
+                "beforeEnd": [END],
+                "status": ["upcoming"],
+                "sortStart": ["asc"],
+                "limit": ["10"],
+                "cursor": ["later+page="],
+            },
+        )
+        client.list_bookings(attendee_email="attendee@example.com", status=None, after_start=START)
+        self.assertEqual(
+            self.query_for(1),
+            {
+                "attendeeEmail": ["attendee@example.com"],
+                "afterStart": [START],
+                "sortStart": ["asc"],
+                "limit": ["20"],
+            },
+        )
+
+    def test_invalid_or_reversed_booking_date_bounds_do_not_call_cal(self):
+        client = self.make_client()
+        for bounds in (
+            {"after_start": DAY},
+            {"before_end": datetime.fromisoformat(f"{DAY}T18:30:00")},
+            {"after_start": END, "before_end": START},
+            {"after_start": START, "before_end": f"{DAY}T10:00:00-08:00"},
+        ):
+            with self.subTest(bounds=bounds), self.assertRaises(CalError) as raised:
+                client.list_bookings(**bounds)
+            self.assertEqual(raised.exception.code, "invalid")
+        self.assertEqual(self.transport.calls, [])
+
     def test_retry_only_network_failures_and_5xx_reads(self):
         client = self.make_client(
             URLError("timeout"),

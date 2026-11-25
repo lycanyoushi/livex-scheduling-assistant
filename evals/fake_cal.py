@@ -204,6 +204,8 @@ class FakeCal:
         status: BookingFilter | None = "upcoming",
         limit: int = 20,
         cursor: str | None = None,
+        after_start: Timestamp | None = None,
+        before_end: Timestamp | None = None,
     ) -> BookingPage:
         if type(limit) is not int or not 1 <= limit <= 100:
             raise CalError("invalid", "Booking page size must be between 1 and 100.")
@@ -214,12 +216,21 @@ class FakeCal:
                 raise CalError("invalid", "Invalid fake calendar booking cursor.", status=400)
             offset = int(digits)
 
+        try:
+            lower = _as_utc(after_start) if after_start is not None else None
+            upper = _as_utc(before_end) if before_end is not None else None
+        except (TypeError, ValueError, OverflowError):
+            raise CalError("invalid", "Booking bounds must have explicit UTC offsets.", status=400) from None
+        if lower is not None and upper is not None and lower > upper:
+            raise CalError("invalid", "Booking bounds are reversed.", status=400)
         email = attendee_email.casefold() if attendee_email is not None else None
         now = _as_utc(self._clock())
         with self._lock:
             matches = [
                 booking for booking in self._bookings.values()
                 if self._has_status(booking, status, now)
+                and (lower is None or _as_utc(booking["start"]) >= lower)
+                and (upper is None or _as_utc(booking["end"]) <= upper)
                 and (
                     email is None
                     or any(attendee.get("email", "").casefold() == email for attendee in booking.get("attendees", []))

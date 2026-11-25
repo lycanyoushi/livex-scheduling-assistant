@@ -455,14 +455,26 @@ class CalClient:
         *,
         attendee_email: str | None = None,
         status: BookingFilter | None = "upcoming",
+        after_start: Timestamp | None = None,
+        before_end: Timestamp | None = None,
         limit: int = 20,
         cursor: str | None = None,
     ) -> BookingPage:
+        """List bookings with optional inclusive start and end bounds."""
         if type(limit) is not int or not 1 <= limit <= 100:
             raise CalError("invalid", "Booking page size must be between 1 and 100.")
+        try:
+            lower = _utc_iso(after_start) if after_start is not None else None
+            upper = _utc_iso(before_end) if before_end is not None else None
+        except (OverflowError, ValueError):
+            raise CalError("invalid", "Booking date bounds must have an explicit UTC offset.") from None
+        if lower is not None and upper is not None and _aware_datetime(lower) >= _aware_datetime(upper):
+            raise CalError("invalid", "The booking start bound must be earlier than the end bound.")
         query = {
             "attendeeEmail": attendee_email,
             "status": status,
+            "afterStart": lower,
+            "beforeEnd": upper,
             "sortStart": "asc",
             "limit": limit,
             "cursor": cursor,

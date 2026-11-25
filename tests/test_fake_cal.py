@@ -5,6 +5,7 @@ from tempfile import TemporaryDirectory
 import unittest
 
 from backend.cal_client import CalError
+from backend.demo_calendar import DemoCalendar
 from evals.fake_cal import DEFAULT_CLOCK, FIXTURE_PATH, FakeCal
 
 
@@ -110,6 +111,31 @@ class FakeCalendarTests(unittest.TestCase):
         self.assertEqual(calendar.list_bookings(attendee_email="nobody@example.com")["data"], [])
         with self.assertRaises(CalError):
             calendar.list_bookings(cursor="malformed")
+
+    def test_unfiltered_date_bounds_are_inclusive_and_precede_pagination(self):
+        calendar = FakeCal(fixture_overrides={"active_bookings": ["other_intro", "sam_intro", "sam_followup"]})
+        lower, upper = "2026-11-25T11:00:00+08:00", "2026-11-27T14:30:00+08:00"
+        page = calendar.list_bookings(after_start=lower, before_end=upper, limit=2)
+        self.assertEqual([row["uid"] for row in page["data"]], ["fixture-other-intro", "fixture-sam-intro"])
+        final = calendar.list_bookings(after_start=lower, before_end=upper, limit=2,
+                                       cursor=page["pagination"]["nextCursor"])
+        self.assertEqual([row["uid"] for row in final["data"]], ["fixture-sam-followup"])
+        narrowed = calendar.list_bookings(after_start="2026-11-25T11:00:01+08:00",
+                                          before_end="2026-11-27T14:29:59+08:00")
+        self.assertEqual([row["uid"] for row in narrowed["data"]], ["fixture-sam-intro"])
+        with self.assertRaises(CalError):
+            calendar.list_bookings(after_start=upper, before_end=lower)
+
+    def test_demo_calendar_lists_guests_with_the_same_date_contract(self):
+        now = datetime.fromisoformat("2027-05-10T09:00:00-07:00")
+        calendar = DemoCalendar(clock=lambda: now)
+        for hour, email in ((10, "jane@example.com"), (11, "taylor@example.com")):
+            calendar.create_booking(start=now.replace(hour=hour), event_type_id=EVENT_TYPE_ID,
+                                    name="Demo Guest", email=email, time_zone="America/Los_Angeles")
+        full_day = calendar.list_bookings(after_start=now)
+        self.assertEqual(len(full_day["data"]), 2)
+        only_second = calendar.list_bookings(after_start=now.replace(hour=11), before_end=now.replace(hour=11, minute=30))
+        self.assertEqual([row["attendees"][0]["email"] for row in only_second["data"]], ["taylor@example.com"])
 
     def test_create_reschedule_and_cancel_update_slot_occupancy(self):
         calendar = FakeCal(fixture_overrides={"open_local_starts": ["2026-11-24T14:00", "2026-11-24T15:00"]})

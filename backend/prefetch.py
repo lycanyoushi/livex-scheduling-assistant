@@ -267,7 +267,7 @@ _Entries = _SlotResults | list[BookingEntry]
 
 
 def _prefetch_bookings(tools: CalendarTools, email: str) -> list[BookingEntry]:
-    entries, _ = tools.read_booking_entries(email, "upcoming")
+    entries, _ = tools.read_booking_entries("upcoming", attendee_email=email)
     return [
         entry for entry in entries
         if entry.status in {"accepted", "pending"} and parse_instant(entry.start_utc) > tools.now

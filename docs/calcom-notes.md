@@ -36,6 +36,22 @@ The first browser conflict search returned `model_down`. A later search succeede
 
 The slots cache keys include the queried bounds, the time zone, and the booking UID for rescheduling. A write attempt clears the cached slot windows because a single host's calendar can affect several event types and because a transport failure can leave the result of a write uncertain. For a create rejected with HTTP 400, 409, or 422, the client checks fresh slots before assigning `slot_taken`. Authentication, missing-resource, and throttling responses keep their upstream classifications.
 
+## Owner booking ranges and calendar time zone
+
+On November 24, 2026, read-only requests on the same test account verified `GET /v2/bookings` with version `2026-05-01`. The API documents `afterStart` against the booking start and `beforeEnd` against its end. Both bounds were inclusive in the live response. Each query below used `status=cancelled` and omitted `attendeeEmail`. The match column tracks one existing synthetic booking from the test event. [Cal.com booking filters](https://cal.com/docs/api-reference/v2/bookings/get-all-bookings)
+
+| Range relative to the synthetic booking | HTTP | Fixture matches |
+| --- | --- | --- |
+| One second outside start and end | 200 | 1 |
+| Lower bound equals start | 200 | 1 |
+| Upper bound equals end | 200 | 1 |
+| Lower bound one second after start | 200 | 0 |
+| Upper bound one second before end | 200 | 0 |
+
+The client sends offset-aware bounds as UTC timestamps. For a query by local start date, `afterStart` can include an exact midnight start. An upper bound on the booking's end would drop a meeting that starts on that date and runs past midnight, so an upper start cutoff belongs in the application.
+
+The profile and default availability schedule both returned `America/Los_Angeles`. The 30-minute event had no schedule override. The default schedule was 09:00–17:00 Monday through Friday, with zero date overrides. A seven-date slots query returned 64 openings, all starting between 09:00 and 16:30 Pacific. The reported odd hours did not appear in that window. [Cal.com schedules](https://cal.com/docs/api-reference/v2/schedules/get-all-schedules) · [Cal.com event types](https://cal.com/docs/api-reference/v2/event-types/get-an-event-type)
+
 ## Reproduce
 
 Set `CAL_API_KEY` in `.env.local` and run `pnpm cal:probe` for the live read checks. If the account has several visible 30-minute event types, set `CAL_DEFAULT_EVENT_TYPE_SLUG` to the one intended for testing.

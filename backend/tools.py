@@ -21,6 +21,7 @@ from backend.cal_client import (
     Profile,
     SlotBound,
     SlotRange,
+    Timestamp,
 )
 from backend.prescan import EMAIL, PART_HOURS, DateHint, PartOfDay
 from backend.protocol import (
@@ -47,6 +48,7 @@ _PARTS = ("any", "morning", "afternoon", "evening")
 _PROPOSE_TOOLS = {"propose_booking", "propose_cancel", "propose_reschedule"}
 _MAX_SLOT_CHOICES = 16
 _MAX_BOOKING_CHOICES = 10
+_MAX_BOOKING_PAGES = 10
 _STALE_SLOT_SECONDS = 120
 WARM_SLOT_DAYS = 14
 _Reason = Annotated[str, StringConstraints(max_length=2_000)]
@@ -75,6 +77,8 @@ class CalendarReader(Protocol):
         status: BookingFilter | None = "upcoming",
         limit: int = 20,
         cursor: str | None = None,
+        after_start: Timestamp | None = None,
+        before_end: Timestamp | None = None,
     ) -> BookingPage: ...
 
 
@@ -122,15 +126,17 @@ class _FindSlotsWithEvent(_FindSlots):
 
 
 class _ListBookings(_ToolArgs):
-    email: ContactEmail
-    which: Literal["upcoming", "past"]
+    which: Literal["upcoming", "past", "cancelled"]
+    from_date: CalendarDate | Literal[""]
+    to_date: CalendarDate | Literal[""]
 
 
 class _ProposeBooking(_ToolArgs):
     slot_ref: SlotRef
     name: ContactName
-    email: ContactEmail
     notes: ContactNotes
+    # Older local UI action callers may still send this empty field.
+    email: ContactEmail | None = None
 
 
 class _ProposeCancel(_ToolArgs):
@@ -181,7 +187,11 @@ def _meeting_url(data: Booking) -> str | None:
 def booking_entry(data: Booking) -> BookingEntry:
     """Map a Cal.com response to a signed-state booking record."""
     addresses = []
+    guest_name = None
     for person in data.get("attendees") or []:
+        name = person.get("name")
+        if guest_name is None and isinstance(name, str):
+            guest_name = _plain_text(name, 200) or None
         address = person.get("email")
         if isinstance(address, str):
             address = address.strip()
@@ -194,6 +204,7 @@ def booking_entry(data: Booking) -> BookingEntry:
         end_utc=_iso_utc(data["end"]),
         status=data["status"],
         attendee_emails=addresses[:32],
+        guest_name=guest_name,
         event_type_id=data.get("eventTypeId"),
         meeting_url=_meeting_url(data),
     )
@@ -212,6 +223,8 @@ def booking_view(ref: str, entry: BookingEntry, time_zone: str) -> BookingView:
     }
     if entry.meeting_url is not None:
         view["meetingUrl"] = entry.meeting_url
+    if entry.guest_name is not None:
+        view["guestName"] = entry.guest_name
     return view
 
 
@@ -361,6 +374,7 @@ class CalendarTools:
         self._events_lock = Lock()
         self._event_types: list[EventType] | None = None
         self._default_only_schema = False
+        self.required_booking_ref: str | None = None
 
     def _excluded_day(self, day: date) -> bool:
         return day in self._excluded_days or day.weekday() in self._excluded_weekdays
@@ -376,9 +390,18 @@ class CalendarTools:
             return list(self._event_types)
 
     def default_event(self) -> EventType:
+        return self.event_for_duration(None)
+
+    def event_for_duration(self, minutes: int | None) -> EventType:
         events = self.event_types()
         if not events:
             raise ToolRejected("There are no available event types.")
+        if minutes is not None:
+            matches = [event for event in events if event["lengthInMinutes"] == minutes]
+            if not matches:
+                lengths = ", ".join(str(value) for value in sorted({event["lengthInMinutes"] for event in events}))
+                raise ToolRejected(f"There is no {minutes}-minute event type. Available meeting lengths are {lengths} minutes.")
+            return next((event for event in matches if event["slug"] == self._default_slug), matches[0])
         if self._default_slug is None:
             return events[0]
         for event in events:
@@ -404,15 +427,15 @@ class CalendarTools:
             slots["event_type"] = _string("The event type slug.", [event["slug"] for event in events])
         return [
             _function("find_slots", "Find available calendar slots in the user's time zone.", slots),
-            _function("list_bookings", "List the current attendee's bookings.", {
-                "email": _string("The current attendee's email, or an empty string to use the session email."),
-                "which": _string("Which bookings to list.", ("upcoming", "past")),
+            _function("list_bookings", "List the bookings on the user's calendar.", {
+                "which": _string("Which bookings to list.", ("upcoming", "past", "cancelled")),
+                "from_date": _string("First local start date in YYYY-MM-DD form, or an empty string."),
+                "to_date": _string("Last local start date in YYYY-MM-DD form, or an empty string."),
             }),
             _function("propose_booking", "Prepare a new booking for the user to confirm.", {
                 "slot_ref": _string("A short slot ref returned by find_slots."),
-                "name": _string("The attendee's name, or an empty string when unknown."),
-                "email": _string("The attendee's email, or an empty string to use the session email."),
-                "notes": _string("A user-provided note, or an empty string."),
+                "name": _string("The guest's name, or an empty string when unknown."),
+                "notes": _string("The stated meeting purpose or other user-provided note, or an empty string."),
             }),
             _function("propose_cancel", "Prepare a cancellation for the user to confirm.", {
                 "booking_ref": _string("A short booking ref returned by list_bookings."),
@@ -427,7 +450,7 @@ class CalendarTools:
 
     def execute(self, name: str, args: object) -> ToolOutcome:
         if self._deny_mutations and name in _PROPOSE_TOOLS:
-            raise ToolRejected("I can only help with changes to your own bookings.")
+            raise ToolRejected("Choose one booking to change at a time.")
         if name == "find_slots":
             model = _FindSlotsWithEvent if isinstance(args, dict) and "event_type" in args else _FindSlots
             return self._find_slots(_validate(model, args))
@@ -441,34 +464,38 @@ class CalendarTools:
             return self._propose_reschedule(_validate(_ProposeReschedule, args))
         raise ToolRejected("Unknown scheduling tool.")
 
-    def _owned_booking(self, ref: str) -> BookingEntry:
+    def _changeable_booking(self, ref: str) -> BookingEntry:
+        if self.required_booking_ref is not None and ref != self.required_booking_ref:
+            raise ToolRejected("Choose the booking that matches the requested calendar time.")
         booking = self.state.bookings.get(ref)
-        email = self.state.user.email
-        if booking is None or not email or not _includes_attendee(booking, email):
-            raise ToolRejected("I can only change bookings that match your attendee email.")
+        if booking is None:
+            raise ToolRejected("Choose a known booking from your calendar.")
         if booking.status not in _MUTABLE_BOOKING_STATUSES or parse_instant(booking.start_utc) <= self.now:
             raise ToolRejected("Only upcoming bookings can be changed.")
         return booking
 
     def _resolve_event(self, args: _FindSlots, booking: BookingEntry | None) -> EventType:
         events = self.event_types()
+        if booking is not None:
+            event = next((event for event in events if event["id"] == booking.event_type_id), None)
+            if event is None or (isinstance(args, _FindSlotsWithEvent) and event["slug"] != args.event_type):
+                raise ToolRejected("Choose the event type attached to that booking.")
+            return event
+        draft = self.state.guest_draft
+        minutes = draft.duration_minutes if draft is not None else None
         if isinstance(args, _FindSlotsWithEvent):
             if len(events) <= 1:
                 raise ToolRejected("Omit event_type when only one event type is available.")
             event = next((event for event in events if event["slug"] == args.event_type), None)
             if event is None:
                 raise ToolRejected("Choose an available event type.")
-        elif len(events) > 1 and not self._default_only_schema:
+            if minutes is not None and event["lengthInMinutes"] != minutes:
+                self.event_for_duration(minutes)
+                raise ToolRejected(f"Choose a {minutes}-minute event type.")
+            return event
+        if minutes is None and len(events) > 1 and not self._default_only_schema:
             raise ToolRejected("Choose an available event type.")
-        elif self._default_only_schema and booking is not None:
-            event = next((event for event in events if event["id"] == booking.event_type_id), None)
-            if event is None:
-                raise ToolRejected("Choose the event type attached to that booking.")
-        else:
-            event = self.default_event()
-        if booking is not None and booking.event_type_id != event["id"]:
-            raise ToolRejected("Choose the event type attached to that booking.")
-        return event
+        return self.event_for_duration(minutes)
 
     def read_slot_entries(
         self,
@@ -538,7 +565,7 @@ class CalendarTools:
             raise ToolRejected("Choose a date range of seven days or less.")
         booking_ref = args.for_booking_ref or None
         with self._state_lock:
-            booking = self._owned_booking(booking_ref) if booking_ref is not None else None
+            booking = self._changeable_booking(booking_ref) if booking_ref is not None else None
         event = self._resolve_event(args, booking)
         uid = booking.uid if booking is not None else None
         today = self.now.astimezone(self._zone).date()
@@ -572,14 +599,11 @@ class CalendarTools:
         return ToolOutcome(result, [{"type": "refs", "slots": refs}] if refs else [])
 
     def _list_bookings(self, args: _ListBookings) -> ToolOutcome:
-        with self._state_lock:
-            email = self.state.user.email
-        requested = args.email.strip()
-        if not email or not _valid_email(email):
-            raise ToolRejected("Ask for the attendee's email before looking up bookings.")
-        if requested and (not _valid_email(requested) or requested.casefold() != email.casefold()):
-            raise ToolRejected("I can only look up bookings matching your attendee email.")
-        entries, has_more = self.read_booking_entries(email, args.which)
+        entries, has_more = self.read_booking_entries(
+            args.which,
+            from_date=date.fromisoformat(args.from_date) if args.from_date else None,
+            to_date=date.fromisoformat(args.to_date) if args.to_date else None,
+        )
         refs = self.register_bookings(entries, reuse_known=True)
         with self._state_lock:
             if not refs:
@@ -591,6 +615,7 @@ class CalendarTools:
                     "title": _plain_text(EMAIL.sub("[email]", view["title"]), 80),
                     "whenLabel": view["whenLabel"],
                     "status": view["status"],
+                    **({"guestName": EMAIL.sub("[email]", view["guestName"])} if "guestName" in view else {}),
                 }
                 for ref, view in refs.items()
             ],
@@ -601,14 +626,69 @@ class CalendarTools:
         cards: BookingCardsEvent = {"type": "booking_cards", "refs": list(refs)}
         return ToolOutcome(result, [event, cards])
 
-    def read_booking_entries(self, email: str, status: BookingFilter) -> tuple[list[BookingEntry], bool]:
-        page = self.calendar.list_bookings(attendee_email=email, status=status)
-        entries = (booking_entry(booking) for booking in page["data"])
-        owned = {entry.uid: entry for entry in entries if _includes_attendee(entry, email)}
-        return (
-            list(owned.values())[:_MAX_BOOKING_CHOICES],
-            page["pagination"]["hasMore"] or len(owned) > _MAX_BOOKING_CHOICES,
-        )
+    def read_booking_entries(
+        self,
+        status: BookingFilter | None = "upcoming",
+        *,
+        from_date: date | None = None,
+        to_date: date | None = None,
+        at: time | None = None,
+        attendee_email: str | None = None,
+    ) -> tuple[list[BookingEntry], bool]:
+        if from_date is not None and to_date is not None and from_date > to_date:
+            raise ToolRejected("Choose a valid calendar date range.")
+        clock = at.replace(tzinfo=None) if at is not None else None
+        try:
+            begin = local_bounds(from_date, from_date, self.time_zone)[0] if from_date else None
+            end = local_bounds(to_date, to_date, self.time_zone)[1] if to_date else None
+            exact = None
+            if clock is not None and from_date is not None and from_date == to_date:
+                wall = datetime.combine(from_date, clock)
+                exact = set()
+                for fold in (0, 1):
+                    instant = parse_instant(wall.replace(tzinfo=self._zone, fold=fold))
+                    if instant.astimezone(self._zone).replace(tzinfo=None) == wall:
+                        exact.add(instant)
+                if not exact:
+                    return [], False
+                begin, end = min(exact), max(exact) + timedelta(microseconds=1)
+        except (ValueError, OverflowError):
+            raise ToolRejected("Choose a valid calendar date range.") from None
+
+        entries: dict[str, BookingEntry] = {}
+        cursor = None
+        seen: set[str] = set()
+        for _ in range(_MAX_BOOKING_PAGES):
+            # Cal.com's beforeEnd filters by end time. Use the ordered starts
+            # instead so a late meeting can extend into the following day.
+            page = self.calendar.list_bookings(
+                status=status, limit=_MAX_BOOKING_CHOICES + 1, cursor=cursor,
+                **({"after_start": begin} if begin is not None else {}),
+                **({"attendee_email": attendee_email} if attendee_email else {}),
+            )
+            for booking in sorted(page["data"], key=lambda row: (parse_instant(row["start"]), row["uid"])):
+                start = parse_instant(booking["start"])
+                if end is not None and start >= end:
+                    return list(entries.values()), False
+                if (begin is not None and start < begin) or (
+                    status is None and booking["status"] not in _MUTABLE_BOOKING_STATUSES
+                ):
+                    continue
+                if clock is not None and start.astimezone(self._zone).time() != clock:
+                    continue
+                entry = booking_entry(booking)
+                if attendee_email is not None and not _includes_attendee(entry, attendee_email):
+                    continue
+                entries.setdefault(entry.uid, entry)
+                if len(entries) > _MAX_BOOKING_CHOICES:
+                    return list(entries.values())[:_MAX_BOOKING_CHOICES], True
+            if not page["pagination"]["hasMore"]:
+                return list(entries.values()), False
+            cursor = page["pagination"]["nextCursor"]
+            if not cursor or cursor in seen:
+                break
+            seen.add(cursor)
+        return list(entries.values()), True
 
     def register_bookings(
         self, entries: Iterable[BookingEntry], *, reuse_known: bool = False, preferred_ref: str | None = None,
@@ -621,6 +701,8 @@ class CalendarTools:
             for entry in entries:
                 ref = known.get(entry.uid)
                 if ref is not None and ref in self.state.bookings:
+                    # Keep an earlier reused ref from being evicted by this list.
+                    del self.state.bookings[ref]
                     self.state.bookings[ref] = entry
                 else:
                     ref = add_booking(self.state, entry)
@@ -721,25 +803,28 @@ class CalendarTools:
         return ToolOutcome(events=[event], proposal=proposal)
 
     def _propose_booking(self, args: _ProposeBooking) -> ToolOutcome:
-        self._check_slot(args.slot_ref)
-        supplied_email = args.email.strip()
-        if supplied_email and not _valid_email(supplied_email):
-            raise ToolRejected("Use a valid attendee email or leave it empty for confirmation.")
+        slot = self._check_slot(args.slot_ref)
         with self._state_lock:
-            name = args.name.strip() or self.state.user.name
-            email = self.state.user.email or supplied_email or None
+            draft = self.state.guest_draft
+            name = (draft.name if draft is not None else None) or args.name.strip() or None
+            email = draft.email if draft is not None else None
+            notes = (draft.notes if draft is not None else None) or args.notes.strip() or None
+            minutes = draft.duration_minutes if draft is not None else None
         if email and not _valid_email(email):
-            raise ToolRejected("Use a valid attendee email or leave it empty for confirmation.")
-        return self._propose("book", slot_ref=args.slot_ref, name=name, email=email, notes=args.notes.strip() or None)
+            raise ToolRejected("Use a valid guest email.")
+        if minutes is not None and parse_instant(slot.end_utc) - parse_instant(slot.start_utc) != timedelta(minutes=minutes):
+            self.event_for_duration(minutes)
+            raise ToolRejected(f"Choose a {minutes}-minute opening for this guest.")
+        return self._propose("book", slot_ref=args.slot_ref, name=name, email=email, notes=notes)
 
     def _propose_cancel(self, args: _ProposeCancel) -> ToolOutcome:
         with self._state_lock:
-            self._owned_booking(args.booking_ref)
+            self._changeable_booking(args.booking_ref)
         return self._propose("cancel", booking_ref=args.booking_ref, reason=args.reason.strip() or None)
 
     def _propose_reschedule(self, args: _ProposeReschedule) -> ToolOutcome:
         with self._state_lock:
-            booking = self._owned_booking(args.booking_ref)
+            booking = self._changeable_booking(args.booking_ref)
         self._check_slot(args.slot_ref, args.booking_ref, booking)
         return self._propose(
             "reschedule", booking_ref=args.booking_ref, slot_ref=args.slot_ref, reason=args.reason.strip() or None
